@@ -12,7 +12,9 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "clean": "turbo run clean && rimraf node_modules",
-    "format": "prettier --write \"**/*.{ts,tsx,json,md}\" --ignore-path .gitignore"
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\" --ignore-path .gitignore",
+    "validate:boundaries": "node scripts/validate-boundaries.mjs",
+    "validate:all": "pnpm typecheck && pnpm validate:boundaries && pnpm audit --audit-level=high"
   },
   "devDependencies": {
     "@slave-vpn/tsconfig": "workspace:*",

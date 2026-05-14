@@ -1,0 +1,24 @@
+# CODEOWNERS — Architecture-sensitive files require review
+
+# Global fallback
+* @dmtrbtc
+
+# Provider abstraction — requires architecture review
+packages/provider/ @dmtrbtc
+packages/provider-remnawave/ @dmtrbtc
+
+# Runtime — engine integration changes require review
+packages/runtime/ @dmtrbtc
+
+# Routing + DNS — engine-neutral DSL
+packages/routing/ @dmtrbtc
+packages/dns/ @dmtrbtc
+
+# Security boundaries
+apps/windows/src/main/bootstrap.ts @dmtrbtc
+apps/windows/src/preload/ @dmtrbtc
+apps/windows/src/main/security/ @dmtrbtc
+
+# CI/CD and architecture validation
+.github/ @dmtrbtc
+scripts/ @dmtrbtc
