@@ -1,0 +1,39 @@
+{
+  "name": "@slave-vpn/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client/ApiClient.js",
+      "types": "./dist/client/ApiClient.d.ts"
+    },
+    "./storage": {
+      "import": "./dist/storage/TokenStorage.js",
+      "types": "./dist/storage/TokenStorage.d.ts"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@slave-vpn/shared": "workspace:*",
+    "axios": "^1.7.9"
+  },
+  "devDependencies": {
+    "@slave-vpn/tsconfig": "workspace:*",
+    "@types/node": "^22.10.5",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}
