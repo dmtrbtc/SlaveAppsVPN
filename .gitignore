@@ -108,3 +108,6 @@ playwright-report/
 # pnpm
 .pnp
 .pnp.js
+
+# AI assistant memory (not project code)
+.claude/
