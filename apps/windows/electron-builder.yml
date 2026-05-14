@@ -1,0 +1,63 @@
+appId: com.slavevpn.app
+productName: SLAVE VPN
+copyright: Copyright © 2025 SLAVE VPN
+
+directories:
+  buildResources: resources/build
+  output: release/${version}
+
+files:
+  - out/**/*
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.*'
+  - '!{.eslintignore,.eslintrc.*,.prettierignore,.prettierrc*}'
+  - '!{.env,.env.*,.npmrc}'
+  - '!{README.md,CHANGELOG.md}'
+
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - '**/*.exe'
+      - '**/*.dll'
+  - from: resources/rules
+    to: rules
+    filter:
+      - '**/*.dat'
+      - '**/*.yaml'
+      - '**/*.yml'
+
+win:
+  executableName: slave-vpn
+  requestedExecutionLevel: asInvoker
+  icon: resources/icons/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  artifactName: ${name}-setup-${version}.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  oneClick: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: false
+  perMachine: false
+  runAfterFinish: true
+  installerHeaderIcon: resources/icons/icon.ico
+  # TODO: add custom nsh scripts for WinTUN driver installation
+
+publish:
+  provider: github
+  owner: CHANGE_ME
+  repo: CHANGE_ME
+  releaseType: release
+  # Code signing will be added when EV certificate is obtained:
+  # CSC_LINK and CSC_KEY_PASSWORD via CI environment variables
+
+# Staged rollout support via GitHub Releases channels
+# stable channel: publish provider targets stable releases
+# beta channel: publish provider targets pre-releases

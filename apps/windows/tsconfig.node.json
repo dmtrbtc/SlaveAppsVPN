@@ -1,0 +1,10 @@
+{
+  "extends": "@slave-vpn/tsconfig/electron-main.json",
+  "include": [
+    "electron.vite.config.*",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*"
+  ],
+  "exclude": ["src/renderer"]
+}
