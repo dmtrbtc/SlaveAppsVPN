@@ -1,0 +1,32 @@
+# Normalize line endings to LF in repository
+* text=auto eol=lf
+
+# Force LF for all source files
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.sh    text eol=lf
+
+# Windows-specific batch files keep CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary files — no line ending conversion
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.db    binary
+*.sqlite binary
+*.mmdb  binary
+*.dat   binary
+*.p12   binary
+*.pfx   binary

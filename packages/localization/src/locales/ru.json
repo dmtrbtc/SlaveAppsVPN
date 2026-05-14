@@ -1,0 +1,200 @@
+{
+  "common": {
+    "appName": "SLAVE VPN",
+    "connect": "Подключиться",
+    "disconnect": "Отключиться",
+    "connecting": "Подключение...",
+    "disconnecting": "Отключение...",
+    "reconnecting": "Переподключение...",
+    "cancel": "Отмена",
+    "confirm": "Подтвердить",
+    "save": "Сохранить",
+    "close": "Закрыть",
+    "back": "Назад",
+    "loading": "Загрузка...",
+    "error": "Ошибка",
+    "retry": "Повторить",
+    "copy": "Скопировать",
+    "copied": "Скопировано",
+    "unknown": "Неизвестно",
+    "yes": "Да",
+    "no": "Нет",
+    "settings": "Настройки",
+    "logout": "Выйти"
+  },
+  "auth": {
+    "title": "Войдите в аккаунт",
+    "subtitle": "Войдите через Telegram или email",
+    "loginWithTelegram": "Войти через Telegram",
+    "loginWithEmail": "Войти через email",
+    "email": "Email",
+    "password": "Пароль",
+    "emailPlaceholder": "your@email.com",
+    "passwordPlaceholder": "••••••••",
+    "loginButton": "Войти",
+    "loggingIn": "Вход...",
+    "noAccount": "Нет аккаунта?",
+    "buySubscription": "Купить подписку",
+    "errors": {
+      "invalidCredentials": "Неверный email или пароль",
+      "networkError": "Ошибка сети. Проверьте подключение к интернету",
+      "unknownError": "Произошла ошибка. Попробуйте позже"
+    }
+  },
+  "dashboard": {
+    "title": "Главная",
+    "status": {
+      "connected": "Подключено",
+      "disconnected": "Отключено",
+      "connecting": "Подключение...",
+      "reconnecting": "Переподключение...",
+      "error": "Ошибка"
+    },
+    "server": "Сервер",
+    "selectServer": "Выбрать сервер",
+    "traffic": {
+      "upload": "Отправлено",
+      "download": "Получено",
+      "speed": "Скорость"
+    },
+    "subscription": {
+      "expires": "Подписка до",
+      "trafficUsed": "Использовано",
+      "trafficLimit": "Лимит трафика",
+      "unlimited": "Безлимит",
+      "expired": "Подписка истекла",
+      "renew": "Продлить",
+      "daysLeft": "Осталось {{count}} дн."
+    }
+  },
+  "servers": {
+    "title": "Серверы",
+    "search": "Поиск...",
+    "latency": "Пинг",
+    "availability": {
+      "online": "Онлайн",
+      "degraded": "Нагружен",
+      "offline": "Недоступен",
+      "unknown": "Неизвестно"
+    },
+    "noServers": "Серверы не найдены",
+    "favorites": "Избранные"
+  },
+  "routing": {
+    "title": "Маршрутизация",
+    "mode": "Режим",
+    "modes": {
+      "full": "Полный VPN",
+      "fullDescription": "Весь трафик через VPN",
+      "bypass": "Обход блокировок",
+      "bypassDescription": "Только заблокированные сайты через VPN",
+      "split": "Раздельный туннель",
+      "splitDescription": "Выбранные приложения через VPN",
+      "custom": "Настраиваемый"
+    },
+    "splitTunnel": {
+      "title": "Раздельный туннель",
+      "addApp": "Добавить приложение",
+      "removeApp": "Удалить",
+      "emptyState": "Приложения не выбраны"
+    }
+  },
+  "subscription": {
+    "title": "Подписка",
+    "status": {
+      "active": "Активна",
+      "expired": "Истекла",
+      "limited": "Лимит исчерпан",
+      "paused": "Приостановлена",
+      "none": "Нет подписки"
+    },
+    "buy": "Купить подписку",
+    "renew": "Продлить",
+    "devices": {
+      "title": "Устройства",
+      "thisDevice": "Это устройство",
+      "remove": "Удалить устройство",
+      "removeAll": "Удалить все"
+    },
+    "traffic": {
+      "used": "Использовано",
+      "limit": "Лимит",
+      "unlimited": "Безлимит",
+      "refresh": "Обновить"
+    }
+  },
+  "settings": {
+    "title": "Настройки",
+    "general": "Общие",
+    "language": "Язык",
+    "autoStart": "Запуск вместе с Windows",
+    "minimizeToTray": "Сворачивать в трей",
+    "notifications": "Уведомления",
+    "vpn": "VPN",
+    "protocol": "Протокол",
+    "autoConnect": "Автоподключение",
+    "killSwitch": "Kill Switch",
+    "killSwitchDescription": "Блокировать трафик при обрыве VPN",
+    "advanced": "Дополнительно",
+    "devMode": "Режим разработчика",
+    "logs": "Журнал",
+    "diagnostics": "Диагностика",
+    "about": "О программе",
+    "version": "Версия",
+    "checkUpdates": "Проверить обновления",
+    "support": "Поддержка",
+    "openTelegram": "Открыть Telegram бот"
+  },
+  "diagnostics": {
+    "title": "Диагностика",
+    "export": "Экспорт логов",
+    "clear": "Очистить",
+    "tabs": {
+      "logs": "Журнал",
+      "system": "Система",
+      "connection": "Соединение"
+    },
+    "systemInfo": {
+      "os": "ОС",
+      "arch": "Архитектура",
+      "appVersion": "Версия приложения",
+      "mihomoVersion": "Версия ядра",
+      "uptime": "Время работы"
+    }
+  },
+  "errors": {
+    "subscriptionExpired": "Подписка истекла. Продлите для продолжения работы.",
+    "engineCrashed": "VPN-ядро завершилось с ошибкой. Перезапуск...",
+    "configInvalid": "Ошибка конфигурации VPN",
+    "tunInitFailed": "Не удалось инициализировать TUN-интерфейс",
+    "connectionTimeout": "Время подключения истекло",
+    "networkUnavailable": "Нет подключения к интернету",
+    "authRequired": "Необходима авторизация",
+    "generic": "Произошла ошибка. Попробуйте ещё раз."
+  },
+  "tray": {
+    "show": "Показать",
+    "connect": "Подключиться",
+    "disconnect": "Отключить",
+    "status": {
+      "connected": "Подключено",
+      "disconnected": "Отключено"
+    },
+    "quit": "Выйти"
+  },
+  "updates": {
+    "available": "Доступно обновление {{version}}",
+    "downloading": "Загрузка обновления...",
+    "downloaded": "Обновление готово к установке",
+    "installNow": "Установить сейчас",
+    "installLater": "Позже",
+    "upToDate": "Обновления не найдены",
+    "checkFailed": "Ошибка проверки обновлений"
+  },
+  "telegram": {
+    "buySubscription": "Купить подписку",
+    "renewSubscription": "Продлить подписку",
+    "support": "Поддержка",
+    "openBot": "Открыть бот"
+  }
+}

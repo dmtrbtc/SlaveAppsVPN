@@ -1,0 +1,110 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+*.tsbuildinfo
+
+# Electron build artifacts
+release/
+app-builds/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.env
+secrets/
+*.secret
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.vscode/*.code-workspace
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.user
+.history/
+
+# Turbo
+.turbo/
+
+# SQLite / local data
+*.db
+*.sqlite
+*.sqlite3
+userData/
+cache/
+temp/
+tmp/
+
+# Mihomo runtime binary (downloaded separately, not committed)
+apps/windows/resources/bin/mihomo.exe
+apps/windows/resources/bin/wintun.dll
+apps/windows/resources/rules/*.dat
+apps/windows/resources/rules/*.mmdb
+
+# Generated configs (runtime only)
+mihomo/
+*.mihomo.yaml
+generated-config.yaml
+
+# Crash dumps
+*.dmp
+*.mdmp
+crashpad/
+Crashpad/
+
+# Code signing certificates (NEVER commit)
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+codesign/
+
+# Electron builder output
+dist-electron/
+electron-builder-output/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Playwright / E2E
+test-results/
+playwright-report/
+
+# Type check cache
+*.tsbuildinfo.cache
+
+# pnpm
+.pnp
+.pnp.js

@@ -1,0 +1,200 @@
+{
+  "common": {
+    "appName": "SLAVE VPN",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "connecting": "Connecting...",
+    "disconnecting": "Disconnecting...",
+    "reconnecting": "Reconnecting...",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "close": "Close",
+    "back": "Back",
+    "loading": "Loading...",
+    "error": "Error",
+    "retry": "Retry",
+    "copy": "Copy",
+    "copied": "Copied",
+    "unknown": "Unknown",
+    "yes": "Yes",
+    "no": "No",
+    "settings": "Settings",
+    "logout": "Log out"
+  },
+  "auth": {
+    "title": "Sign in to your account",
+    "subtitle": "Sign in via Telegram or email",
+    "loginWithTelegram": "Continue with Telegram",
+    "loginWithEmail": "Continue with Email",
+    "email": "Email",
+    "password": "Password",
+    "emailPlaceholder": "your@email.com",
+    "passwordPlaceholder": "••••••••",
+    "loginButton": "Sign In",
+    "loggingIn": "Signing in...",
+    "noAccount": "Don't have an account?",
+    "buySubscription": "Buy subscription",
+    "errors": {
+      "invalidCredentials": "Invalid email or password",
+      "networkError": "Network error. Check your internet connection",
+      "unknownError": "Something went wrong. Please try again"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "status": {
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "connecting": "Connecting...",
+      "reconnecting": "Reconnecting...",
+      "error": "Error"
+    },
+    "server": "Server",
+    "selectServer": "Select server",
+    "traffic": {
+      "upload": "Uploaded",
+      "download": "Downloaded",
+      "speed": "Speed"
+    },
+    "subscription": {
+      "expires": "Expires",
+      "trafficUsed": "Used",
+      "trafficLimit": "Traffic limit",
+      "unlimited": "Unlimited",
+      "expired": "Subscription expired",
+      "renew": "Renew",
+      "daysLeft": "{{count}} days left"
+    }
+  },
+  "servers": {
+    "title": "Servers",
+    "search": "Search...",
+    "latency": "Latency",
+    "availability": {
+      "online": "Online",
+      "degraded": "Busy",
+      "offline": "Offline",
+      "unknown": "Unknown"
+    },
+    "noServers": "No servers found",
+    "favorites": "Favorites"
+  },
+  "routing": {
+    "title": "Routing",
+    "mode": "Mode",
+    "modes": {
+      "full": "Full VPN",
+      "fullDescription": "All traffic through VPN",
+      "bypass": "Bypass Mode",
+      "bypassDescription": "Only blocked sites through VPN",
+      "split": "Split Tunnel",
+      "splitDescription": "Selected apps through VPN",
+      "custom": "Custom"
+    },
+    "splitTunnel": {
+      "title": "Split Tunnel",
+      "addApp": "Add app",
+      "removeApp": "Remove",
+      "emptyState": "No apps selected"
+    }
+  },
+  "subscription": {
+    "title": "Subscription",
+    "status": {
+      "active": "Active",
+      "expired": "Expired",
+      "limited": "Traffic limit reached",
+      "paused": "Paused",
+      "none": "No subscription"
+    },
+    "buy": "Buy subscription",
+    "renew": "Renew",
+    "devices": {
+      "title": "Devices",
+      "thisDevice": "This device",
+      "remove": "Remove device",
+      "removeAll": "Remove all"
+    },
+    "traffic": {
+      "used": "Used",
+      "limit": "Limit",
+      "unlimited": "Unlimited",
+      "refresh": "Refresh"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "general": "General",
+    "language": "Language",
+    "autoStart": "Launch at startup",
+    "minimizeToTray": "Minimize to tray",
+    "notifications": "Notifications",
+    "vpn": "VPN",
+    "protocol": "Protocol",
+    "autoConnect": "Auto connect",
+    "killSwitch": "Kill Switch",
+    "killSwitchDescription": "Block traffic when VPN disconnects",
+    "advanced": "Advanced",
+    "devMode": "Developer mode",
+    "logs": "Logs",
+    "diagnostics": "Diagnostics",
+    "about": "About",
+    "version": "Version",
+    "checkUpdates": "Check for updates",
+    "support": "Support",
+    "openTelegram": "Open Telegram bot"
+  },
+  "diagnostics": {
+    "title": "Diagnostics",
+    "export": "Export logs",
+    "clear": "Clear",
+    "tabs": {
+      "logs": "Logs",
+      "system": "System",
+      "connection": "Connection"
+    },
+    "systemInfo": {
+      "os": "OS",
+      "arch": "Architecture",
+      "appVersion": "App version",
+      "mihomoVersion": "Core version",
+      "uptime": "Uptime"
+    }
+  },
+  "errors": {
+    "subscriptionExpired": "Your subscription has expired. Please renew to continue.",
+    "engineCrashed": "VPN core crashed. Restarting...",
+    "configInvalid": "VPN configuration error",
+    "tunInitFailed": "Failed to initialize TUN interface",
+    "connectionTimeout": "Connection timed out",
+    "networkUnavailable": "No internet connection",
+    "authRequired": "Authentication required",
+    "generic": "Something went wrong. Please try again."
+  },
+  "tray": {
+    "show": "Show",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "status": {
+      "connected": "Connected",
+      "disconnected": "Disconnected"
+    },
+    "quit": "Quit"
+  },
+  "updates": {
+    "available": "Update {{version}} is available",
+    "downloading": "Downloading update...",
+    "downloaded": "Update ready to install",
+    "installNow": "Install now",
+    "installLater": "Later",
+    "upToDate": "No updates found",
+    "checkFailed": "Update check failed"
+  },
+  "telegram": {
+    "buySubscription": "Buy subscription",
+    "renewSubscription": "Renew subscription",
+    "support": "Support",
+    "openBot": "Open bot"
+  }
+}
