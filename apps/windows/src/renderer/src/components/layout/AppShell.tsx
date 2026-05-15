@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { TitleBar } from './TitleBar'
 import { Sidebar } from './Sidebar'
+import { OfflineBanner } from './OfflineBanner'
 import { NotificationStack } from '../notifications/NotificationStack'
 
 export function AppShell() {
@@ -9,8 +10,9 @@ export function AppShell() {
       <TitleBar />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-hidden relative">
+        <main className="relative flex-1 overflow-hidden">
           <Outlet />
+          <OfflineBanner />
         </main>
       </div>
       <NotificationStack />

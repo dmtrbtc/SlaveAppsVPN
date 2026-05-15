@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
+import type { VPNStatus, TrafficStats, VPNMode, VPNConnectionState } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import { vpnApi, events } from '../lib/api'
 
@@ -8,6 +8,8 @@ interface VpnStore {
   status: VPNStatus
   traffic: TrafficStats
   engineVersion: string | null
+  reconnectAttempts: number
+  connectionStartedAt: number | null
 
   connect: () => Promise<void>
   disconnect: () => Promise<void>
@@ -17,21 +19,53 @@ interface VpnStore {
   subscribeToEvents: () => () => void
 }
 
+function deriveConnectionMeta(
+  prev: Pick<VpnStore, 'status' | 'reconnectAttempts' | 'connectionStartedAt'>,
+  next: VPNStatus
+): Pick<VpnStore, 'reconnectAttempts' | 'connectionStartedAt'> {
+  const prevState = prev.status.state
+  const nextState = next.state
+  const now = Date.now()
+
+  const connectionStartedAt =
+    nextState === 'connecting' && prevState !== 'connecting' && prevState !== 'reconnecting'
+      ? now
+      : nextState === 'disconnected' || nextState === 'error'
+      ? null
+      : prev.connectionStartedAt
+
+  const reconnectAttempts =
+    nextState === 'reconnecting' && prevState !== 'reconnecting'
+      ? prev.reconnectAttempts + 1
+      : nextState === 'connected' || nextState === 'disconnected'
+      ? 0
+      : prev.reconnectAttempts
+
+  return { connectionStartedAt, reconnectAttempts }
+}
+
 export const useVpnStore = create<VpnStore>()(
   subscribeWithSelector((set, get) => ({
     status: INITIAL_VPN_STATUS,
     traffic: EMPTY_TRAFFIC_STATS,
     engineVersion: null,
+    reconnectAttempts: 0,
+    connectionStartedAt: null,
 
     connect: async () => {
       const state = get().status.state
       if (state === 'connecting' || state === 'connected') return
-      set(s => ({ status: { ...s.status, state: 'connecting' } }))
+      const now = Date.now()
+      set(s => ({
+        status: { ...s.status, state: 'connecting', lastError: null },
+        connectionStartedAt: now,
+        reconnectAttempts: 0,
+      }))
       try {
         await vpnApi.connect()
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
+        set(s => ({ status: { ...s.status, state: 'error', lastError: message }, connectionStartedAt: null }))
         throw err
       }
     },
@@ -57,19 +91,24 @@ export const useVpnStore = create<VpnStore>()(
     fetchStatus: async () => {
       try {
         const status = await vpnApi.getStatus()
-        set({ status })
+        set(s => ({ status, ...deriveConnectionMeta(s, status) }))
       } catch {
-        // Non-fatal: keep current status if fetch fails
+        // Non-fatal
       }
     },
 
     setEngineVersion: (v) => set({ engineVersion: v }),
 
     subscribeToEvents: () => {
-      const unsubStatus = events.onVpnStatus(status => set({ status }))
+      const unsubStatus = events.onVpnStatus(status => {
+        set(s => ({ status, ...deriveConnectionMeta(s, status) }))
+      })
       const unsubTraffic = events.onVpnTraffic(traffic => set({ traffic }))
       const unsubError = events.onVpnError(({ message }) => {
-        set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
+        set(s => ({
+          status: { ...s.status, state: 'error', lastError: message },
+          connectionStartedAt: null,
+        }))
       })
       return () => {
         unsubStatus()
@@ -80,10 +119,10 @@ export const useVpnStore = create<VpnStore>()(
   }))
 )
 
-// Stable selectors — import these instead of inline arrow functions to avoid
-// recreating selector references on every render
 export const selectVpnStatus = (s: VpnStore) => s.status
 export const selectVpnTraffic = (s: VpnStore) => s.traffic
 export const selectConnectionState = (s: VpnStore) => s.status.state
 export const selectVpnMode = (s: VpnStore) => s.status.mode
 export const selectEngineVersion = (s: VpnStore) => s.engineVersion
+export const selectReconnectAttempts = (s: VpnStore) => s.reconnectAttempts
+export const selectConnectionStartedAt = (s: VpnStore) => s.connectionStartedAt
