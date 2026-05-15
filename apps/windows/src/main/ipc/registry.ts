@@ -76,5 +76,10 @@ export function registerAllHandlers(): void {
     log.debug('Provider IPC handlers registered')
   }).catch((err: unknown) => log.error({ err }, 'Failed to register provider handlers'))
 
+  import('./handlers/window.handler').then(({ registerWindowHandlers }) => {
+    registerWindowHandlers()
+    log.debug('Window IPC handlers registered')
+  }).catch((err: unknown) => log.error({ err }, 'Failed to register window handlers'))
+
   log.info('IPC handlers registered')
 }

@@ -9,8 +9,43 @@
 
 ## [Unreleased]
 
-### В работе
-- Iteration 6: UI Layer (Dashboard, Login, Settings, Diagnostics)
+---
+
+## [0.6.0-internal-preview] — 2026-05-15 · app v0.2.0
+
+### Added — Iteration 6: UI Foundation + Runtime Intelligence
+
+**UI Layer (7 screens)**
+- Login (email + Telegram deep-link flow)
+- Dashboard: FSM-driven connection orb, traffic stats, connection status
+- Servers: server list (stub — real data requires subscription)
+- Routing: rule management UI
+- DNS: profile selector
+- Diagnostics: system info + process logs + runtime event timeline
+- Settings: full settings panel
+
+**Runtime Intelligence Layer**
+- Connection health monitoring: 6-metric weighted scoring (process/API/connectivity/DNS/TUN/traffic)
+- Health state machine: `healthy | degraded | dns_failure | tunnel_unstable | provider_unreachable | offline`
+- `ConnectionOrb` + `ConnectionQualityBadge`: live health visualization, degraded indicator dot, reduced-motion support
+- Smart reconnect on system wake via `powerMonitor.resume`
+- Typed runtime event bus with severity levels (debug/info/warning/error/critical)
+- Diagnostics event timeline: ring buffer, newest-first, 200 events max
+- Global `uncaughtException`/`unhandledRejection` handlers in main process
+
+**Provider Ecosystem**
+- `PROVIDER_GET_MANIFEST` + `PROVIDER_GET_CAPABILITIES` IPC channels
+- `useProviderManifest()`, `useProviderCapabilities()`, `useFeatureAvailable()` hooks
+- `useFeatureFlag(flag: AppFeatureFlag)` for app-level feature gating
+
+**Window Controls**
+- `controls.minimize/maximize/close` bridge namespace + IPC handlers
+- TitleBar fully wired
+
+### Fixed — TypeScript strict mode (`exactOptionalPropertyTypes`) pre-existing violations
+- `packages/shared`, `packages/api`, `packages/routing`, `packages/localization`
+- `packages/provider-remnawave`, `packages/runtime`
+- `apps/windows`: SettingsStore, RuntimeServiceImpl, ConnectionOrb, LoginPage, vpn.store
 
 ---
 

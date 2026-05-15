@@ -36,9 +36,12 @@ win:
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
 
 nsis:
-  artifactName: ${name}-setup-${version}.${ext}
+  artifactName: SlaveAppsVPN-Setup-v${version}.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
@@ -50,11 +53,14 @@ nsis:
   installerHeaderIcon: resources/icons/icon.ico
   # TODO: add custom nsh scripts for WinTUN driver installation
 
+portable:
+  artifactName: SlaveAppsVPN-Portable-v${version}.${ext}
+
 publish:
   provider: github
-  owner: CHANGE_ME
-  repo: CHANGE_ME
-  releaseType: release
+  owner: dmtrbtc
+  repo: SlaveAppsVPN
+  releaseType: prerelease
   # Code signing will be added when EV certificate is obtained:
   # CSC_LINK and CSC_KEY_PASSWORD via CI environment variables
 

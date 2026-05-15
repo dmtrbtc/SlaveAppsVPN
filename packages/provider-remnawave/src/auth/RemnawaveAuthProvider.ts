@@ -29,9 +29,9 @@ export class RemnawaveAuthProvider implements AuthProvider {
     return this.authApi.loginTelegramWidget({
       id: parsed.id,
       first_name: parsed.first_name,
-      last_name: parsed.last_name,
-      username: parsed.username,
-      photo_url: parsed.photo_url,
+      ...(parsed.last_name !== undefined ? { last_name: parsed.last_name } : {}),
+      ...(parsed.username !== undefined ? { username: parsed.username } : {}),
+      ...(parsed.photo_url !== undefined ? { photo_url: parsed.photo_url } : {}),
       auth_date: Number(params.get('auth_date') ?? 0),
       hash: params.get('hash') ?? '',
     })

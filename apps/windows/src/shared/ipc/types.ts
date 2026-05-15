@@ -230,6 +230,11 @@ export interface SlaveVPNBridge {
     getManifest: () => Promise<ProviderGetManifestResult>
     getCapabilities: () => Promise<ProviderGetCapabilitiesResult>
   }
+  controls: {
+    minimize: () => Promise<void>
+    maximize: () => Promise<void>
+    close: () => Promise<void>
+  }
   events: {
     onVpnStatus: (callback: (status: VPNStatus) => void) => () => void
     onVpnTraffic: (callback: (stats: TrafficStats) => void) => () => void

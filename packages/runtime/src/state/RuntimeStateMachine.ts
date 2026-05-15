@@ -36,7 +36,7 @@ export class RuntimeStateMachine {
     const t: RuntimeStateTransition = {
       from: this._state,
       to,
-      reason,
+      ...(reason !== undefined ? { reason } : {}),
       timestamp: Date.now(),
     }
 

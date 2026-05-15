@@ -22,11 +22,14 @@ export class ApiError extends AppError {
     message: string,
     options?: { httpStatus?: number; endpoint?: string; cause?: Error; details?: unknown }
   ) {
-    super('API_ERROR', message, { cause: options?.cause, details: options?.details })
+    super('API_ERROR', message, {
+      ...(options?.cause !== undefined ? { cause: options.cause } : {}),
+      ...(options?.details !== undefined ? { details: options.details } : {}),
+    })
     this.name = 'ApiError'
     this.apiCode = code
-    this.httpStatus = options?.httpStatus
-    this.endpoint = options?.endpoint
+    if (options?.httpStatus !== undefined) this.httpStatus = options.httpStatus
+    if (options?.endpoint !== undefined) this.endpoint = options.endpoint
   }
 
   get isUnauthorized(): boolean {
@@ -38,7 +41,10 @@ export class ApiError extends AppError {
   }
 
   static unauthorized(endpoint?: string): ApiError {
-    return new ApiError('UNAUTHORIZED', 'Authentication required', { httpStatus: 401, endpoint })
+    return new ApiError('UNAUTHORIZED', 'Authentication required', {
+      httpStatus: 401,
+      ...(endpoint !== undefined ? { endpoint } : {}),
+    })
   }
 
   static sessionExpired(): ApiError {
@@ -55,6 +61,9 @@ export class ApiError extends AppError {
       : status === 429 ? 'RATE_LIMITED'
       : 'SERVER_ERROR'
 
-    return new ApiError(code, message, { httpStatus: status, endpoint })
+    return new ApiError(code, message, {
+      httpStatus: status,
+      ...(endpoint !== undefined ? { endpoint } : {}),
+    })
   }
 }

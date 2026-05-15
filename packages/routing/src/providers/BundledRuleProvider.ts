@@ -14,7 +14,7 @@ export class BundledRuleProvider implements RuleProvider {
       id,
       name,
       type: 'bundled',
-      version,
+      ...(version !== undefined ? { version } : {}),
       ruleCount: rules.length,
     }
   }

@@ -65,11 +65,11 @@ export class AuthApiService {
   private mapUser(data: ApiUser): User {
     return {
       id: data.id,
-      telegramId: data.telegram_id,
-      email: data.email,
-      username: data.username,
-      firstName: data.first_name,
-      lastName: data.last_name,
+      ...(data.telegram_id !== undefined ? { telegramId: data.telegram_id } : {}),
+      ...(data.email !== undefined ? { email: data.email } : {}),
+      ...(data.username !== undefined ? { username: data.username } : {}),
+      ...(data.first_name !== undefined ? { firstName: data.first_name } : {}),
+      ...(data.last_name !== undefined ? { lastName: data.last_name } : {}),
       language: (data.language === 'en' ? 'en' : 'ru') as 'ru' | 'en',
       createdAt: data.created_at,
       linkedProviders: data.linked_providers as User['linkedProviders'],

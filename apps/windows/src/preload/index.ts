@@ -97,6 +97,17 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.PROVIDER_GET_CAPABILITIES),
   },
 
+  controls: {
+    minimize: () =>
+      invoke(IpcChannel.WINDOW_MINIMIZE),
+
+    maximize: () =>
+      invoke(IpcChannel.WINDOW_MAXIMIZE),
+
+    close: () =>
+      invoke(IpcChannel.WINDOW_CLOSE),
+  },
+
   events: {
     onVpnStatus: (callback: (status: VPNStatus) => void) =>
       on<VPNStatus>(IpcChannel.EVENT_VPN_STATUS, callback),

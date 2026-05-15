@@ -14,8 +14,8 @@ export class CacheRuleProvider implements RuleProvider {
   private _metadata: RuleProviderMetadata
 
   constructor(
-    private readonly id: string,
-    private readonly name: string,
+    id: string,
+    name: string,
     private readonly cachePath: string
   ) {
     this._metadata = {

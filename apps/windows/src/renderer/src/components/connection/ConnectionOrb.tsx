@@ -117,8 +117,10 @@ export function ConnectionOrb({ className }: ConnectionOrbProps) {
             !isTransitioning && 'cursor-pointer',
             isTransitioning && 'cursor-not-allowed',
           )}
-          whileHover={!isTransitioning && !prefersReducedMotion ? { scale: 1.03 } : undefined}
-          whileTap={!isTransitioning && !prefersReducedMotion ? { scale: 0.97 } : undefined}
+          {...(!isTransitioning && !prefersReducedMotion ? {
+            whileHover: { scale: 1.03 },
+            whileTap: { scale: 0.97 },
+          } : {})}
           transition={{ type: 'spring', stiffness: 420, damping: 28 }}
           aria-label={config.label}
         >

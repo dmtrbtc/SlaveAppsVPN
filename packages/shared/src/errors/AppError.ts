@@ -28,8 +28,8 @@ export class AppError extends Error {
     super(message, { cause: options?.cause })
     this.name = 'AppError'
     this.code = code
-    this.statusCode = options?.statusCode
-    this.details = options?.details
+    if (options?.statusCode !== undefined) this.statusCode = options.statusCode
+    if (options?.details !== undefined) this.details = options.details
   }
 
   static isAppError(error: unknown): error is AppError {

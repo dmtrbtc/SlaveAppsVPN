@@ -26,7 +26,7 @@ function geoRuleToRoutingRule(geo: GeoRule): RoutingRule {
     target: { type: geo.category, value: geo.code },
     action: geo.action,
     priority: geo.priority,
-    source: geo.source,
-    noResolve: geo.noResolve,
+    ...(geo.source !== undefined ? { source: geo.source } : {}),
+    ...(geo.noResolve !== undefined ? { noResolve: geo.noResolve } : {}),
   }
 }

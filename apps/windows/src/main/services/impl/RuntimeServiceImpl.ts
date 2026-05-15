@@ -36,7 +36,7 @@ function makeEvent(
   message: string,
   metadata?: Record<string, unknown>
 ): RuntimeEvent {
-  return { id: randomUUID(), kind, severity, timestamp: Date.now(), message, metadata }
+  return { id: randomUUID(), kind, severity, timestamp: Date.now(), message, ...(metadata !== undefined ? { metadata } : {}) }
 }
 
 // Derives a degraded health state label from a HealthStatus snapshot.

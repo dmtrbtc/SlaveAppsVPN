@@ -12,13 +12,13 @@ export function TitleBar() {
       </div>
 
       <div className="no-drag flex items-center">
-        <TitleBarButton onClick={() => window.slaveVPN?.window?.minimize()} label="Minimize">
+        <TitleBarButton onClick={() => void window.slaveVPN?.controls?.minimize()} label="Minimize">
           <Minus className="h-3 w-3" />
         </TitleBarButton>
-        <TitleBarButton onClick={() => window.slaveVPN?.window?.maximize()} label="Maximize">
+        <TitleBarButton onClick={() => void window.slaveVPN?.controls?.maximize()} label="Maximize">
           <Square className="h-2.5 w-2.5" />
         </TitleBarButton>
-        <TitleBarButton onClick={() => window.slaveVPN?.window?.close()} label="Close" close>
+        <TitleBarButton onClick={() => void window.slaveVPN?.controls?.close()} label="Close" close>
           <X className="h-3 w-3" />
         </TitleBarButton>
       </div>

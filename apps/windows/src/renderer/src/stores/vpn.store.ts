@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import type { VPNStatus, TrafficStats, VPNMode, VPNConnectionState } from '@slave-vpn/shared'
+import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import type { VpnHealthPayload } from '@shared/ipc/types'
 import { vpnApi, events } from '../lib/api'

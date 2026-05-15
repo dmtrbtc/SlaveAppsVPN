@@ -50,8 +50,11 @@ class SettingsStore {
     return this.settings[key]
   }
 
-  patch(partial: Partial<AppSettings>): void {
-    this.settings = { ...this.settings, ...partial }
+  patch(partial: { [K in keyof AppSettings]?: AppSettings[K] | undefined }): void {
+    const clean = Object.fromEntries(
+      Object.entries(partial).filter(([, v]) => v !== undefined)
+    ) as Partial<AppSettings>
+    this.settings = { ...this.settings, ...clean }
     this.persist()
   }
 

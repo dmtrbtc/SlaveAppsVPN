@@ -11,7 +11,7 @@ import { TitleBar } from '../components/layout/TitleBar'
 
 export function LoginPage() {
   const navigate = useNavigate()
-  const { loginEmail, loginTelegram } = useAuthStore()
+  const { loginEmail } = useAuthStore()
   const { notify } = useUIStore()
 
   const [email, setEmail] = useState('')

@@ -31,6 +31,11 @@ export const IpcChannel = {
   PROVIDER_GET_MANIFEST: 'provider:getManifest',
   PROVIDER_GET_CAPABILITIES: 'provider:getCapabilities',
 
+  // Window controls — request/response
+  WINDOW_MINIMIZE: 'window:minimize',
+  WINDOW_MAXIMIZE: 'window:maximize',
+  WINDOW_CLOSE: 'window:close',
+
   // Events — main → renderer (push notifications)
   EVENT_VPN_STATUS: 'event:vpn:status',
   EVENT_VPN_TRAFFIC: 'event:vpn:traffic',
@@ -66,4 +71,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DIAGNOSTICS_GET_LOGS'
   | 'PROVIDER_GET_MANIFEST'
   | 'PROVIDER_GET_CAPABILITIES'
+  | 'WINDOW_MINIMIZE'
+  | 'WINDOW_MAXIMIZE'
+  | 'WINDOW_CLOSE'
 ]

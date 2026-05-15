@@ -28,13 +28,13 @@ export function createRefreshResponseInterceptor(options: RefreshInterceptorOpti
       if (!originalRequest) throw error
 
       const isAuthRoute = (originalRequest.url ?? '').includes(AUTH_ROUTES_PREFIX)
-      const alreadyRetried = (originalRequest as Record<string, unknown>)['_retry'] === true
+      const alreadyRetried = (originalRequest as unknown as Record<string, unknown>)['_retry'] === true
 
       if (status !== 401 || isAuthRoute || alreadyRetried) {
         throw toApiError(error)
       }
 
-      ;(originalRequest as Record<string, unknown>)['_retry'] = true
+      ;(originalRequest as unknown as Record<string, unknown>)['_retry'] = true
 
       try {
         const refreshedTokens = await refreshLock.execute(async (): Promise<AuthTokens> => {
@@ -78,10 +78,10 @@ function toApiError(error: AxiosError): ApiError {
 
   if (!error.response) {
     if (error.code === 'ECONNABORTED') {
-      return new ApiError('TIMEOUT', 'Request timed out', { endpoint: url })
+      return new ApiError('TIMEOUT', 'Request timed out', url !== undefined ? { endpoint: url } : {})
     }
-    return new ApiError('NETWORK_ERROR', error.message, { endpoint: url })
+    return new ApiError('NETWORK_ERROR', error.message, url !== undefined ? { endpoint: url } : {})
   }
 
-  return ApiError.fromHttpStatus(status ?? 500, error.message, url)
+  return ApiError.fromHttpStatus(status ?? 500, error.message, url ?? undefined)
 }
