@@ -1,23 +1,41 @@
 import { app, powerMonitor } from 'electron'
 import { join } from 'path'
 import { initLogger, getLogger } from './logger'
-import { createMainWindow, getMainWindow, showMainWindow } from './window'
-import { createTray, destroyTray, updateTrayStatus } from './tray'
+import { createMainWindow, showMainWindow } from './window'
+import { createTray, destroyTray } from './tray'
 import { registerAllHandlers } from './ipc/registry'
 import { getSettingsStore } from './services/SettingsStore'
-import { bootstrap, shutdownBootstrap } from './bootstrap'
+import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { autoUpdater } from 'electron-updater'
 import { sendToRenderer } from './window'
 import { IpcChannel } from '../shared/ipc/channels'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
-// Disable remote module (redundant in modern Electron but kept for clarity)
 app.commandLine.appendSwitch('disable-http-cache')
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
   process.exit(0)
 }
+
+// ─── Crash safety ─────────────────────────────────────────────────────────────
+
+process.on('uncaughtException', (error: Error) => {
+  // Logger may not be ready; use console as fallback
+  try {
+    getLogger().fatal({ error }, 'Uncaught exception — app will continue')
+  } catch {
+    console.error('[FATAL] Uncaught exception:', error)
+  }
+})
+
+process.on('unhandledRejection', (reason: unknown) => {
+  try {
+    getLogger().error({ reason }, 'Unhandled promise rejection')
+  } catch {
+    console.error('[ERROR] Unhandled rejection:', reason)
+  }
+})
 
 // ─── Initialization ───────────────────────────────────────────────────────────
 
@@ -150,8 +168,10 @@ function setupPowerMonitor(): void {
   })
 
   powerMonitor.on('resume', () => {
-    log.info('System resumed — checking VPN connection')
-    updateTrayStatus('reconnecting')
+    log.info('System resumed — reconnecting VPN if active')
+    triggerReconnect().catch((err: unknown) => {
+      log.error({ err }, 'Failed to reconnect VPN after system resume')
+    })
   })
 
   powerMonitor.on('lock-screen', () => {
@@ -160,8 +180,5 @@ function setupPowerMonitor(): void {
 
   powerMonitor.on('unlock-screen', () => {
     log.debug('Screen unlocked')
-    const window = getMainWindow()
-    if (!window) return
-    sendToRenderer(IpcChannel.EVENT_VPN_STATUS, { state: 'reconnecting' })
   })
 }

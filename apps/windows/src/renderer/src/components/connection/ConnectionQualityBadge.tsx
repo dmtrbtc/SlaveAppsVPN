@@ -1,39 +1,30 @@
 import { motion } from 'framer-motion'
 import { cn } from '../../lib/utils'
-
-// Quality tiers — latencyMs is the primary signal.
-// When not available (null), falls back to a stable "good" default.
-// Wire latencyMs from IPC when the endpoint exposes per-connection ping.
-type QualityTier = 'excellent' | 'good' | 'fair' | 'poor'
-
-function getTier(latencyMs: number | null): QualityTier {
-  if (latencyMs === null) return 'good'
-  if (latencyMs < 50) return 'excellent'
-  if (latencyMs < 120) return 'good'
-  if (latencyMs < 250) return 'fair'
-  return 'poor'
-}
+import { useConnectionHealth, useConnectionQualityTier } from '../../hooks/useConnectionHealth'
+import { HEALTH_STATE_LABELS } from '../../lib/health'
+import type { QualityTier } from '../../lib/health'
 
 const TIER_CONFIG: Record<QualityTier, {
   bars: 1 | 2 | 3 | 4
-  label: string
   color: string
   barColor: string
 }> = {
-  excellent: { bars: 4, label: 'Отличное',    color: 'text-connected',   barColor: 'bg-connected'   },
-  good:      { bars: 3, label: 'Хорошее',     color: 'text-connected',   barColor: 'bg-connected'   },
-  fair:      { bars: 2, label: 'Среднее',     color: 'text-connecting',  barColor: 'bg-connecting'  },
-  poor:      { bars: 1, label: 'Слабое',      color: 'text-error',       barColor: 'bg-error'       },
+  excellent: { bars: 4, color: 'text-connected',  barColor: 'bg-connected'  },
+  good:      { bars: 3, color: 'text-connected',  barColor: 'bg-connected'  },
+  fair:      { bars: 2, color: 'text-connecting', barColor: 'bg-connecting' },
+  poor:      { bars: 1, color: 'text-error',      barColor: 'bg-error'      },
 }
 
 interface ConnectionQualityBadgeProps {
-  latencyMs?: number | null
   className?: string
 }
 
-export function ConnectionQualityBadge({ latencyMs = null, className }: ConnectionQualityBadgeProps) {
-  const tier = getTier(latencyMs)
+export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProps) {
+  const health = useConnectionHealth()
+  const tier = useConnectionQualityTier()
   const config = TIER_CONFIG[tier]
+
+  const label = health ? HEALTH_STATE_LABELS[health.state] : 'Хорошее'
 
   return (
     <motion.div
@@ -66,11 +57,11 @@ export function ConnectionQualityBadge({ latencyMs = null, className }: Connecti
       {/* Label */}
       <div className="flex flex-col leading-none">
         <span className={cn('text-[11px] font-medium', config.color)}>
-          {config.label} качество
+          {label} качество
         </span>
-        {latencyMs !== null && (
+        {health && (
           <span className="text-[10px] text-text-muted font-mono mt-0.5">
-            {latencyMs}ms
+            {health.score}/100
           </span>
         )}
       </div>

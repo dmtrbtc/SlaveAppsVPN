@@ -6,12 +6,14 @@ import { AppRouter } from './router/AppRouter'
 import { useAuthStore } from './stores/auth.store'
 import { useVpnStore } from './stores/vpn.store'
 import { useUIStore } from './stores/ui.store'
+import { useDiagnosticsStore } from './stores/diagnostics.store'
 import { Spinner } from './components/ui/spinner'
 
 function Bootstrap({ children }: { children: React.ReactNode }) {
   const { isBootstrapping, bootstrap, subscribeToAuthEvents } = useAuthStore()
   const { fetchStatus, subscribeToEvents } = useVpnStore()
   const { notify } = useUIStore()
+  const { subscribeToEvents: subscribeToDiagnostics } = useDiagnosticsStore()
 
   useEffect(() => {
     void bootstrap()
@@ -22,15 +24,17 @@ function Bootstrap({ children }: { children: React.ReactNode }) {
     void fetchStatus()
     const unsubVpn = subscribeToEvents()
     const unsubAuth = subscribeToAuthEvents()
+    const unsubDiag = subscribeToDiagnostics()
     const unsubNotif = events.onNotification(payload => {
       notify({ type: payload.type, title: payload.title, message: payload.body })
     })
     return () => {
       unsubVpn()
       unsubAuth()
+      unsubDiag()
       unsubNotif()
     }
-  }, [isBootstrapping, fetchStatus, subscribeToEvents, subscribeToAuthEvents, notify])
+  }, [isBootstrapping, fetchStatus, subscribeToEvents, subscribeToAuthEvents, subscribeToDiagnostics, notify])
 
   if (isBootstrapping) {
     return (

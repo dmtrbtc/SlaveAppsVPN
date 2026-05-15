@@ -71,5 +71,10 @@ export function registerAllHandlers(): void {
     log.debug('Diagnostics IPC handlers registered')
   }).catch((err: unknown) => log.error({ err }, 'Failed to register diagnostics handlers'))
 
+  import('./handlers/provider.handler').then(({ registerProviderHandlers }) => {
+    registerProviderHandlers()
+    log.debug('Provider IPC handlers registered')
+  }).catch((err: unknown) => log.error({ err }, 'Failed to register provider handlers'))
+
   log.info('IPC handlers registered')
 }

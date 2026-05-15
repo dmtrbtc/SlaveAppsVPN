@@ -2,11 +2,13 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { VPNStatus, TrafficStats, VPNMode, VPNConnectionState } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
+import type { VpnHealthPayload } from '@shared/ipc/types'
 import { vpnApi, events } from '../lib/api'
 
 interface VpnStore {
   status: VPNStatus
   traffic: TrafficStats
+  health: VpnHealthPayload | null
   engineVersion: string | null
   reconnectAttempts: number
   connectionStartedAt: number | null
@@ -48,6 +50,7 @@ export const useVpnStore = create<VpnStore>()(
   subscribeWithSelector((set, get) => ({
     status: INITIAL_VPN_STATUS,
     traffic: EMPTY_TRAFFIC_STATS,
+    health: null,
     engineVersion: null,
     reconnectAttempts: 0,
     connectionStartedAt: null,
@@ -110,10 +113,12 @@ export const useVpnStore = create<VpnStore>()(
           connectionStartedAt: null,
         }))
       })
+      const unsubHealth = events.onVpnHealth(health => set({ health }))
       return () => {
         unsubStatus()
         unsubTraffic()
         unsubError()
+        unsubHealth()
       }
     },
   }))
@@ -121,6 +126,7 @@ export const useVpnStore = create<VpnStore>()(
 
 export const selectVpnStatus = (s: VpnStore) => s.status
 export const selectVpnTraffic = (s: VpnStore) => s.traffic
+export const selectVpnHealth = (s: VpnStore) => s.health
 export const selectConnectionState = (s: VpnStore) => s.status.state
 export const selectVpnMode = (s: VpnStore) => s.status.mode
 export const selectEngineVersion = (s: VpnStore) => s.engineVersion

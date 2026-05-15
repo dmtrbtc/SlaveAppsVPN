@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { RefreshCw, Download, Terminal, Cpu, MemoryStick, Info } from 'lucide-react'
+import { RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity } from 'lucide-react'
 import { Card } from '../components/ui/card'
 import { Button } from '../components/ui/button'
 import { InfoTile } from '../components/ui/info-tile'
@@ -10,6 +10,8 @@ import { formatMemoryMb, formatUptime } from '../lib/utils'
 import { diagnosticsApi } from '../lib/api'
 import { useSystemInfo, useLogs } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
+import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
+import type { RuntimeEvent, RuntimeEventSeverity } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
@@ -18,8 +20,31 @@ const LOG_LEVEL_COLOR: Record<string, string> = {
   debug: 'text-text-muted',
 }
 
+const EVENT_SEVERITY_COLOR: Record<RuntimeEventSeverity, string> = {
+  debug:    'text-text-muted',
+  info:     'text-text-secondary',
+  warning:  'text-connecting',
+  error:    'text-error',
+  critical: 'text-error font-bold',
+}
+
 const LOG_LEVELS = ['all', 'error', 'warn', 'info', 'debug'] as const
 type LogFilter = typeof LOG_LEVELS[number]
+
+function EventRow({ event }: { event: RuntimeEvent }) {
+  const time = new Date(event.timestamp).toLocaleTimeString('ru-RU', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+  return (
+    <div className="flex gap-2 px-3 py-1.5 hover:bg-bg-elevated/50 transition-colors">
+      <span className="text-text-muted shrink-0 tabular-nums font-mono text-[10px]">{time}</span>
+      <span className={cn('shrink-0 uppercase font-semibold text-[10px] w-10', EVENT_SEVERITY_COLOR[event.severity])}>
+        {event.severity.slice(0, 4)}
+      </span>
+      <span className="text-text-secondary text-[10px] break-all">{event.message}</span>
+    </div>
+  )
+}
 
 export function DiagnosticsPage() {
   const { notify } = useUIStore()
@@ -28,6 +53,7 @@ export function DiagnosticsPage() {
 
   const { data: sysInfo, isLoading: sysLoading, error: sysError, refetch: refetchSys, isFetching: sysFetching } = useSystemInfo()
   const { data: logs = [], isLoading: logsLoading, error: logsError, refetch: refetchLogs, isFetching: logsFetching } = useLogs()
+  const eventLog = useDiagnosticsStore(selectEventLog)
 
   const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => l.level === logFilter)
 
@@ -91,8 +117,35 @@ export function DiagnosticsPage() {
           ) : null}
         </motion.div>
 
-        {/* Logs */}
-        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.2 }}>
+        {/* Runtime event timeline */}
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.2 }}>
+          <div className="flex items-center justify-between mb-2 px-1">
+            <div className="flex items-center gap-1.5">
+              <Activity className="h-3 w-3 text-text-muted" />
+              <p className="text-[11px] text-text-muted uppercase tracking-wider">Runtime события</p>
+            </div>
+            <span className="text-[10px] text-text-muted">{eventLog.length} / 200</span>
+          </div>
+          <Card className="p-0 overflow-hidden">
+            <div className="h-36 overflow-y-auto">
+              {eventLog.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full gap-2 text-text-muted">
+                  <Activity className="h-5 w-5 opacity-40" />
+                  <p className="text-xs">Событий нет</p>
+                </div>
+              ) : (
+                <div className="font-mono divide-y divide-border/30">
+                  {eventLog.map(event => (
+                    <EventRow key={event.id} event={event} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        </motion.div>
+
+        {/* Process logs */}
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15, duration: 0.2 }}>
           <div className="flex items-center justify-between mb-2 px-1">
             <p className="text-[11px] text-text-muted uppercase tracking-wider">Логи</p>
             <div className="flex gap-1">

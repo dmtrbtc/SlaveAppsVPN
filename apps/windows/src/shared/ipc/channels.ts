@@ -27,10 +27,16 @@ export const IpcChannel = {
   DIAGNOSTICS_EXPORT_LOGS: 'diagnostics:exportLogs',
   DIAGNOSTICS_GET_LOGS: 'diagnostics:getLogs',
 
+  // Provider — request/response
+  PROVIDER_GET_MANIFEST: 'provider:getManifest',
+  PROVIDER_GET_CAPABILITIES: 'provider:getCapabilities',
+
   // Events — main → renderer (push notifications)
   EVENT_VPN_STATUS: 'event:vpn:status',
   EVENT_VPN_TRAFFIC: 'event:vpn:traffic',
   EVENT_VPN_ERROR: 'event:vpn:error',
+  EVENT_VPN_HEALTH: 'event:vpn:health',
+  EVENT_RUNTIME_EVENT: 'event:runtime:event',
   EVENT_SUBSCRIPTION_UPDATED: 'event:subscription:updated',
   EVENT_AUTH_EXPIRED: 'event:auth:expired',
   EVENT_UPDATE_AVAILABLE: 'event:update:available',
@@ -58,4 +64,6 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DIAGNOSTICS_COLLECT'
   | 'DIAGNOSTICS_EXPORT_LOGS'
   | 'DIAGNOSTICS_GET_LOGS'
+  | 'PROVIDER_GET_MANIFEST'
+  | 'PROVIDER_GET_CAPABILITIES'
 ]

@@ -16,6 +16,7 @@ import { getLogger } from './logger'
 
 let subscriptionRefreshTimer: NodeJS.Timeout | null = null
 let runtimeManager: RuntimeManager | null = null
+let runtimeService: RuntimeServiceImpl | null = null
 
 export async function bootstrap(): Promise<void> {
   const log = getLogger()
@@ -59,7 +60,7 @@ export async function bootstrap(): Promise<void> {
   await runtimeManager.initialize('mihomo', engineConfig)
   log.debug('RuntimeManager initialized')
 
-  const runtimeService = new RuntimeServiceImpl({
+  runtimeService = new RuntimeServiceImpl({
     manager: runtimeManager,
     configSource: provider.getConfigSource(),
     getSettings: () => settings.getAll(),
@@ -68,8 +69,9 @@ export async function bootstrap(): Promise<void> {
   // ─── Register into IPC ServiceRegistry ────────────────────────────────────
   services.register('auth', () => authService)
   services.register('subscription', () => subscriptionService)
-  services.register('runtime', () => runtimeService)
+  services.register('runtime', () => runtimeService!)
   services.register('userRepo', () => userRepo)
+  services.register('provider', () => provider)
 
   log.info('Services registered: auth, subscription, runtime')
 
@@ -96,4 +98,17 @@ export async function shutdownBootstrap(): Promise<void> {
     await runtimeManager.dispose().catch(() => undefined)
     runtimeManager = null
   }
+  runtimeService = null
+}
+
+// Trigger a VPN reconnect — used by powerMonitor resume handler.
+// Only reconnects if the VPN was actively connected when the event fired.
+export async function triggerReconnect(): Promise<void> {
+  if (!runtimeService || !runtimeManager) return
+  const state = runtimeManager.getState()
+  if (state !== 'running') return
+  const log = getLogger()
+  log.info('triggerReconnect: forcing reconnect after sleep/wake')
+  await runtimeService.disconnect()
+  await runtimeService.connect()
 }

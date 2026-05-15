@@ -99,6 +99,78 @@ export type DiagnosticsCollectResult = IpcResult<SystemInfo>
 export type DiagnosticsExportLogsResult = IpcResult<string>
 export type DiagnosticsGetLogsResult = IpcResult<LogEntry[]>
 
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
+export type ProviderTier = 'community' | 'verified' | 'official'
+
+export interface ProviderCapabilitiesPayload {
+  telegramAuth: boolean
+  emailAuth: boolean
+  payments: boolean
+  multiDevice: boolean
+  serverSelection: boolean
+  trialAvailable: boolean
+}
+
+export interface ProviderManifestPayload {
+  id: string
+  displayName: string
+  description: string
+  version: string
+  tier: ProviderTier
+  capabilities: ProviderCapabilitiesPayload
+  logoUrl?: string
+  website?: string
+  support?: string
+  telegram?: string
+}
+
+export type ProviderGetManifestResult = IpcResult<ProviderManifestPayload>
+export type ProviderGetCapabilitiesResult = IpcResult<ProviderCapabilitiesPayload>
+
+// ─── Health ───────────────────────────────────────────────────────────────────
+
+export interface VpnHealthPayload {
+  processAlive: boolean
+  apiResponding: boolean
+  connectivityOk: boolean
+  dnsOk: boolean
+  trafficActive: boolean
+  tunAvailable: boolean
+  checkedAt: number
+}
+
+// ─── Runtime Event Bus ────────────────────────────────────────────────────────
+// Typed taxonomy for runtime events forwarded to the renderer.
+// Severity drives notification level and log retention policy.
+
+export type RuntimeEventSeverity = 'debug' | 'info' | 'warning' | 'error' | 'critical'
+
+export type RuntimeEventKind =
+  | 'vpn.state_changed'
+  | 'vpn.connected'
+  | 'vpn.disconnected'
+  | 'vpn.error'
+  | 'health.degraded'
+  | 'health.recovered'
+  | 'health.dns_failure'
+  | 'health.tunnel_unstable'
+  | 'health.offline'
+  | 'reconnect.attempt'
+  | 'reconnect.success'
+  | 'reconnect.exhausted'
+  | 'sleep.suspend'
+  | 'sleep.resume'
+
+export interface RuntimeEvent {
+  id: string
+  kind: RuntimeEventKind
+  severity: RuntimeEventSeverity
+  timestamp: number
+  message: string
+  metadata?: Record<string, unknown>
+}
+
 // ─── Events (main → renderer) ────────────────────────────────────────────────
 
 export interface UpdateAvailablePayload {
@@ -111,6 +183,17 @@ export interface NotificationPayload {
   body: string
   type: 'info' | 'success' | 'warning' | 'error'
 }
+
+// ─── Feature Flags ────────────────────────────────────────────────────────────
+// App-level feature flags — separate from provider capabilities.
+// Provider capabilities gate business logic; feature flags gate app behavior.
+
+export type AppFeatureFlag =
+  | 'devMode'          // Exposes dev-only UI panels
+  | 'diagnosticsExport'  // Export diagnostics bundle button
+  | 'advancedRouting'  // Advanced routing rule editor (future)
+  | 'splitTunneling'   // Split tunnel process selection (future)
+  | 'killSwitch'       // Kill switch toggle
 
 // ─── Bridge type (window.slaveVPN) ───────────────────────────────────────────
 
@@ -143,10 +226,16 @@ export interface SlaveVPNBridge {
     exportLogs: () => Promise<DiagnosticsExportLogsResult>
     getLogs: () => Promise<DiagnosticsGetLogsResult>
   }
+  provider: {
+    getManifest: () => Promise<ProviderGetManifestResult>
+    getCapabilities: () => Promise<ProviderGetCapabilitiesResult>
+  }
   events: {
     onVpnStatus: (callback: (status: VPNStatus) => void) => () => void
     onVpnTraffic: (callback: (stats: TrafficStats) => void) => () => void
     onVpnError: (callback: (error: { code: string; message: string }) => void) => () => void
+    onVpnHealth: (callback: (health: VpnHealthPayload) => void) => () => void
+    onRuntimeEvent: (callback: (event: RuntimeEvent) => void) => () => void
     onSubscriptionUpdated: (callback: (sub: Subscription) => void) => () => void
     onAuthExpired: (callback: () => void) => () => void
     onUpdateAvailable: (callback: (payload: UpdateAvailablePayload) => void) => () => void

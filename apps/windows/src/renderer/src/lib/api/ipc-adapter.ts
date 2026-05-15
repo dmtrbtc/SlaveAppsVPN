@@ -68,6 +68,13 @@ export const diagnosticsApi = {
     unwrap(assertBridge().diagnostics.exportLogs()),
 }
 
+export const providerApi = {
+  getManifest: () =>
+    unwrap(assertBridge().provider.getManifest()),
+  getCapabilities: () =>
+    unwrap(assertBridge().provider.getCapabilities()),
+}
+
 export const events = {
   onVpnStatus: (...args: Parameters<SlaveVPNBridge['events']['onVpnStatus']>) =>
     assertBridge().events.onVpnStatus(...args),
@@ -75,6 +82,10 @@ export const events = {
     assertBridge().events.onVpnTraffic(...args),
   onVpnError: (...args: Parameters<SlaveVPNBridge['events']['onVpnError']>) =>
     assertBridge().events.onVpnError(...args),
+  onVpnHealth: (...args: Parameters<SlaveVPNBridge['events']['onVpnHealth']>) =>
+    assertBridge().events.onVpnHealth(...args),
+  onRuntimeEvent: (...args: Parameters<SlaveVPNBridge['events']['onRuntimeEvent']>) =>
+    assertBridge().events.onRuntimeEvent(...args),
   onSubscriptionUpdated: (...args: Parameters<SlaveVPNBridge['events']['onSubscriptionUpdated']>) =>
     assertBridge().events.onSubscriptionUpdated(...args),
   onAuthExpired: (...args: Parameters<SlaveVPNBridge['events']['onAuthExpired']>) =>

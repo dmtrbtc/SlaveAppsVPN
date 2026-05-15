@@ -9,6 +9,8 @@ import type {
   AppSettings,
   UpdateAvailablePayload,
   NotificationPayload,
+  VpnHealthPayload,
+  RuntimeEvent,
 } from '../shared/ipc/types'
 import type { VPNStatus, TrafficStats, Subscription } from '@slave-vpn/shared'
 
@@ -87,6 +89,14 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.DIAGNOSTICS_GET_LOGS),
   },
 
+  provider: {
+    getManifest: () =>
+      invoke(IpcChannel.PROVIDER_GET_MANIFEST),
+
+    getCapabilities: () =>
+      invoke(IpcChannel.PROVIDER_GET_CAPABILITIES),
+  },
+
   events: {
     onVpnStatus: (callback: (status: VPNStatus) => void) =>
       on<VPNStatus>(IpcChannel.EVENT_VPN_STATUS, callback),
@@ -96,6 +106,12 @@ const bridge: SlaveVPNBridge = {
 
     onVpnError: (callback: (error: { code: string; message: string }) => void) =>
       on(IpcChannel.EVENT_VPN_ERROR, callback),
+
+    onVpnHealth: (callback: (health: VpnHealthPayload) => void) =>
+      on<VpnHealthPayload>(IpcChannel.EVENT_VPN_HEALTH, callback),
+
+    onRuntimeEvent: (callback: (event: RuntimeEvent) => void) =>
+      on<RuntimeEvent>(IpcChannel.EVENT_RUNTIME_EVENT, callback),
 
     onSubscriptionUpdated: (callback: (sub: Subscription) => void) =>
       on<Subscription>(IpcChannel.EVENT_SUBSCRIPTION_UPDATED, callback),
