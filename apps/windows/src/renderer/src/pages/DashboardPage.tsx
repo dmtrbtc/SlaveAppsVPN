@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { ArrowUp, ArrowDown, Clock, Cpu, Globe } from 'lucide-react'
+import { ArrowUp, ArrowDown, Clock, Cpu } from 'lucide-react'
 import { ConnectionOrb } from '../components/connection/ConnectionOrb'
 import { Badge } from '../components/ui/badge'
 import { Card } from '../components/ui/card'
-import { useVpnStore } from '../stores/vpn.store'
+import {
+  useVpnStore,
+  selectVpnStatus,
+  selectVpnTraffic,
+  selectEngineVersion,
+} from '../stores/vpn.store'
 import { formatSpeed, formatBytes, formatUptime, countryFlagEmoji } from '../lib/utils'
 
 const MODE_LABELS: Record<string, string> = {
@@ -24,16 +29,21 @@ const PROTOCOL_LABELS: Record<string, string> = {
   unknown: '—',
 }
 
-export function DashboardPage() {
-  const { status, traffic, engineVersion } = useVpnStore()
-  const [, forceUpdate] = useState(0)
-
-  // Tick uptime counter every second when connected
+// Isolated component: re-renders every second, leaves parent untouched
+function UptimeClock({ connectedAt }: { connectedAt: number | null }) {
+  const [, tick] = useState(0)
   useEffect(() => {
-    if (status.state !== 'connected') return
-    const t = setInterval(() => forceUpdate(n => n + 1), 1000)
+    if (!connectedAt) return
+    const t = setInterval(() => tick(n => n + 1), 1000)
     return () => clearInterval(t)
-  }, [status.state])
+  }, [connectedAt])
+  return <>{connectedAt ? formatUptime(connectedAt) : '00:00:00'}</>
+}
+
+export function DashboardPage() {
+  const status = useVpnStore(selectVpnStatus)
+  const traffic = useVpnStore(selectVpnTraffic)
+  const engineVersion = useVpnStore(selectEngineVersion)
 
   const isConnected = status.state === 'connected'
   const flag = countryFlagEmoji(status.countryCode)
@@ -60,9 +70,7 @@ export function DashboardPage() {
         >
           <div className="flex items-center gap-2 text-sm text-text-secondary">
             <span className="text-base">{flag}</span>
-            <span className="font-medium">
-              {status.serverName ?? 'Сервер не выбран'}
-            </span>
+            <span className="font-medium">{status.serverName ?? 'Сервер не выбран'}</span>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap justify-center">
             <Badge variant={isConnected ? 'connected' : 'default'} dot={isConnected}>
@@ -97,10 +105,11 @@ export function DashboardPage() {
           />
           <StatCard
             label="Время сессии"
-            value={formatUptime(status.connectedAt)}
+            value={<UptimeClock connectedAt={status.connectedAt} />}
             icon={<Clock className="h-3.5 w-3.5 text-text-secondary" />}
             active={isConnected}
             mono
+            fallback="00:00:00"
           />
           <StatCard
             label="Движок"
@@ -127,14 +136,15 @@ export function DashboardPage() {
 
 interface StatCardProps {
   label: string
-  value: string
+  value: React.ReactNode
   total?: string
   icon: React.ReactNode
   active: boolean
   mono?: boolean
+  fallback?: string
 }
 
-function StatCard({ label, value, total, icon, active, mono }: StatCardProps) {
+function StatCard({ label, value, total, icon, active, mono, fallback = '0 B/s' }: StatCardProps) {
   return (
     <Card className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
@@ -142,7 +152,7 @@ function StatCard({ label, value, total, icon, active, mono }: StatCardProps) {
         {icon}
       </div>
       <p className={`text-base font-semibold text-text-primary ${mono ? 'font-mono' : ''} ${!active ? 'opacity-40' : ''}`}>
-        {active ? value : (mono ? '00:00:00' : '0 B/s')}
+        {active ? value : fallback}
       </p>
       {total !== undefined && (
         <p className="text-[11px] text-text-muted">{active ? total : '0 B'}</p>

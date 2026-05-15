@@ -2,68 +2,74 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
-import { ipc } from '../lib/ipc'
+import { vpnApi, events } from '../lib/api'
 
 interface VpnStore {
   status: VPNStatus
   traffic: TrafficStats
-  isConnecting: boolean
-  isDisconnecting: boolean
   engineVersion: string | null
 
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   setMode: (mode: VPNMode) => Promise<void>
   fetchStatus: () => Promise<void>
-  subscribeToEvents: () => () => void
   setEngineVersion: (v: string | null) => void
+  subscribeToEvents: () => () => void
 }
 
 export const useVpnStore = create<VpnStore>()(
   subscribeWithSelector((set, get) => ({
     status: INITIAL_VPN_STATUS,
     traffic: EMPTY_TRAFFIC_STATS,
-    isConnecting: false,
-    isDisconnecting: false,
     engineVersion: null,
 
     connect: async () => {
-      if (get().isConnecting) return
-      set({ isConnecting: true })
+      const state = get().status.state
+      if (state === 'connecting' || state === 'connected') return
+      set(s => ({ status: { ...s.status, state: 'connecting' } }))
       try {
-        await ipc.vpn.connect()
-      } finally {
-        set({ isConnecting: false })
+        await vpnApi.connect()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
+        throw err
       }
     },
 
     disconnect: async () => {
-      if (get().isDisconnecting) return
-      set({ isDisconnecting: true })
+      const state = get().status.state
+      if (state === 'disconnecting' || state === 'disconnected') return
+      set(s => ({ status: { ...s.status, state: 'disconnecting' } }))
       try {
-        await ipc.vpn.disconnect()
-      } finally {
-        set({ isDisconnecting: false })
+        await vpnApi.disconnect()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
+        throw err
       }
     },
 
     setMode: async (mode: VPNMode) => {
-      await ipc.vpn.setMode({ mode })
-      set(state => ({ status: { ...state.status, mode } }))
+      await vpnApi.setMode(mode)
+      set(s => ({ status: { ...s.status, mode } }))
     },
 
     fetchStatus: async () => {
-      const status = await ipc.vpn.getStatus()
-      if (status) set({ status })
+      try {
+        const status = await vpnApi.getStatus()
+        set({ status })
+      } catch {
+        // Non-fatal: keep current status if fetch fails
+      }
     },
 
+    setEngineVersion: (v) => set({ engineVersion: v }),
+
     subscribeToEvents: () => {
-      const unsubStatus = ipc.events.onVpnStatus(status => set({ status }))
-      const unsubTraffic = ipc.events.onVpnTraffic(traffic => set({ traffic }))
-      const unsubError = ipc.events.onVpnError(({ message }) => {
-        set(state => ({
-          status: { ...state.status, state: 'error', lastError: message },
-        }))
+      const unsubStatus = events.onVpnStatus(status => set({ status }))
+      const unsubTraffic = events.onVpnTraffic(traffic => set({ traffic }))
+      const unsubError = events.onVpnError(({ message }) => {
+        set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
       })
       return () => {
         unsubStatus()
@@ -71,11 +77,13 @@ export const useVpnStore = create<VpnStore>()(
         unsubError()
       }
     },
-
-    setEngineVersion: (engineVersion) => set({ engineVersion }),
   }))
 )
 
-export const vpnStatusSelector = (s: VpnStore) => s.status
-export const vpnTrafficSelector = (s: VpnStore) => s.traffic
-export const vpnConnectionState = (s: VpnStore) => s.status.state
+// Stable selectors — import these instead of inline arrow functions to avoid
+// recreating selector references on every render
+export const selectVpnStatus = (s: VpnStore) => s.status
+export const selectVpnTraffic = (s: VpnStore) => s.traffic
+export const selectConnectionState = (s: VpnStore) => s.status.state
+export const selectVpnMode = (s: VpnStore) => s.status.mode
+export const selectEngineVersion = (s: VpnStore) => s.engineVersion

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { User } from '@slave-vpn/shared'
-import { ipc } from '../lib/ipc'
+import { authApi, events } from '../lib/api'
 
 interface AuthStore {
   user: User | null
@@ -14,7 +14,7 @@ interface AuthStore {
   subscribeToAuthEvents: () => () => void
 }
 
-export const useAuthStore = create<AuthStore>()((set, get) => ({
+export const useAuthStore = create<AuthStore>()((set) => ({
   user: null,
   isAuthenticated: false,
   isBootstrapping: true,
@@ -22,12 +22,8 @@ export const useAuthStore = create<AuthStore>()((set, get) => ({
   bootstrap: async () => {
     set({ isBootstrapping: true })
     try {
-      const user = await ipc.auth.getMe()
-      if (user) {
-        set({ user, isAuthenticated: true })
-      } else {
-        set({ user: null, isAuthenticated: false })
-      }
+      const user = await authApi.getMe()
+      set({ user, isAuthenticated: true })
     } catch {
       set({ user: null, isAuthenticated: false })
     } finally {
@@ -35,29 +31,26 @@ export const useAuthStore = create<AuthStore>()((set, get) => ({
     }
   },
 
-  loginEmail: async (email: string, password: string) => {
-    const result = await ipc.auth.loginEmail({ email, password })
-    if (result?.user) {
-      set({ user: result.user, isAuthenticated: true })
-    }
+  loginEmail: async (email, password) => {
+    await authApi.loginEmail(email, password)
+    const user = await authApi.getMe()
+    set({ user, isAuthenticated: true })
   },
 
-  loginTelegram: async (initData: string) => {
-    const result = await ipc.auth.loginTelegram({ initData })
-    if (result?.user) {
-      set({ user: result.user, isAuthenticated: true })
-    }
+  loginTelegram: async (initData) => {
+    await authApi.loginTelegram(initData)
+    const user = await authApi.getMe()
+    set({ user, isAuthenticated: true })
   },
 
   logout: async () => {
-    await ipc.auth.logout()
+    await authApi.logout()
     set({ user: null, isAuthenticated: false })
   },
 
   subscribeToAuthEvents: () => {
-    const unsubExpired = ipc.events.onAuthExpired(() => {
+    return events.onAuthExpired(() => {
       set({ user: null, isAuthenticated: false })
     })
-    return unsubExpired
   },
 }))

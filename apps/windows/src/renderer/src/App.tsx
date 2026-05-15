@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClient } from './lib/query-client'
-import { ipc } from './lib/ipc'
+import { events } from './lib/api'
 import { AppRouter } from './router/AppRouter'
 import { useAuthStore } from './stores/auth.store'
 import { useVpnStore } from './stores/vpn.store'
@@ -22,7 +22,7 @@ function Bootstrap({ children }: { children: React.ReactNode }) {
     void fetchStatus()
     const unsubVpn = subscribeToEvents()
     const unsubAuth = subscribeToAuthEvents()
-    const unsubNotif = ipc.events.onNotification(payload => {
+    const unsubNotif = events.onNotification(payload => {
       notify({ type: payload.type, title: payload.title, message: payload.body })
     })
     return () => {

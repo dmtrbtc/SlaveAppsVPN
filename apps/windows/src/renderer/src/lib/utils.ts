@@ -25,6 +25,11 @@ export function formatSpeed(bps: number): string {
   return `${formatBytes(bps)}/s`
 }
 
+export function formatMemoryMb(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
+  return `${mb} MB`
+}
+
 export function countryFlagEmoji(code: string | null): string {
   if (!code || code.length !== 2) return '🌐'
   const offset = 0x1f1e6 - 65
