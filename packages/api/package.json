@@ -2,18 +2,21 @@
   "name": "@slave-vpn/api",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
     "./client": {
-      "import": "./dist/client/ApiClient.js",
+      "require": "./dist/client/ApiClient.js",
+      "default": "./dist/client/ApiClient.js",
       "types": "./dist/client/ApiClient.d.ts"
     },
     "./storage": {
-      "import": "./dist/storage/TokenStorage.js",
+      "require": "./dist/storage/TokenStorage.js",
+      "default": "./dist/storage/TokenStorage.js",
       "types": "./dist/storage/TokenStorage.d.ts"
     }
   },

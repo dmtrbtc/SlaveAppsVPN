@@ -1,6 +1,6 @@
 import type { SupportedLanguage } from '@slave-vpn/shared'
-import ru from './locales/ru.json' with { type: 'json' }
-import en from './locales/en.json' with { type: 'json' }
+import ru from './locales/ru.json'
+import en from './locales/en.json'
 
 export type LocaleMessages = typeof ru
 

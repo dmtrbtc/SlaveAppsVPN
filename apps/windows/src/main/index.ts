@@ -1,6 +1,6 @@
 import { app, powerMonitor } from 'electron'
 import { join } from 'path'
-import { initLogger, getLogger } from './logger'
+import { initLogger, getLogger, setCrashLogPath, writeCrashLog } from './logger'
 import { createMainWindow, showMainWindow } from './window'
 import { createTray, destroyTray } from './tray'
 import { registerAllHandlers } from './ipc/registry'
@@ -21,19 +21,20 @@ if (!app.requestSingleInstanceLock()) {
 // ─── Crash safety ─────────────────────────────────────────────────────────────
 
 process.on('uncaughtException', (error: Error) => {
-  // Logger may not be ready; use console as fallback
+  writeCrashLog('uncaughtException', error)
   try {
-    getLogger().fatal({ error }, 'Uncaught exception — app will continue')
+    getLogger().fatal({ err: error }, 'Uncaught exception')
   } catch {
-    console.error('[FATAL] Uncaught exception:', error)
+    process.stderr.write(`[FATAL] Uncaught exception: ${error.stack ?? error.message}\n`)
   }
 })
 
 process.on('unhandledRejection', (reason: unknown) => {
+  writeCrashLog('unhandledRejection', reason)
   try {
     getLogger().error({ reason }, 'Unhandled promise rejection')
   } catch {
-    console.error('[ERROR] Unhandled rejection:', reason)
+    process.stderr.write(`[ERROR] Unhandled rejection: ${String(reason)}\n`)
   }
 })
 
@@ -48,21 +49,32 @@ log.info({ version: app.getVersion(), platform: process.platform }, 'SLAVE VPN s
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  const logger = initLogger(app.getPath('userData'))
-  logger.info('App ready')
+  const userDataPath = app.getPath('userData')
+  const logger = initLogger(userDataPath)
+  setCrashLogPath(userDataPath)
 
+  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid }, 'App ready')
+
+  logger.debug({ phase: 'ipc_register' }, 'Registering IPC handlers')
   registerAllHandlers()
+  logger.debug({ phase: 'ipc_register' }, 'IPC handlers registered')
 
+  logger.debug({ phase: 'window_create' }, 'Creating main window')
   createMainWindow()
   createTray()
+  logger.debug({ phase: 'window_create' }, 'Main window created')
 
   setupAutoStart()
   setupAutoUpdater()
   setupPowerMonitor()
 
-  bootstrap().catch((err: unknown) => {
-    log.error({ err }, 'Bootstrap failed — app will run in degraded mode')
-  })
+  logger.info({ phase: 'bootstrap_start' }, 'Starting provider bootstrap')
+  bootstrap()
+    .then(() => logger.info({ phase: 'bootstrap_complete' }, 'Bootstrap complete'))
+    .catch((err: unknown) => {
+      writeCrashLog('bootstrap_failed', err)
+      log.error({ err, phase: 'bootstrap_failed' }, 'Bootstrap failed — app running in degraded mode')
+    })
 
   app.on('second-instance', () => {
     showMainWindow()
