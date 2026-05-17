@@ -1,4 +1,4 @@
-import { BrowserWindow, session, shell } from 'electron'
+import { app, BrowserWindow, session, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { getLogger } from './logger'
@@ -29,7 +29,9 @@ export function createMainWindow(): BrowserWindow {
     frame: false,
     titleBarStyle: 'hidden',
     backgroundColor: '#0f0f14',
-    icon: join(__dirname, '../../resources/icons/icon.png'),
+    icon: app.isPackaged
+      ? join(process.resourcesPath, 'icons', 'icon.png')
+      : join(__dirname, '../../resources/icons/icon.png'),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

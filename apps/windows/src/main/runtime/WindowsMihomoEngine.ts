@@ -5,8 +5,9 @@ import type { EngineInitConfig, TunHooks } from '@slave-vpn/runtime'
 
 class WindowsTunHooks implements TunHooks {
   async checkTunAvailability(): Promise<boolean> {
+    const binDir = path.join(process.resourcesPath ?? path.dirname(process.execPath), 'bin')
     const candidates = [
-      path.join(process.resourcesPath ?? '', 'wintun.dll'),
+      path.join(binDir, 'wintun.dll'),
       path.join(path.dirname(process.execPath), 'wintun.dll'),
     ]
     return candidates.some(existsSync)
@@ -23,7 +24,7 @@ export function createWindowsEngineConfig(
 ): EngineInitConfig {
   const resourcesPath = process.resourcesPath ?? path.dirname(process.execPath)
   return {
-    binaryPath: path.join(resourcesPath, 'mihomo.exe'),
+    binaryPath: path.join(resourcesPath, 'bin', 'mihomo.exe'),
     workingDir: path.join(userDataPath, 'mihomo'),
     apiPort: VPN.MIHOMO_API_PORT,
     apiSecret,

@@ -9,7 +9,9 @@ let currentStatus: VPNStatus['state'] = 'disconnected'
 
 export function createTray(): Tray {
   const log = getLogger()
-  const iconPath = join(__dirname, '../../resources/icons/tray/icon.png')
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icons', 'tray', 'icon.png')
+    : join(__dirname, '../../resources/icons/tray/icon.png')
   const icon = nativeImage.createFromPath(iconPath)
 
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
@@ -58,7 +60,9 @@ function updateTrayIcon(): void {
 
   const iconName =
     currentStatus === 'connected' ? 'icon-connected.png' : 'icon.png'
-  const iconPath = join(__dirname, '../../resources/icons/tray', iconName)
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icons', 'tray', iconName)
+    : join(__dirname, '../../resources/icons/tray', iconName)
   const icon = nativeImage.createFromPath(iconPath)
 
   if (!icon.isEmpty()) {

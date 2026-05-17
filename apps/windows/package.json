@@ -1,12 +1,18 @@
 {
   "name": "@slave-vpn/windows",
   "version": "0.2.0",
+  "description": "SLAVE VPN — Windows desktop client",
+  "author": {
+    "name": "SLAVE VPN",
+    "email": "support@slavevpn.com"
+  },
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "pack": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder",

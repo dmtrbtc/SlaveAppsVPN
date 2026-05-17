@@ -64,6 +64,22 @@ jobs:
         run: pnpm audit --audit-level=high
         continue-on-error: false
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+
   boundaries:
     name: Architecture Boundaries
     runs-on: ubuntu-latest
@@ -79,3 +95,30 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Validate architecture boundaries
         run: node scripts/validate-boundaries.mjs
+
+  build-windows-smoke:
+    name: Windows build smoke test
+    runs-on: windows-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build Electron app (electron-vite, no installer)
+        run: pnpm --filter @slave-vpn/windows build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+          GIT_COMMIT_HASH: ${{ github.sha }}
+      - name: Verify build outputs
+        shell: bash
+        run: |
+          test -f apps/windows/out/main/index.js      || (echo "FAIL: main missing" && exit 1)
+          test -f apps/windows/out/preload/index.js   || (echo "FAIL: preload missing" && exit 1)
+          test -f apps/windows/out/renderer/index.html || (echo "FAIL: renderer missing" && exit 1)
+          echo "All build outputs present"

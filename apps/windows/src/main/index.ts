@@ -44,7 +44,16 @@ initLogger()
 
 const log = getLogger()
 
-log.info({ version: app.getVersion(), platform: process.platform }, 'SLAVE VPN starting')
+log.info({
+  version: app.getVersion(),
+  commit: __APP_COMMIT__,
+  buildTime: __BUILD_TIMESTAMP__,
+  platform: process.platform,
+  arch: process.arch,
+  electron: process.versions.electron,
+  node: process.versions.node,
+  env: app.isPackaged ? 'packaged' : 'dev',
+}, 'SLAVE VPN starting')
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 

@@ -3,7 +3,6 @@ productName: SLAVE VPN
 copyright: Copyright © 2025 SLAVE VPN
 
 directories:
-  buildResources: resources/build
   output: release/${version}
 
 files:
@@ -16,6 +15,8 @@ files:
   - '!{README.md,CHANGELOG.md}'
 
 extraResources:
+  - from: resources/icons
+    to: icons
   - from: resources/bin
     to: bin
     filter:

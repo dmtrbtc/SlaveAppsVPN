@@ -1,6 +1,21 @@
 import { resolve } from 'path'
+import { execSync } from 'child_process'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
+
+function getCommitHash(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim()
+  } catch {
+    return 'unknown'
+  }
+}
+
+const buildDefines = {
+  __APP_VERSION__: JSON.stringify(process.env.npm_package_version),
+  __APP_COMMIT__: JSON.stringify(getCommitHash()),
+  __BUILD_TIMESTAMP__: JSON.stringify(new Date().toISOString()),
+}
 
 export default defineConfig({
   main: {
@@ -18,6 +33,7 @@ export default defineConfig({
         '@shared': resolve(__dirname, 'src/shared'),
       },
     },
+    define: buildDefines,
   },
 
   preload: {
@@ -52,8 +68,6 @@ export default defineConfig({
       },
     },
     plugins: [react()],
-    define: {
-      __APP_VERSION__: JSON.stringify(process.env.npm_package_version),
-    },
+    define: buildDefines,
   },
 })
