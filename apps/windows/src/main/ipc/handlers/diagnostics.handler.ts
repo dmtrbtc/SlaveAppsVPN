@@ -4,10 +4,34 @@ import { okResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
 import { app } from 'electron'
 import { join } from 'path'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import os from 'os'
 import type { SystemInfo } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
+import { getSessionId } from '../../logger'
+
+const execFileAsync = promisify(execFile)
+
+async function buildZipBundle(logDir: string, destPath: string): Promise<void> {
+  const candidates = [
+    join(logDir, 'main.log'),
+    join(logDir, 'main.log.1'),
+    join(logDir, 'main.log.2'),
+    join(logDir, 'crash.log'),
+  ].filter(existsSync)
+
+  if (candidates.length === 0) return
+
+  // Use Windows PowerShell Compress-Archive (available on Win8+)
+  const paths = candidates.map(p => `"${p}"`).join(',')
+  const script = `Compress-Archive -Path @(${paths}) -DestinationPath "${destPath}" -Force`
+
+  await execFileAsync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', script,
+  ], { timeout: 30_000 })
+}
 
 export function registerDiagnosticsHandlers(): void {
   handleIpc(IpcChannel.DIAGNOSTICS_COLLECT, EmptySchema, async () => {
@@ -29,17 +53,24 @@ export function registerDiagnosticsHandlers(): void {
   })
 
   handleIpc(IpcChannel.DIAGNOSTICS_EXPORT_LOGS, EmptySchema, async () => {
-    const logPath = join(app.getPath('userData'), 'logs', 'main.log')
-    const exportPath = join(app.getPath('downloads'), `slavevpn-logs-${Date.now()}.log`)
+    const logDir = join(app.getPath('userData'), 'logs')
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const zipPath = join(app.getPath('downloads'), `slavevpn-logs-${timestamp}.zip`)
 
-    if (existsSync(logPath)) {
-      const content = readFileSync(logPath)
-      writeFileSync(exportPath, content)
-    } else {
-      writeFileSync(exportPath, 'No log file found.')
-    }
+    try {
+      await buildZipBundle(logDir, zipPath)
+      if (existsSync(zipPath)) {
+        return okResult(zipPath)
+      }
+    } catch { /* fall through to text export */ }
 
-    return okResult(exportPath)
+    // Fallback: export main.log as plain text
+    const logPath = join(logDir, 'main.log')
+    const fallbackPath = join(app.getPath('downloads'), `slavevpn-logs-${timestamp}.log`)
+    const content = existsSync(logPath) ? readFileSync(logPath) : Buffer.from('No logs found.')
+    const { writeFileSync } = await import('fs')
+    writeFileSync(fallbackPath, content)
+    return okResult(fallbackPath)
   })
 
   handleIpc(IpcChannel.DIAGNOSTICS_GET_LOGS, EmptySchema, async () => {
@@ -49,6 +80,7 @@ export function registerDiagnosticsHandlers(): void {
       return okResult([])
     }
 
+    const session = getSessionId()
     const raw = readFileSync(logPath, 'utf-8')
     const lines = raw
       .split('\n')
@@ -58,10 +90,11 @@ export function registerDiagnosticsHandlers(): void {
         try {
           return JSON.parse(line) as Record<string, unknown>
         } catch {
-          return { level: 'info', time: Date.now(), msg: line }
+          return { level: 'info', time: Date.now(), msg: line, session }
         }
       })
 
     return okResult(lines)
   })
 }
+

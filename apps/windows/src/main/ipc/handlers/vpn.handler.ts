@@ -3,6 +3,7 @@ import { VpnSetModeSchema, EmptySchema } from '../../../shared/ipc/schemas'
 import { errResult, okResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
 import type { RuntimeService } from '../../services/RuntimeService'
+import { INITIAL_VPN_STATUS } from '@slave-vpn/shared'
 
 export function registerVpnHandlers(): void {
   handleIpc(IpcChannel.VPN_CONNECT, EmptySchema, async () => {
@@ -25,15 +26,7 @@ export function registerVpnHandlers(): void {
 
   handleIpc(IpcChannel.VPN_GET_STATUS, EmptySchema, async () => {
     if (!services.has('runtime')) {
-      return okResult({
-        state: 'disconnected' as const,
-        mode: 'bypass' as const,
-        protocol: null,
-        serverName: null,
-        countryCode: null,
-        connectedAt: null,
-        lastError: null,
-      })
+      return okResult(INITIAL_VPN_STATUS)
     }
     const runtime = services.resolve<RuntimeService>('runtime')
     const status = runtime.getStatus()
