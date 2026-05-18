@@ -33,16 +33,29 @@ function rotateLog(logPath: string): void {
 function createLogger(userDataPath?: string): pino.Logger {
   const isDev = process.env.NODE_ENV === 'development'
 
-  if (isDev || !userDataPath) {
+  if (!userDataPath) {
+    // Pre-userData bootstrap logger. In dev, use pino-pretty (devDep, available).
+    // In production (packaged), use plain synchronous stdout — NO transport worker thread.
+    // pino-pretty is a devDependency and is absent in the packaged app.
+    // Spawning its worker thread in production causes ThreadStream to block on Atomics.wait()
+    // when the worker crashes, deadlocking the main process before app.whenReady() fires.
+    if (isDev) {
+      return pino({
+        level: 'debug',
+        base: { session: SESSION_ID },
+        serializers: { err: pino.stdSerializers.err, error: pino.stdSerializers.err },
+        transport: {
+          target: 'pino-pretty',
+          options: { colorize: true, translateTime: 'SYS:standard' },
+        },
+      })
+    }
+    // Production pre-userData: synchronous stdout, no worker thread.
     return pino({
-      level: 'debug',
+      level: 'info',
       base: { session: SESSION_ID },
       serializers: { err: pino.stdSerializers.err, error: pino.stdSerializers.err },
-      transport: {
-        target: 'pino-pretty',
-        options: { colorize: true, translateTime: 'SYS:standard' },
-      },
-    })
+    }, pino.destination({ dest: 1, sync: true }))
   }
 
   const logDir = join(userDataPath, 'logs')

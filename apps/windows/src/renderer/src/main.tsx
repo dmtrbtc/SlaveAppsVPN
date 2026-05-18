@@ -3,8 +3,10 @@ import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import './index.css'
 
-window.onerror = (_message, _source, _lineno, _colno, error) => {
-  console.error('[renderer] Uncaught error:', error)
+console.log('[renderer] bootstrap start', { bridge: typeof window.slaveVPN, time: Date.now() })
+
+window.onerror = (_message, source, lineno, colno, error) => {
+  console.error('[renderer] Uncaught error:', error?.message ?? _message, { source, lineno, colno })
 }
 
 window.onunhandledrejection = (event: PromiseRejectionEvent) => {
@@ -12,10 +14,15 @@ window.onunhandledrejection = (event: PromiseRejectionEvent) => {
 }
 
 const rootEl = document.getElementById('root')
-if (!rootEl) throw new Error('Root element not found')
+if (!rootEl) {
+  console.error('[renderer] FATAL: #root element not found in DOM')
+  throw new Error('Root element not found')
+}
 
+console.log('[renderer] React render start')
 createRoot(rootEl).render(
   <ErrorBoundary>
     <App />
   </ErrorBoundary>
 )
+console.log('[renderer] React render scheduled')

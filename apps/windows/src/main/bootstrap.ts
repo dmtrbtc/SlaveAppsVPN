@@ -26,7 +26,7 @@ let recoveryCoordinator: RecoveryCoordinator | null = null
 
 const BOOTSTRAP_TIMEOUT_MS = 30_000
 
-export async function bootstrap(): Promise<void> {
+export async function bootstrap(safeModeFlag = false): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -35,16 +35,33 @@ export async function bootstrap(): Promise<void> {
     )
   })
   try {
-    await Promise.race([_bootstrap(), timeout])
+    await Promise.race([_bootstrap(safeModeFlag), timeout])
   } finally {
     clearTimeout(timer)
   }
 }
 
-async function _bootstrap(): Promise<void> {
+async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const log = getLogger()
   const userDataPath = app.getPath('userData')
   const settings = getSettingsStore()
+
+  if (safeModeFlag) {
+    log.warn('Bootstrap running in --safe-mode: skipping provider and runtime init')
+    // IPC handlers already guard with services.has('runtime') / services.has('auth')
+    // and return NOT_INITIALIZED error codes when services are absent.
+    // Safe mode intentionally leaves them unregistered — UI shows degraded state.
+    services.register('auth', () => ({
+      loginEmail: async (): Promise<never> => { throw new Error('Safe mode: provider disabled') },
+      loginTelegram: async (): Promise<never> => { throw new Error('Safe mode: provider disabled') },
+      logout: async (): Promise<void> => { /* no-op */ },
+      getMe: async (): Promise<never> => { throw new Error('Safe mode: provider disabled') },
+      refresh: async (): Promise<never> => { throw new Error('Safe mode: provider disabled') },
+    }))
+    getSafeModeManager().scheduleHealthyMark()
+    log.info({ safeMode: true }, 'Safe mode bootstrap complete')
+    return
+  }
 
   log.info('Bootstrapping services...')
 

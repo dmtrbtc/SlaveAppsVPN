@@ -1,5 +1,6 @@
-console.log('[preload] Loading — contextBridge available:', typeof contextBridge !== 'undefined')
 import { contextBridge, ipcRenderer } from 'electron'
+
+console.log('[preload] Loading — contextBridge available:', typeof contextBridge !== 'undefined')
 import { IpcChannel } from '../shared/ipc/channels'
 import type {
   SlaveVPNBridge,
