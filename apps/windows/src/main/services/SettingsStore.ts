@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   apiBaseUrl: process.env.VITE_API_URL ?? 'https://change-me.example.com/api',
   telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME ?? '',
   devMode: false,
+  updateChannel: 'stable',
 }
 
 class SettingsStore {

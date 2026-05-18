@@ -7,8 +7,13 @@ import { ElectronTokenStorage } from './services/impl/ElectronTokenStorage'
 import { AuthServiceImpl } from './services/impl/AuthServiceImpl'
 import { SubscriptionServiceImpl } from './services/impl/SubscriptionServiceImpl'
 import { RuntimeServiceImpl } from './services/impl/RuntimeServiceImpl'
+import { getConfigSourceService } from './services/impl/ConfigSourceService'
 import { createWindowsEngineConfig } from './runtime/WindowsMihomoEngine'
 import { getSettingsStore } from './services/SettingsStore'
+import { RecoveryCoordinator } from './services/RecoveryCoordinator'
+import { getSafeModeManager } from './services/SafeModeManager'
+import { getNodeHealthManager } from './services/NodeHealthManager'
+import { VPN } from '@slave-vpn/shared'
 import { services } from './ipc/registry'
 import { sendToRenderer } from './window'
 import { IpcChannel } from '../shared/ipc/channels'
@@ -17,8 +22,26 @@ import { getLogger } from './logger'
 let subscriptionRefreshTimer: NodeJS.Timeout | null = null
 let runtimeManager: RuntimeManager | null = null
 let runtimeService: RuntimeServiceImpl | null = null
+let recoveryCoordinator: RecoveryCoordinator | null = null
+
+const BOOTSTRAP_TIMEOUT_MS = 30_000
 
 export async function bootstrap(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Bootstrap timed out after 30s')),
+      BOOTSTRAP_TIMEOUT_MS
+    )
+  })
+  try {
+    await Promise.race([_bootstrap(), timeout])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function _bootstrap(): Promise<void> {
   const log = getLogger()
   const userDataPath = app.getPath('userData')
   const settings = getSettingsStore()
@@ -36,22 +59,6 @@ export async function bootstrap(): Promise<void> {
   // ─── Token Storage ─────────────────────────────────────────────────────────
   const tokenStorage = new ElectronTokenStorage()
 
-  // ─── Provider (Remnawave/Bedolaga) ─────────────────────────────────────────
-  const provider = new RemnawaveBedolagaProvider({
-    apiBaseUrl: settings.get('apiBaseUrl'),
-    tokenStorage,
-    onSessionExpired: () => {
-      log.warn('Session expired — notifying renderer')
-      sendToRenderer(IpcChannel.EVENT_AUTH_EXPIRED)
-    },
-  })
-
-  log.debug('Provider initialized: remnawave-bedolaga')
-
-  // ─── Application Services ─────────────────────────────────────────────────
-  const authService = new AuthServiceImpl(provider.auth)
-  const subscriptionService = new SubscriptionServiceImpl(provider.subscription, subscriptionRepo)
-
   // ─── Runtime (VPN Engine) ─────────────────────────────────────────────────
   const apiSecret = crypto.randomBytes(16).toString('hex')
   const engineConfig = createWindowsEngineConfig(userDataPath, apiSecret)
@@ -60,33 +67,96 @@ export async function bootstrap(): Promise<void> {
   await runtimeManager.initialize('mihomo', engineConfig)
   log.debug('RuntimeManager initialized')
 
-  runtimeService = new RuntimeServiceImpl({
-    manager: runtimeManager,
-    configSource: provider.getConfigSource(),
-    getSettings: () => settings.getAll(),
-  })
+  // ─── Determine config source ───────────────────────────────────────────────
+  // Priority:
+  //   1. Non-provider config source (subscription-url, single-proxy, remnawave-key)
+  //   2. Provider (Remnawave/Bedolaga) if auth tokens exist
+  //   3. No config source — renderer will route to onboarding
 
-  // ─── Register into IPC ServiceRegistry ────────────────────────────────────
-  services.register('auth', () => authService)
-  services.register('subscription', () => subscriptionService)
-  services.register('runtime', () => runtimeService!)
-  services.register('userRepo', () => userRepo)
-  services.register('provider', () => provider)
+  const configSourceService = getConfigSourceService()
+  const storedMeta = configSourceService.getMeta()
+  const hasProviderTokens = await tokenStorage.hasTokens()
 
-  log.info('Services registered: auth, subscription, runtime')
+  let configSource = storedMeta ? configSourceService.createConfigSource() : null
+  let hasProvider = false
 
-  // ─── Warm up session if tokens exist ──────────────────────────────────────
-  if (await tokenStorage.hasTokens()) {
-    log.debug('Existing tokens found — pre-warming subscription cache')
+  if (configSource) {
+    log.info({ type: storedMeta?.type }, 'Using stored config source')
+  } else if (hasProviderTokens) {
+    log.info('No stored config source — initializing provider with existing tokens')
+
+    const provider = new RemnawaveBedolagaProvider({
+      apiBaseUrl: settings.get('apiBaseUrl'),
+      tokenStorage,
+      onSessionExpired: () => {
+        log.warn('Session expired — notifying renderer')
+        sendToRenderer(IpcChannel.EVENT_AUTH_EXPIRED)
+      },
+    })
+
+    const authService = new AuthServiceImpl(provider.auth)
+    const subscriptionService = new SubscriptionServiceImpl(provider.subscription, subscriptionRepo)
+
+    services.register('auth', () => authService)
+    services.register('subscription', () => subscriptionService)
+    services.register('provider', () => provider)
+
+    configSource = provider.getConfigSource()
+    hasProvider = true
+
+    log.debug('Provider initialized: remnawave-bedolaga')
+
+    // Warm up subscription cache
     subscriptionService.refresh().catch((err: unknown) => {
       log.warn({ err }, 'Failed to pre-warm subscription cache on startup')
     })
+
+    subscriptionRefreshTimer = subscriptionService.schedulePeriodicRefresh()
+  } else {
+    log.info('No config source or provider tokens — awaiting onboarding')
   }
 
-  // ─── Periodic subscription refresh ────────────────────────────────────────
-  subscriptionRefreshTimer = subscriptionService.schedulePeriodicRefresh()
+  runtimeService = new RuntimeServiceImpl({
+    manager: runtimeManager,
+    ...(configSource ? { configSource } : {}),
+    getSettings: () => settings.getAll(),
+    apiPort: VPN.MIHOMO_API_PORT,
+    apiSecret,
+    binaryPath: engineConfig.binaryPath,
+    workingDir: engineConfig.workingDir,
+  })
 
-  log.info('Bootstrap complete')
+  recoveryCoordinator = new RecoveryCoordinator(runtimeManager)
+  recoveryCoordinator.setConnectFn(() => runtimeService!.connect())
+
+  // ─── Register into IPC ServiceRegistry ────────────────────────────────────
+  services.register('runtime', () => runtimeService!)
+  services.register('userRepo', () => userRepo)
+
+  if (!hasProvider) {
+    // Stub auth/subscription services so IPC handlers don't throw NOT_REGISTERED
+    services.register('auth', () => ({
+      loginEmail: async () => { throw new Error('No provider configured') },
+      loginTelegram: async () => { throw new Error('No provider configured') },
+      logout: async () => { /* no-op */ },
+      getMe: async () => { throw new Error('No provider configured') },
+      refresh: async () => { throw new Error('No provider configured') },
+    }))
+  }
+
+  // Schedule healthy mark — after 60s uptime without crash, reset crash counter
+  getSafeModeManager().scheduleHealthyMark()
+
+  log.info({ safeMode: getSafeModeManager().isSafeMode() }, 'Bootstrap complete')
+}
+
+export function updateRuntimeConfigSource(): void {
+  const configSourceService = getConfigSourceService()
+  const source = configSourceService.createConfigSource()
+  if (source && runtimeService) {
+    runtimeService.setConfigSource(source)
+    getLogger().info('Runtime config source updated')
+  }
 }
 
 export async function shutdownBootstrap(): Promise<void> {
@@ -94,6 +164,10 @@ export async function shutdownBootstrap(): Promise<void> {
     clearInterval(subscriptionRefreshTimer)
     subscriptionRefreshTimer = null
   }
+  recoveryCoordinator?.dispose()
+  recoveryCoordinator = null
+  getSafeModeManager().dispose()
+  getNodeHealthManager().dispose()
   if (runtimeManager) {
     await runtimeManager.dispose().catch(() => undefined)
     runtimeManager = null

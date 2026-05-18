@@ -1,17 +1,21 @@
 import { cn } from '../../lib/utils'
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
+  raised?: boolean
   hover?: boolean
+  padding?: number
 }
 
-export function Card({ className, hover, ...props }: CardProps) {
+export function Card({ className, raised, hover, padding, style, ...props }: CardProps) {
   return (
     <div
       className={cn(
-        'rounded-2xl border border-border bg-bg-secondary p-4',
-        hover && 'transition-all duration-200 hover:border-border-active hover:shadow-card cursor-default',
+        'rounded-lg border border-border bg-bg-primary',
+        raised && 'bg-bg-elevated shadow-md',
+        hover && 'cursor-default transition-all duration-200 hover:-translate-y-px hover:border-border-strong hover:shadow-card',
         className
       )}
+      style={{ padding: padding ?? 16, ...style }}
       {...props}
     />
   )
@@ -22,11 +26,11 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn('text-sm font-semibold text-text-primary', className)} {...props} />
+  return <p className={cn('text-[15px] font-semibold text-text-primary leading-snug', className)} {...props} />
 }
 
 export function CardDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn('text-xs text-text-muted', className)} {...props} />
+  return <p className={cn('text-[12px] text-text-muted', className)} {...props} />
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
-import { Search, Star, Wifi, WifiOff, AlertCircle, RefreshCw, Check } from 'lucide-react'
-import { Card } from '../components/ui/card'
+import { Search, Star, RefreshCw, Check } from 'lucide-react'
 import { Input } from '../components/ui/input'
 import { Button } from '../components/ui/button'
+import { Badge } from '../components/ui/badge'
+import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
-import { countryFlagEmoji, cn } from '../lib/utils'
+import { cn, countryFlagEmoji } from '../lib/utils'
 import { useServers } from '../hooks/useServers'
 import { useVpnStore, selectVpnStatus } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
@@ -13,19 +14,127 @@ import type { Server, ServerAvailability } from '@slave-vpn/shared'
 
 type SortKey = 'latency' | 'name' | 'country'
 
-const AVAILABILITY_ICON: Record<ServerAvailability, React.ComponentType<{ className?: string }>> = {
-  online: Wifi,
-  degraded: AlertCircle,
-  offline: WifiOff,
-  unknown: WifiOff,
+const AVAILABILITY_BADGE: Record<ServerAvailability, { variant: 'ok' | 'warn' | 'bad' | 'neutral'; label: string }> = {
+  online:   { variant: 'ok',      label: 'Онлайн'   },
+  degraded: { variant: 'warn',    label: 'Нестабильный' },
+  offline:  { variant: 'bad',     label: 'Офлайн'   },
+  unknown:  { variant: 'neutral', label: 'Неизвестно' },
 }
 
-const AVAILABILITY_COLOR: Record<ServerAvailability, string> = {
-  online: 'text-connected',
-  degraded: 'text-connecting',
-  offline: 'text-error',
-  unknown: 'text-text-muted',
+const SORT_OPTIONS: { value: SortKey; label: string }[] = [
+  { value: 'latency', label: 'Пинг'   },
+  { value: 'name',    label: 'Имя'    },
+  { value: 'country', label: 'Страна' },
+]
+
+// ─── Protocol badge ───────────────────────────────────────────────────────────
+
+function protocolLabel(server: Server): string | null {
+  if (server.securityType === 'reality') return 'REALITY'
+  if (server.transport === 'grpc') return 'gRPC'
+  if (server.transport === 'ws') return 'WS'
+  if (server.securityType === 'tls') return 'TLS'
+  if (server.proxyType && server.proxyType !== 'vless') return server.proxyType.toUpperCase()
+  return null
 }
+
+function protocolTone(label: string): 'ok' | 'warn' | 'bad' | 'neutral' {
+  if (label === 'REALITY') return 'warn'
+  if (label === 'gRPC' || label === 'WS') return 'ok'
+  if (label === 'TLS') return 'neutral'
+  return 'neutral'
+}
+
+// ─── Server row ──────────────────────────────────────────────────────────────
+
+interface ServerRowProps {
+  server: Server
+  isSelected: boolean
+  isFav: boolean
+  isConnecting: boolean
+  onSelect: () => void
+  onFav: (e: React.MouseEvent) => void
+}
+
+function ServerRow({ server, isSelected, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
+  const flag = countryFlagEmoji(server.countryCode)
+  const avail = AVAILABILITY_BADGE[server.availability]
+  const isOffline = server.availability === 'offline'
+  const proto = protocolLabel(server)
+
+  return (
+    <div
+      onClick={isOffline ? undefined : onSelect}
+      className={cn(
+        'flex items-center gap-3 rounded-lg border px-4 py-3 transition-all duration-150',
+        isSelected
+          ? 'border-accent/40 bg-accent/5'
+          : 'border-border bg-bg-primary hover:bg-bg-secondary hover:border-border-strong',
+        isOffline ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer active:scale-[0.995]'
+      )}
+    >
+      {/* Flag */}
+      <span className="text-xl leading-none shrink-0">{flag}</span>
+
+      {/* Name + country + protocol badge */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[13px] font-medium text-text-primary truncate">{server.name}</span>
+          {isSelected && <Check className="h-3 w-3 text-accent shrink-0" />}
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className="text-[11px] text-text-muted">{server.countryName}</span>
+          {proto && (
+            <Badge tone={protocolTone(proto)} className="text-[9px] py-0 px-1 h-[14px] leading-none">
+              {proto}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Latency */}
+      <div className="w-[60px] text-right">
+        {server.latencyMs !== null ? (
+          <span className={cn(
+            'text-[12px] font-mono',
+            server.latencyMs < 80  ? 'text-connected' :
+            server.latencyMs < 200 ? 'text-connecting' :
+            'text-error'
+          )}>
+            {server.latencyMs}ms
+          </span>
+        ) : (
+          <span className="text-[12px] text-text-muted font-mono">—</span>
+        )}
+      </div>
+
+      {/* Status badge */}
+      <div className="w-[90px] flex justify-center">
+        <Badge tone={avail.variant}>{avail.label}</Badge>
+      </div>
+
+      {/* Fav / spinner */}
+      <div className="w-8 flex justify-center">
+        {isConnecting ? (
+          <div className="h-4 w-4 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />
+        ) : (
+          <button
+            onClick={onFav}
+            className={cn(
+              'transition-opacity focus-visible:outline-none',
+              isFav ? 'opacity-100' : 'opacity-25 hover:opacity-70'
+            )}
+            aria-label="Favourite"
+          >
+            <Star className={cn('h-3.5 w-3.5', isFav && 'fill-connecting text-connecting')} />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export function ServersPage() {
   const status = useVpnStore(selectVpnStatus)
@@ -67,39 +176,43 @@ export function ServersPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full flex-col bg-bg-base">
+
       {/* Header */}
-      <div className="px-6 py-5 border-b border-border/50">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-sm font-semibold text-text-primary">Серверы</h1>
+      <div className="px-6 py-4 border-b border-border bg-bg-base shrink-0">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-baseline gap-2">
+            <h2 className="text-[15px] font-semibold text-text-primary">Серверы</h2>
+            {!isLoading && (
+              <span className="text-[12px] text-text-muted">{filtered.length}</span>
+            )}
+          </div>
           <Button variant="ghost" size="icon-sm" onClick={() => void refetch()} disabled={isFetching}>
             <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
           </Button>
         </div>
-        <Input
-          placeholder="Поиск по имени или стране..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          icon={<Search className="h-3.5 w-3.5" />}
-        />
-        <div className="flex gap-1.5 mt-3">
-          {(['latency', 'name', 'country'] as SortKey[]).map(key => (
-            <button
-              key={key}
-              onClick={() => setSortKey(key)}
-              className={cn(
-                'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-colors',
-                sortKey === key ? 'bg-accent/15 text-text-accent' : 'text-text-muted hover:text-text-secondary'
-              )}
-            >
-              {key === 'latency' ? 'Пинг' : key === 'name' ? 'Имя' : 'Страна'}
-            </button>
-          ))}
+
+        {/* Search + sort */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <Input
+              placeholder="Поиск по имени или стране..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              icon={<Search className="h-3.5 w-3.5" />}
+            />
+          </div>
+          <Segmented
+            options={SORT_OPTIONS}
+            value={sortKey}
+            onChange={setSortKey}
+            size="sm"
+          />
         </div>
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto px-4 py-3">
+      <div className="flex-1 overflow-y-auto px-6 py-3">
         {isLoading ? (
           <LoadingState label="Загрузка серверов..." />
         ) : error ? (
@@ -111,66 +224,24 @@ export function ServersPage() {
             description={search ? 'Попробуйте изменить запрос' : 'Нет доступных серверов'}
           />
         ) : (
-          <div className="flex flex-col gap-2">
-            {filtered.map((server, i) => {
-              const AvailIcon = AVAILABILITY_ICON[server.availability]
-              const isSelected = status.serverName === server.name
-              const isFav = serverFavorites.includes(server.id)
-              const isConnecting = connectingId === server.id
-              const flag = countryFlagEmoji(server.countryCode)
-
-              return (
-                <motion.div
-                  key={server.id}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.025, duration: 0.2 }}
-                >
-                  <Card
-                    className={cn(
-                      'flex items-center gap-3 cursor-pointer transition-colors hover:bg-bg-elevated active:scale-[0.99]',
-                      isSelected && 'ring-1 ring-accent/40 bg-accent/5',
-                      server.availability === 'offline' && 'opacity-50 cursor-not-allowed'
-                    )}
-                    onClick={() => void handleSelect(server)}
-                  >
-                    <span className="text-xl leading-none">{flag}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-medium text-text-primary truncate">{server.name}</p>
-                        {isSelected && <Check className="h-3 w-3 text-accent shrink-0" />}
-                      </div>
-                      <p className="text-[11px] text-text-muted">{server.countryName}</p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {server.latencyMs !== null && (
-                        <span className={cn(
-                          'text-[11px] font-mono',
-                          server.latencyMs < 80 ? 'text-connected' :
-                          server.latencyMs < 200 ? 'text-connecting' : 'text-error'
-                        )}>
-                          {server.latencyMs}ms
-                        </span>
-                      )}
-                      <AvailIcon className={cn('h-3.5 w-3.5', AVAILABILITY_COLOR[server.availability])} />
-                      {isConnecting ? (
-                        <div className="h-3.5 w-3.5 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />
-                      ) : (
-                        <button
-                          onClick={e => { e.stopPropagation(); toggleServerFavorite(server.id) }}
-                          className={cn(
-                            'transition-opacity',
-                            isFav ? 'opacity-100' : 'opacity-30 hover:opacity-100'
-                          )}
-                        >
-                          <Star className={cn('h-3.5 w-3.5', isFav && 'fill-connecting text-connecting')} />
-                        </button>
-                      )}
-                    </div>
-                  </Card>
-                </motion.div>
-              )
-            })}
+          <div className="flex flex-col gap-1.5">
+            {filtered.map((server, i) => (
+              <motion.div
+                key={server.id}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.02, duration: 0.18 }}
+              >
+                <ServerRow
+                  server={server}
+                  isSelected={status.serverName === server.name}
+                  isFav={serverFavorites.includes(server.id)}
+                  isConnecting={connectingId === server.id}
+                  onSelect={() => void handleSelect(server)}
+                  onFav={e => { e.stopPropagation(); toggleServerFavorite(server.id) }}
+                />
+              </motion.div>
+            ))}
           </div>
         )}
       </div>

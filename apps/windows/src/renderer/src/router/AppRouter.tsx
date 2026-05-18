@@ -1,6 +1,6 @@
 import { createHashRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { AppShell } from '../components/layout/AppShell'
-import { LoginPage } from '../pages/LoginPage'
+import { OnboardingPage } from '../pages/OnboardingPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { ServersPage } from '../pages/ServersPage'
 import { RoutingPage } from '../pages/RoutingPage'
@@ -10,15 +10,20 @@ import { SettingsPage } from '../pages/SettingsPage'
 import { useAuthStore } from '../stores/auth.store'
 
 function ProtectedShell() {
-  const isAuthenticated = useAuthStore(s => s.isAuthenticated)
-  if (!isAuthenticated) return <Navigate to="/login" replace />
+  const hasAccess = useAuthStore(s => s.hasAccess)
+  if (!hasAccess) return <Navigate to="/onboarding" replace />
   return <AppShell />
 }
 
 const router = createHashRouter([
   {
+    path: '/onboarding',
+    element: <OnboardingPage />,
+  },
+  {
+    // Keep /login for backwards compatibility (deep links, bookmarks)
     path: '/login',
-    element: <LoginPage />,
+    element: <Navigate to="/onboarding" replace />,
   },
   {
     element: <ProtectedShell />,

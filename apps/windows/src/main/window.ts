@@ -9,6 +9,7 @@ const WINDOW_DEFAULT_WIDTH = 420
 const WINDOW_DEFAULT_HEIGHT = 700
 
 let mainWindow: BrowserWindow | null = null
+let renderCrashCount = 0
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
@@ -60,6 +61,29 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.webContents.on('will-redirect', (event, url) => {
     event.preventDefault()
     log.warn({ url }, 'Blocked redirect attempt')
+  })
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error({ reason: details.reason, exitCode: details.exitCode }, 'Renderer process gone')
+    renderCrashCount++
+    if (renderCrashCount <= 3 && mainWindow && !mainWindow.webContents.isDestroyed()) {
+      log.info({ attempt: renderCrashCount }, 'Reloading renderer after crash')
+      if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+        void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+      } else {
+        void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+      }
+    } else {
+      log.error({ renderCrashCount }, 'Renderer crashed too many times — not reloading')
+    }
+  })
+
+  mainWindow.on('unresponsive', () => {
+    log.warn('Window unresponsive')
+  })
+
+  mainWindow.on('responsive', () => {
+    log.info('Window responsive again')
   })
 
   mainWindow.on('ready-to-show', () => {

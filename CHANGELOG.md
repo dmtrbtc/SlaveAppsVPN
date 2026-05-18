@@ -1,176 +1,92 @@
 # Changelog
 
-Все значимые изменения в этом проекте документируются здесь.
+All notable changes to SLAVE VPN are documented here.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-Проект следует [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.3.0-rc1] — 2026-05-18
 
----
+### Added
 
-## [Unreleased]
+**Safe Mode + Startup Recovery (Iter 9 Stage 4)**
+- `SafeModeManager`: detects crash loops (3 failed starts within 45s each), enters safe mode; resets after 60s healthy uptime; persists `launch-record.json` in userData
+- `SafeModeBanner`: dismissible orange banner with launch count, reset button, export diagnostics; `useSafeMode` hook polls every 60s
+- `SAFE_MODE_GET_STATUS` and `SAFE_MODE_RESET` IPC channels
 
----
+**Subscription node preview (Iter 9 Stage 5)**
+- `ConfigSourceValidateResult` extended with `nodeCount`, `protocols` map, `sampleNodes[]`
+- `NodePreviewPanel`: protocol badges (REALITY/WS/gRPC) + first 3 server names shown after validation
+- Single-proxy validation returns inline sampleNodes data
 
-## [0.6.0-internal-preview] — 2026-05-15 · app v0.2.0
+**Reality node health (Iter 9 Stage 6)**
+- `NodeHealthManager`: per-node failure counter with exponential backoff quarantine (30s→5min cap), 10-min idle cleanup
+- Failure recorded against `activeProxy` on every classified Mihomo log error
+- `reconnect.success` records success to reduce failure count
+- Quarantined node list reported in `getConnectivity()` response
 
-### Added — Iteration 6: UI Foundation + Runtime Intelligence
+**Connectivity intelligence (Iter 9 Stage 7)**
+- `detectCaptivePortal()`: passive HTTP 204 check (only fires when connectivity already broken)
+- `buildSuggestion()`: actionable Russian hint based on current health degradation reason
+- `VPNConnectivityInfo` gains `captivePortal?`, `quarantinedNodes?`, `suggestion?`
+- DiagnosticsPage: captive portal warning + suggestion banner + quarantined count display
 
-**UI Layer (7 screens)**
-- Login (email + Telegram deep-link flow)
-- Dashboard: FSM-driven connection orb, traffic stats, connection status
-- Servers: server list (stub — real data requires subscription)
-- Routing: rule management UI
-- DNS: profile selector
-- Diagnostics: system info + process logs + runtime event timeline
-- Settings: full settings panel
+**UX polish (Iter 9 Stage 8)**
+- `@media (prefers-reduced-motion)`: all animations disabled at CSS level
+- `:focus-visible` ring: consistent 2px accent outline across entire app
+- `aria-label` on SafeModeBanner, OfflineBanner interactive elements
 
-**Runtime Intelligence Layer**
-- Connection health monitoring: 6-metric weighted scoring (process/API/connectivity/DNS/TUN/traffic)
-- Health state machine: `healthy | degraded | dns_failure | tunnel_unstable | provider_unreachable | offline`
-- `ConnectionOrb` + `ConnectionQualityBadge`: live health visualization, degraded indicator dot, reduced-motion support
-- Smart reconnect on system wake via `powerMonitor.resume`
-- Typed runtime event bus with severity levels (debug/info/warning/error/critical)
-- Diagnostics event timeline: ring buffer, newest-first, 200 events max
-- Global `uncaughtException`/`unhandledRejection` handlers in main process
+### Documentation
+- `PRODUCTION_HARDENING_AUDIT.md`: full coverage matrix (43 checks)
+- `ROADMAP.md`: v0.3→v0.5 feature timeline
+- `SECURITY.md`: vulnerability reporting + security design
 
-**Provider Ecosystem**
-- `PROVIDER_GET_MANIFEST` + `PROVIDER_GET_CAPABILITIES` IPC channels
-- `useProviderManifest()`, `useProviderCapabilities()`, `useFeatureAvailable()` hooks
-- `useFeatureFlag(flag: AppFeatureFlag)` for app-level feature gating
+## [0.3.0-beta] — 2026-05-18
 
-**Window Controls**
-- `controls.minimize/maximize/close` bridge namespace + IPC handlers
-- TitleBar fully wired
+### Added
 
-### Fixed — TypeScript strict mode (`exactOptionalPropertyTypes`) pre-existing violations
-- `packages/shared`, `packages/api`, `packages/routing`, `packages/localization`
-- `packages/provider-remnawave`, `packages/runtime`
-- `apps/windows`: SettingsStore, RuntimeServiceImpl, ConnectionOrb, LoginPage, vpn.store
+**Subscription pipeline (Iter 7)**
+- VLESS-FIRST parser: full Reality, WS, gRPC, H2, HTTPUpgrade support including `pbk/sid/fp/flow/alpn/packetEncoding`
+- Trojan, Hysteria2, TUIC, Shadowsocks parsers
+- Proper Mihomo YAML generation (block-style, not JSON.stringify)
+- Multi-UA subscription fetching (clash.meta, Mihomo, ClashX, Clash variants) with placeholder detection
+- ETag-based HTTP cache with 5-min TTL and stale-on-error fallback
+- ConfigSource abstraction: subscription-url, single-proxy, remnawave-key sources
+- Onboarding wizard with per-type validation and live preview
+- Protocol badges (REALITY / WS / gRPC / TLS) on Servers page
 
----
+**Runtime stabilization (Iter 8)**
+- Pre-flight validation before every `connect()`: checks mihomo.exe, wintun.dll, working dir writable, API port free
+- Mihomo log line classifier: detects Reality handshake failures, XTLS flow mismatch, TLS cert errors, DNS resolution failures, connection refused, timeout — 10s deduplication per error kind
+- `VPN_GET_CONNECTIVITY` IPC: returns health snapshot (6 status flags + health score 0-100 + active proxy name + proxy count)
+- Diagnostics page rewritten: Connectivity panel with health bar, 6 status dots, engine state badge, active proxy
 
-## [0.5.0] — 2026-05-15
+**Production hardening (Iter 9)**
+- `UpdateService`: manual check, download, install with per-byte progress tracking; no auto-install without user confirmation
+- Update channel selection (stable / beta) persisted to settings
+- `EVENT_UPDATE_PROGRESS` push events enable download progress bar in renderer
+- Settings page: Updates section with progress bar, channel selector, "Restart and install" button
+- `RecoveryCoordinator`: exponential backoff retry (1 → 2 → 4 → 8 → 16 s, max 5 attempts) with `reconnect.exhausted` critical event
+- Log rotation: files capped at 5 MB, keeps 3 backups (main.log.1/2/3)
+- Session ID and build commit hash injected into every structured log entry
+- Diagnostics export: ZIP bundle (main.log + backups + crash.log) via PowerShell Compress-Archive
 
-### Added — Iteration 5: Provider Abstraction + Routing + DNS
+### Changed
 
-**Provider System**
-- `packages/provider` — чистые интерфейсы: VPNProvider, AuthProvider, SubscriptionProvider, ConfigSource, ProviderCapabilities
-- `packages/provider` — ProviderManifest, ProviderRegistry (foundation для multi-provider)
-- `packages/provider-remnawave` — полная реализация RemnawaveBedolagaProvider
-- RemnawaveAuthProvider: Email + Telegram (deep-link flow) авторизация
-- RemnawaveSubscriptionProvider: getSubscription, getDevices, removeDevice
-- RemnawaveConfigSource: fetchYaml() через HTTPS с subscription URL
+- `autoUpdater.autoDownload` set to `false` — user explicitly triggers download
+- `autoUpdater` logic refactored from `index.ts` into `UpdateService` singleton
+- `SettingsStore` gains `updateChannel: 'stable' | 'beta'` persistent field
+- Logger exports `getSessionId()` for cross-service correlation
+- `vpn.handler.ts` fallback uses `INITIAL_VPN_STATUS` from shared package
 
-**Routing Engine**
-- `packages/routing` — engine-neutral DSL (domain/geoip/geosite/process/port/ip_cidr)
-- RoutingPolicy с раздельными категориями правил (processRules/userRules/providerRules/geoRules)
-- Priority bands: 0-999 / 1000-1999 / 2000-2999 / 3000-3999
-- PolicyValidator — валидация дублей, пустых значений, выход за priority band
-- PolicyNormalizer — конвертация GeoRule → RoutingRule, merge + сортировка
-- PolicyOptimizer — дедупликация, удаление избыточных domain rules
-- RoutingPipeline — strict/lenient mode
-- MihomoRuleCompiler — полное DSL → Mihomo rules[] с exhaustiveness guard
-- RemoteRuleProvider: SHA256 checksum + atomic write (tmp→rename) + rollback
-- CacheRuleProvider: last-known-good на диске
-- BundledRuleProvider: статические правила
-- 60+ bundled Russia bypass rules (bypass-rules.ts): YouTube, Discord, Twitter/X, Instagram, Reddit, AI services, Patreon, Twitch, Spotify, LinkedIn, Signal и другие
+### Fixed
 
-**DNS Subsystem**
-- `packages/dns` — DnsProfile, DnsResolver (DoH/DoT/UDP/TCP)
-- DnsProfilePresets: `secure` (fake-ip + DoH H3), `balanced`, `minimal`
-- DEFAULT_FAKE_IP_FILTER — 50+ доменов (local, Windows services, NTP, Telegram, Apple, Android)
-- MihomoDnsCompiler — компиляция в Mihomo `dns:` секцию
-- DnsManager + DnsValidator
-- LeakPreventionConfig с fallback-filter по GeoIP
+- `vpn.handler.ts`: VPN_GET_STATUS returned partial non-VPNStatus object when runtime not yet initialized — caused TS type union conflict
+- Duplicate `classifyMihomoLogLine` function removed from RuntimeServiceImpl
+- `exactOptionalPropertyTypes` spread pattern applied consistently across all sources
 
-**Config Generation**
-- ConfigGenerationContext: опциональные `routingPolicy` и `dnsProfile`
-- При наличии routingPolicy — использует MihomoRuleCompiler
-- При наличии dnsProfile — использует MihomoDnsCompiler
-- Backward-compatible: legacy VPNMode-based generation если поля не переданы
+## [0.2.0] — 2026-04-xx
 
-**Bootstrap**
-- Полностью переписан через provider abstraction
-- Единственное место где используется provider-remnawave
-- services.register() только через interfaces
-- Async shutdown с event.preventDefault() + app.exit(0)
-
----
-
-## [0.4.0] — 2026-04-01
-
-### Added — Iteration 4: Runtime Foundation
-
-- `packages/config` — SubscriptionParser (js-yaml), ConfigGenerator
-- GeneratorSettings: tunEnabled, tunStack, fakeIpEnabled, dnsOverHttps, fallbackDns, mixedPort
-- `packages/runtime` — VPNEngine interface, RuntimeStateMachine
-- MihomoEngine: FSM (idle→starting→running→crashed→reconnecting→error)
-- RuntimeManager: экспоненциальный backoff (1s/2s/4s, max 30s, max 3 tries)
-- HealthMonitor: 6 проверок (process alive, API ping, HTTP proxy, DNS resolve, traffic, TUN)
-- TrafficMonitor: накопительная статистика, bytes/sec
-- WindowsMihomoEngine + TunHooks (проверка wintun.dll)
-- createWindowsEngineConfig: binaryPath, workingDir, apiPort
-- RuntimeServiceImpl: маппинг RuntimeState → VPNConnectionState
-- diagnostics.handler.ts: getEngineVersion()
-- Async shutdown корректно через app.exit(0)
-
----
-
-## [0.3.0] — 2026-03-01
-
-### Added — Iteration 3: Subscription & State
-
-- SubscriptionRepository (SQLite)
-- UserRepository (SQLite)
-- Periodic subscription refresh
-- `packages/state-sync` — main↔renderer state синхронизация
-- Tray icon интеграция
-- SubscriptionService с кешированием и refresh
-
----
-
-## [0.2.0] — 2026-02-01
-
-### Added — Iteration 2: API & Auth
-
-- `packages/api` — Cabinet API HTTP-клиент
-- AuthApiService: loginEmail, loginTelegram, refresh, logout, getMe
-- SubscriptionApiService: getSubscription, getDevices, removeDevice, getConnectionLink
-- TelegramAuthFlow: deep-link flow с polling
-- ElectronTokenStorage: OS keychain + in-memory
-- JWT interceptor с auto-refresh при 401
-- Zod-схемы для всех API-ответов
-
----
-
-## [0.1.0] — 2026-01-15
-
-### Added — Iteration 1: Foundation
-
-- pnpm workspaces + Turborepo
-- TypeScript 5.7 strict конфигурация (`tooling/tsconfig`)
-- `packages/shared` — общие типы: VPNMode, VPNConnectionState, IpcChannel, etc.
-- `packages/localization` — i18n foundation
-- Electron 33 приложение (apps/windows)
-- IPC router с Zod-валидацией входных данных
-- contextBridge preload: минимальная surface area
-- contextIsolation: true, nodeIntegration: false
-- CSP в index.html
-- electron-vite + Vite HMR для renderer
-- Tailwind CSS foundation
-- pino логирование
-
----
-
-## Versioning Strategy
-
-| Версия | Значение |
-|---|---|
-| MAJOR (1.x.x) | Первый публичный релиз |
-| MINOR (0.x.0) | Новая iteration / значимая фича |
-| PATCH (0.0.x) | Bug fixes, hotfixes |
-
-Pre-release:
-- `0.6.0-alpha.1` — ранняя UI версия
-- `0.6.0-beta.1` — тестирование UI
-- `0.6.0-rc.1` — release candidate
+- Aurora design system (7 screens rewritten)
+- Full IPC infrastructure with Zod validation
+- Zustand stores + TanStack Query renderer layer
+- RuntimeManager + MihomoEngine + HealthMonitor
+- Provider-agnostic architecture with VPNProvider interface
+- Electron security hardening (CSP, contextIsolation, contextBridge)

@@ -1,212 +1,49 @@
-# Модель безопасности
+# Security Policy
 
-## Принципы
+## Supported Versions
 
-1. **Renderer изолирован** — никаких секретов в renderer process
-2. **IPC валидация** — все входные данные от renderer проходят Zod-схему
-3. **Минимальный IPC** — только sanitized данные пересекают IPC boundary
-4. **Token isolation** — access/refresh токены хранятся только в main process
-5. **Subscription URL isolation** — URL подписки никогда не попадает в renderer
+| Version | Supported |
+|---------|-----------|
+| 0.3.x   | ✅ Current |
+| < 0.3   | ❌ No longer supported |
 
----
+## Reporting a Vulnerability
 
-## Electron Security Model
+Please **do not** open a public GitHub issue for security vulnerabilities.
 
-### Context Isolation
+Report security issues via GitHub's private vulnerability reporting:
+https://github.com/dmtrbtc/SlaveAppsVPN/security/advisories/new
 
-```javascript
-// apps/windows/src/preload/index.ts
-contextBridge.exposeInMainWorld('api', {
-  auth: { login, logout, getMe },
-  // Только явно разрешённые методы
-})
-```
+We will acknowledge within 48 hours and aim to patch within 7 days for critical issues.
 
-- `contextIsolation: true` — включено
-- `nodeIntegration: false` — в renderer отключён доступ к Node.js
-- `sandbox: true` — renderer запускается в Chromium sandbox
+## Security Design
 
-### Content Security Policy
+### IPC Architecture
+- All IPC channels use `contextIsolation: true` and `contextBridge`
+- No direct Electron API access from renderer
+- All invoke channels are Zod-validated in `handleIpc()`
+- No secrets (API tokens, keys) ever cross the IPC boundary in plaintext
 
-```html
-<meta http-equiv="Content-Security-Policy" content="
-  default-src 'self';
-  script-src 'self';
-  style-src 'self' 'unsafe-inline';
-  img-src 'self' data:;
-  connect-src 'none';
-">
-```
+### Credential Storage
+- API tokens stored via `safeStorage` (OS-level encryption)
+- Subscription URLs / proxy keys stored via `safeStorage`
+- Nothing sensitive in `localStorage` or renderer state
 
-Renderer не может делать сетевые запросы напрямую — только через IPC.
+### Network
+- Mihomo engine runs as a child process, not as a service
+- API secret (`--secret`) is generated randomly per session (crypto.randomBytes)
+- No hardcoded API endpoints in renderer code
 
----
+### Runtime Isolation
+- mihomo.exe runs with the app's user permissions (not elevated)
+- WinTUN driver loaded by mihomo automatically when present
+- Pre-flight checks prevent connecting with missing binaries
 
-## IPC Boundary
+### Binary Integrity
+- `resources/bin/` bundled by electron-builder, path verified at startup
+- Pre-flight validates `existsSync(binaryPath)` before every connect
 
-### Схема входящих данных (Zod)
-
-Каждый IPC-обработчик валидирует входные данные:
-
-```typescript
-// Пример: login handler
-ipcMain.handle(IpcChannel.AUTH_LOGIN_EMAIL, async (_, args) => {
-  const { email, password } = LoginEmailSchema.parse(args)
-  return authService.loginEmail(email, password)
-})
-```
-
-**Что происходит при невалидных данных:**
-- `ZodError` — обработчик возвращает ошибку, renderer получает sanitized error message
-- Злонамеренные данные не проходят дальше IPC-обработчика
-
-### Исходящие данные (sanitized)
-
-```typescript
-// PublicUser (что получает renderer) vs User (что хранится в main)
-interface PublicUser {
-  id: string
-  email: string
-  username: string
-  // НЕТ: token, refreshToken, internalId
-}
-
-interface SubscriptionInfo {
-  plan: string
-  expiresAt: Date
-  deviceCount: number
-  // НЕТ: connectionLink, subscriptionUrl
-}
-```
-
----
-
-## Token Isolation
-
-### Хранение токенов
-
-```
-Main Process Memory
-  └── ElectronTokenStorage
-        ├── accessToken    ← только в памяти main process
-        └── refreshToken   ← только в памяти main process
-
-Electron SecureStorage (OS keychain)
-  └── refresh token (persistent между сессиями)
-```
-
-**Tokens никогда:**
-- Не отправляются в renderer
-- Не логируются (pino: redact paths)
-- Не попадают в IPC response
-- Не пишутся в plaintext файлы
-
-### JWT Auto-Refresh
-
-HTTP-интерцептор в `packages/api` автоматически обновляет access token при 401.
-При невалидном refresh token — `onSessionExpired()` callback → renderer получает `AUTH_EXPIRED` event.
-
----
-
-## Subscription URL Protection
-
-Subscription URL — это персональная ссылка пользователя с вшитым токеном доступа.
-
-**Flow:**
-```
-RemnawaveSubscriptionProvider.getConnectionLink()
-  ↓ (HTTPS GET → Cabinet API → возвращает URL)
-RemnawaveConfigSource.fetchYaml()
-  ↓ (HTTPS GET к subscription URL)
-YAML string
-  ↓
-generateMihomoConfig()
-  ↓
-config.yaml (на диске в userData)
-  ↓
-MihomoEngine — читает файл
-```
-
-URL **нигде не хранится** кроме запроса-ответа. В `SubscriptionService` (renderer-facing) метода `getConnectionLink()` нет.
-
----
-
-## Provider Secret Isolation
-
-```
-packages/provider-remnawave/    ← знает про Cabinet API endpoints, auth flow
-packages/provider/              ← только интерфейсы
-apps/windows/src/main/          ← использует через VPNProvider интерфейс
-
-apps/windows/src/renderer/      ← НЕ ЗНАЕТ про Remnawave
-```
-
-Renderer не знает:
-- Какой провайдер используется (только через capabilities)
-- Какой API URL используется
-- Какие HTTP-заголовки отправляются
-
----
-
-## Mihomo API Security
-
-Mihomo запускается с рандомным secret:
-
-```typescript
-const apiSecret = crypto.randomBytes(16).toString('hex')
-// Генерируется при каждом запуске, не сохраняется
-```
-
-API слушает только `127.0.0.1` (loopback), не доступен снаружи.
-
----
-
-## Файловая система
-
-### userData (AppData/Roaming)
-
-```
-userData/
-├── logs/          ← логи (без секретов, с redact)
-├── db/            ← SQLite (User, Subscription, нет токенов)
-└── mihomo/
-    └── config.yaml  ← Mihomo config (содержит api-secret, не в repo)
-```
-
-`.gitignore` исключает `userData/`, `*.db`, `*.sqlite`.
-
-### Binaries
-
-```
-apps/windows/resources/bin/mihomo.exe  ← НЕ в репозитории (gitignored)
-```
-
-Скачивается отдельно при сборке/установке.
-
----
-
-## Dependency Audit
-
-Регулярно запускать:
-
-```bash
-pnpm audit
-```
-
-Критические уязвимости в зависимостях — блокирующие.
-
----
-
-## Checklist перед релизом
-
-- [ ] `pnpm audit` — нет critical/high уязвимостей
-- [ ] Electron security checklist пройден
-- [ ] contextIsolation: true
-- [ ] nodeIntegration: false в renderer
-- [ ] CSP настроен
-- [ ] Code signing (Windows EV cert)
-- [ ] Все IPC-обработчики имеют Zod-валидацию
-- [ ] Логи не содержат токенов (проверить pino redact config)
-- [ ] `.env` файлы в .gitignore
-- [ ] Mihomo binary верифицирован (SHA256 checksum)
-- [ ] No plaintext secrets в коде (`grep -r "password\|secret\|token" src/`)
+### Known Limitations
+- Code signing not yet implemented (EV cert pending)
+- No automatic binary hash verification (planned for v0.4.0)
+- Mihomo engine output not sandboxed (same trust level as main process)

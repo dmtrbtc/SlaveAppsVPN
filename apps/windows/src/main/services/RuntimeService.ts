@@ -1,4 +1,5 @@
 import type { VPNStatus, VPNMode } from '@slave-vpn/shared'
+import type { VPNConnectivityInfo } from '../../shared/ipc/types'
 
 export interface RuntimeService {
   connect(): Promise<void>
@@ -6,5 +7,6 @@ export interface RuntimeService {
   getStatus(): VPNStatus
   setMode(mode: VPNMode): Promise<void>
   getEngineVersion(): string | null
+  getConnectivity(): Promise<VPNConnectivityInfo | null>
   dispose(): Promise<void>
 }

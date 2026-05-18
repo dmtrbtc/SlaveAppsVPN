@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { ShieldCheck, Zap, Minimize2, Check } from 'lucide-react'
-import { Card } from '../components/ui/card'
+import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
 import { useUIStore } from '../stores/ui.store'
 
@@ -58,7 +58,6 @@ export function DnsPage() {
     if (key === selected || isApplying) return
     setIsApplying(true)
     try {
-      // TODO: wire to ipc.settings.set({ dnsProfile: key }) when implemented
       await new Promise(r => setTimeout(r, 300))
       setSelected(key)
       const profile = DNS_PROFILES.find(p => p.key === key)!
@@ -69,89 +68,102 @@ export function DnsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto">
-      <div className="px-6 py-5">
-        <h1 className="text-sm font-semibold text-text-primary mb-1">DNS</h1>
-        <p className="text-xs text-text-muted">Профиль разрешения имён</p>
+    <div className="flex h-full flex-col overflow-y-auto bg-bg-base">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-border">
+        <h2 className="text-[15px] font-semibold text-text-primary">DNS</h2>
+        <p className="text-[12px] text-text-muted mt-0.5">Профиль разрешения имён</p>
       </div>
 
-      <div className="flex flex-col gap-2.5 px-4 pb-4">
-        {DNS_PROFILES.map((profile, i) => {
-          const isSelected = selected === profile.key
-          return (
-            <motion.div
-              key={profile.key}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.07, duration: 0.22 }}
-            >
-              <Card
-                className={cn(
-                  'cursor-pointer transition-all duration-200',
-                  'hover:bg-bg-elevated active:scale-[0.99]',
-                  isSelected ? 'ring-1 ring-accent/50 bg-accent/5' : 'opacity-80 hover:opacity-100',
-                  isApplying && 'pointer-events-none opacity-50'
-                )}
-                onClick={() => void handleSelect(profile.key)}
+      <div className="flex flex-col gap-2.5 px-6 py-5">
+        {/* Profile grid — 3 cards */}
+        <div className="grid grid-cols-3 gap-2.5">
+          {DNS_PROFILES.map((profile, i) => {
+            const isSelected = selected === profile.key
+            return (
+              <motion.div
+                key={profile.key}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.06, duration: 0.2 }}
               >
-                <div className="flex items-start gap-3">
-                  <div className={cn(
-                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg mt-0.5',
-                    isSelected ? 'bg-accent/20' : 'bg-bg-secondary'
-                  )}>
-                    <profile.Icon className={cn(
-                      'h-4 w-4',
-                      isSelected ? 'text-accent' : 'text-text-muted'
-                    )} />
+                <div
+                  onClick={() => void handleSelect(profile.key)}
+                  className={cn(
+                    'rounded-lg border p-4 cursor-pointer transition-all duration-200 h-full',
+                    'hover:-translate-y-px',
+                    isSelected
+                      ? 'border-accent/40 bg-accent/5'
+                      : 'border-border bg-bg-primary hover:border-border-strong hover:shadow-card',
+                    isApplying && 'pointer-events-none opacity-60'
+                  )}
+                >
+                  {/* Icon + selected */}
+                  <div className="flex items-start justify-between mb-3">
+                    <div className={cn(
+                      'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+                      isSelected ? 'bg-accent/15' : 'bg-bg-secondary'
+                    )}>
+                      <profile.Icon className={cn(
+                        'h-4 w-4',
+                        isSelected ? 'text-accent' : 'text-text-muted'
+                      )} />
+                    </div>
+                    {isSelected && <Check className="h-3.5 w-3.5 text-accent" />}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className={cn(
-                        'text-sm font-medium',
-                        isSelected ? 'text-text-primary' : 'text-text-secondary'
-                      )}>
-                        {profile.label}
-                      </span>
-                      {isSelected && <Check className="h-3.5 w-3.5 text-accent" />}
-                      {profile.recommended && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-connected/15 text-connected font-medium">
-                          Рекомендован
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-text-muted mb-2">{profile.sublabel}</p>
-                    <p className="text-[11px] text-text-muted leading-relaxed mb-2.5">
-                      {profile.description}
-                    </p>
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {profile.features.map(f => (
-                        <span key={f} className="text-[10px] px-1.5 py-0.5 rounded-md bg-bg-secondary text-text-muted font-medium">
-                          {f}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex flex-col gap-0.5">
-                      {profile.servers.map(s => (
-                        <code key={s} className="text-[10px] text-text-muted font-mono break-all">
-                          {s}
-                        </code>
-                      ))}
-                    </div>
+
+                  {/* Title + recommended */}
+                  <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                    <span className={cn(
+                      'text-[13px] font-semibold',
+                      isSelected ? 'text-text-primary' : 'text-text-secondary'
+                    )}>
+                      {profile.label}
+                    </span>
+                    {profile.recommended && <Badge tone="ok">Рекомендован</Badge>}
+                  </div>
+
+                  <p className="text-[11px] text-text-muted mb-2">{profile.sublabel}</p>
+                  <p className="text-[11px] text-text-muted leading-relaxed mb-3">
+                    {profile.description}
+                  </p>
+
+                  {/* Features */}
+                  <div className="flex flex-wrap gap-1">
+                    {profile.features.map(f => (
+                      <Badge key={f} tone="neutral">{f}</Badge>
+                    ))}
                   </div>
                 </div>
-              </Card>
-            </motion.div>
-          )
-        })}
-      </div>
-
-      <div className="px-4 pb-6">
-        <div className="rounded-xl border border-border/50 bg-bg-primary px-4 py-3">
-          <p className="text-[11px] text-text-muted leading-relaxed">
-            Изменение DNS-профиля вступает в силу при следующем подключении.
-            Fake-IP режим создаёт виртуальные адреса для доменов и направляет трафик через правила маршрутизации.
-          </p>
+              </motion.div>
+            )
+          })}
         </div>
+
+        {/* Servers + info card */}
+        {DNS_PROFILES.find(p => p.key === selected) && (
+          <motion.div
+            key={selected}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="rounded-lg border border-border bg-bg-primary p-4"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-2">
+              DNS-серверы — {DNS_PROFILES.find(p => p.key === selected)!.label}
+            </p>
+            <div className="flex flex-col gap-1">
+              {DNS_PROFILES.find(p => p.key === selected)!.servers.map(s => (
+                <code key={s} className="text-[11px] text-text-secondary font-mono break-all">
+                  {s}
+                </code>
+              ))}
+            </div>
+            <p className="text-[11px] text-text-muted leading-relaxed mt-3">
+              Изменение профиля вступает в силу при следующем подключении.
+            </p>
+          </motion.div>
+        )}
       </div>
     </div>
   )

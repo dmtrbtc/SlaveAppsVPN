@@ -10,6 +10,9 @@ export interface Server {
   latencyMs: number | null
   isFavorite: boolean
   isSelected: boolean
+  proxyType?: string     // vless | vmess | trojan | ss | hysteria2 | tuic
+  transport?: string     // tcp | ws | grpc | h2
+  securityType?: string  // reality | tls | none
 }
 
 export interface ServerStats {
