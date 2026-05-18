@@ -2,8 +2,8 @@
   "extends": "@slave-vpn/tsconfig/base.json",
   "compilerOptions": {
     "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "node16",
+    "module": "CommonJS",
+    "moduleResolution": "node",
     "verbatimModuleSyntax": false,
     "lib": ["ES2022"],
     "outDir": "dist",

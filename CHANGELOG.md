@@ -2,6 +2,42 @@
 
 All notable changes to SLAVE VPN are documented here.
 
+## [0.3.0-rc1] — 2026-05-18
+
+### Added
+
+**Safe Mode + Startup Recovery (Iter 9 Stage 4)**
+- `SafeModeManager`: detects crash loops (3 failed starts within 45s each), enters safe mode; resets after 60s healthy uptime; persists `launch-record.json` in userData
+- `SafeModeBanner`: dismissible orange banner with launch count, reset button, export diagnostics; `useSafeMode` hook polls every 60s
+- `SAFE_MODE_GET_STATUS` and `SAFE_MODE_RESET` IPC channels
+
+**Subscription node preview (Iter 9 Stage 5)**
+- `ConfigSourceValidateResult` extended with `nodeCount`, `protocols` map, `sampleNodes[]`
+- `NodePreviewPanel`: protocol badges (REALITY/WS/gRPC) + first 3 server names shown after validation
+- Single-proxy validation returns inline sampleNodes data
+
+**Reality node health (Iter 9 Stage 6)**
+- `NodeHealthManager`: per-node failure counter with exponential backoff quarantine (30s→5min cap), 10-min idle cleanup
+- Failure recorded against `activeProxy` on every classified Mihomo log error
+- `reconnect.success` records success to reduce failure count
+- Quarantined node list reported in `getConnectivity()` response
+
+**Connectivity intelligence (Iter 9 Stage 7)**
+- `detectCaptivePortal()`: passive HTTP 204 check (only fires when connectivity already broken)
+- `buildSuggestion()`: actionable Russian hint based on current health degradation reason
+- `VPNConnectivityInfo` gains `captivePortal?`, `quarantinedNodes?`, `suggestion?`
+- DiagnosticsPage: captive portal warning + suggestion banner + quarantined count display
+
+**UX polish (Iter 9 Stage 8)**
+- `@media (prefers-reduced-motion)`: all animations disabled at CSS level
+- `:focus-visible` ring: consistent 2px accent outline across entire app
+- `aria-label` on SafeModeBanner, OfflineBanner interactive elements
+
+### Documentation
+- `PRODUCTION_HARDENING_AUDIT.md`: full coverage matrix (43 checks)
+- `ROADMAP.md`: v0.3→v0.5 feature timeline
+- `SECURITY.md`: vulnerability reporting + security design
+
 ## [0.3.0-beta] — 2026-05-18
 
 ### Added
