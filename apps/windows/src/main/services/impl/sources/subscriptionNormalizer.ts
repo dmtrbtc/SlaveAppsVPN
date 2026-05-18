@@ -49,7 +49,11 @@ function parseLinksToProxies(links: string[]): ProxyEntry[] {
 }
 
 function countProxiesInYaml(yaml: string): number {
-  return (yaml.match(/^[ \t]*-[ \t]+name[ \t]*:/gm) ?? []).length
+  // Count entries inside the proxies: block only.
+  // Simple heuristic: extract section between 'proxies:' and the next top-level key.
+  const proxySection = yaml.match(/^proxies\s*:\s*\n([\s\S]*?)(?=^\S|\n[a-z-]+\s*:|\n*$)/m)
+  const section = proxySection?.[1] ?? ''
+  return (section.match(/^[ \t]*-[ \t]+name[ \t]*:/gm) ?? []).length
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────

@@ -71,7 +71,8 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     proxies: profile.proxies as unknown[],
     'proxy-groups': [
       ...managedGroups,
-      ...profile.proxyGroups,
+      // Filter out groups with no proxies — mihomo rejects empty select/url-test groups
+      ...profile.proxyGroups.filter(g => g.proxies.length > 0),
     ] as unknown[],
     rules,
   }
