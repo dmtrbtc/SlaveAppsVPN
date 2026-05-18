@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 export interface AppNotification {
   id: string
   type: 'info' | 'success' | 'warning' | 'error'
@@ -10,11 +12,13 @@ export interface AppNotification {
 }
 
 interface UIStore {
+  themeMode: ThemeMode
   sidebarCollapsed: boolean
   serverFavorites: string[]
   notifications: AppNotification[]
   _notifTimers: Map<string, ReturnType<typeof setTimeout>>
 
+  setThemeMode: (mode: ThemeMode) => void
   toggleSidebar: () => void
   setSidebarCollapsed: (v: boolean) => void
   toggleServerFavorite: (id: string) => void
@@ -27,11 +31,13 @@ let _notifCounter = 0
 export const useUIStore = create<UIStore>()(
   persist(
     (set, get) => ({
+      themeMode: 'system',
       sidebarCollapsed: false,
       serverFavorites: [],
       notifications: [],
       _notifTimers: new Map(),
 
+      setThemeMode: (mode) => set({ themeMode: mode }),
       toggleSidebar: () => set(s => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
 
@@ -66,6 +72,7 @@ export const useUIStore = create<UIStore>()(
     {
       name: 'slave-vpn-ui',
       partialize: (s) => ({
+        themeMode: s.themeMode,
         sidebarCollapsed: s.sidebarCollapsed,
         serverFavorites: s.serverFavorites,
       }),

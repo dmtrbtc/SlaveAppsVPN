@@ -11,6 +11,7 @@ export const IpcChannel = {
   VPN_DISCONNECT: 'vpn:disconnect',
   VPN_GET_STATUS: 'vpn:getStatus',
   VPN_SET_MODE: 'vpn:setMode',
+  VPN_GET_CONNECTIVITY: 'vpn:getConnectivity',
 
   // Subscription — request/response
   SUBSCRIPTION_GET: 'subscription:get',
@@ -31,6 +32,22 @@ export const IpcChannel = {
   PROVIDER_GET_MANIFEST: 'provider:getManifest',
   PROVIDER_GET_CAPABILITIES: 'provider:getCapabilities',
 
+  // Config source — request/response
+  CONFIG_SOURCE_GET_META: 'config-source:getMeta',
+  CONFIG_SOURCE_SET: 'config-source:set',
+  CONFIG_SOURCE_VALIDATE: 'config-source:validate',
+  CONFIG_SOURCE_CLEAR: 'config-source:clear',
+
+  // Servers — request/response
+  SERVERS_LIST: 'servers:list',
+
+  // Updates — request/response
+  UPDATE_CHECK: 'update:check',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_INSTALL: 'update:install',
+  UPDATE_GET_STATUS: 'update:getStatus',
+  UPDATE_SET_CHANNEL: 'update:setChannel',
+
   // Window controls — request/response
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
@@ -46,6 +63,7 @@ export const IpcChannel = {
   EVENT_AUTH_EXPIRED: 'event:auth:expired',
   EVENT_UPDATE_AVAILABLE: 'event:update:available',
   EVENT_UPDATE_DOWNLOADED: 'event:update:downloaded',
+  EVENT_UPDATE_PROGRESS: 'event:update:progress',
   EVENT_NOTIFICATION: 'event:notification',
 } as const
 
@@ -60,6 +78,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'VPN_DISCONNECT'
   | 'VPN_GET_STATUS'
   | 'VPN_SET_MODE'
+  | 'VPN_GET_CONNECTIVITY'
   | 'SUBSCRIPTION_GET'
   | 'SUBSCRIPTION_REFRESH'
   | 'SUBSCRIPTION_GET_DEVICES'
@@ -71,6 +90,16 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DIAGNOSTICS_GET_LOGS'
   | 'PROVIDER_GET_MANIFEST'
   | 'PROVIDER_GET_CAPABILITIES'
+  | 'CONFIG_SOURCE_GET_META'
+  | 'CONFIG_SOURCE_SET'
+  | 'CONFIG_SOURCE_VALIDATE'
+  | 'CONFIG_SOURCE_CLEAR'
+  | 'SERVERS_LIST'
+  | 'UPDATE_CHECK'
+  | 'UPDATE_DOWNLOAD'
+  | 'UPDATE_INSTALL'
+  | 'UPDATE_GET_STATUS'
+  | 'UPDATE_SET_CHANNEL'
   | 'WINDOW_MINIMIZE'
   | 'WINDOW_MAXIMIZE'
   | 'WINDOW_CLOSE'

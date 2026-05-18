@@ -32,6 +32,18 @@ export const SettingsSetSchema = z
   })
   .strict()
 
+export const ConfigSourceTypeSchema = z.enum(['provider', 'subscription-url', 'single-proxy', 'remnawave-key'])
+
+export const ConfigSourceSetSchema = z.object({
+  type: ConfigSourceTypeSchema,
+  input: z.string().min(1).max(4096),
+})
+
+export const ConfigSourceValidateSchema = z.object({
+  type: ConfigSourceTypeSchema,
+  input: z.string().min(1).max(4096),
+})
+
 export const EmptySchema = z.undefined()
 
 export type LoginEmailInput = z.infer<typeof LoginEmailSchema>

@@ -6,9 +6,7 @@ import { createTray, destroyTray } from './tray'
 import { registerAllHandlers } from './ipc/registry'
 import { getSettingsStore } from './services/SettingsStore'
 import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
-import { autoUpdater } from 'electron-updater'
-import { sendToRenderer } from './window'
-import { IpcChannel } from '../shared/ipc/channels'
+import { getUpdateService } from './services/UpdateService'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
 app.commandLine.appendSwitch('disable-http-cache')
@@ -57,7 +55,7 @@ log.info({
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const userDataPath = app.getPath('userData')
   const logger = initLogger(userDataPath)
   setCrashLogPath(userDataPath)
@@ -65,7 +63,7 @@ app.whenReady().then(() => {
   logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid }, 'App ready')
 
   logger.debug({ phase: 'ipc_register' }, 'Registering IPC handlers')
-  registerAllHandlers()
+  await registerAllHandlers()
   logger.debug({ phase: 'ipc_register' }, 'IPC handlers registered')
 
   logger.debug({ phase: 'window_create' }, 'Creating main window')
@@ -141,44 +139,7 @@ function setupAutoStart(): void {
 // ─── Auto-updater ─────────────────────────────────────────────────────────────
 
 function setupAutoUpdater(): void {
-  if (!app.isPackaged) {
-    log.debug('Auto-updater disabled in development')
-    return
-  }
-
-  autoUpdater.logger = {
-    info: (msg) => log.info({ src: 'updater' }, String(msg)),
-    warn: (msg) => log.warn({ src: 'updater' }, String(msg)),
-    error: (msg) => log.error({ src: 'updater' }, String(msg)),
-    debug: (msg) => log.debug({ src: 'updater' }, String(msg)),
-  }
-
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
-
-  autoUpdater.on('update-available', (info) => {
-    log.info({ version: info.version }, 'Update available')
-    sendToRenderer(IpcChannel.EVENT_UPDATE_AVAILABLE, {
-      version: info.version,
-      releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : null,
-    })
-  })
-
-  autoUpdater.on('update-downloaded', (info) => {
-    log.info({ version: info.version }, 'Update downloaded')
-    sendToRenderer(IpcChannel.EVENT_UPDATE_DOWNLOADED, {
-      version: info.version,
-      releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : null,
-    })
-  })
-
-  autoUpdater.on('error', (error: Error) => {
-    log.error({ error }, 'Auto-updater error')
-  })
-
-  autoUpdater.checkForUpdatesAndNotify().catch((err: unknown) => {
-    log.warn({ err }, 'Update check failed')
-  })
+  getUpdateService().setup()
 }
 
 // ─── Power events ─────────────────────────────────────────────────────────────

@@ -1,1 +1,1 @@
-export { authApi, vpnApi, subscriptionApi, settingsApi, diagnosticsApi, providerApi, events } from './ipc-adapter'
+export { authApi, vpnApi, subscriptionApi, settingsApi, diagnosticsApi, providerApi, configSourceApi, serversApi, updateApi, events } from './ipc-adapter'

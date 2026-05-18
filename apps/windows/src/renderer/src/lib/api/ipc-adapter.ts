@@ -1,99 +1,149 @@
-import type { SlaveVPNBridge } from '@shared/ipc/types'
+import type { SlaveVPNBridge, UpdateSetChannelPayload } from '@shared/ipc/types'
 
-function assertBridge(): SlaveVPNBridge {
+const IPC_TIMEOUT_MS = 15_000
+const NOOP_UNSUB = (): void => {}
+
+function requireBridge(): SlaveVPNBridge {
   if (!window.slaveVPN) {
     throw new Error('[IPC] Bridge not available — preload not initialized')
   }
   return window.slaveVPN
 }
 
-async function unwrap<T>(promise: Promise<{ ok: true; data: T } | { ok: false; error: { code: string; message: string } }>): Promise<T> {
-  const result = await promise
-  if (!result.ok) {
-    const err = new Error(result.error.message)
-    ;(err as Error & { code: string }).code = result.error.code
-    throw err
+function getBridge(): SlaveVPNBridge | null {
+  return window.slaveVPN ?? null
+}
+
+async function unwrap<T>(
+  promise: Promise<{ ok: true; data: T } | { ok: false; error: { code: string; message: string } }>
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('[IPC] Request timed out')), IPC_TIMEOUT_MS)
+  })
+  try {
+    const result = await Promise.race([promise, timeout])
+    if (!result.ok) {
+      const err = new Error(result.error.message)
+      ;(err as Error & { code: string }).code = result.error.code
+      throw err
+    }
+    return result.data
+  } finally {
+    clearTimeout(timer)
   }
-  return result.data
 }
 
 export const authApi = {
   loginEmail: (email: string, password: string) =>
-    unwrap(assertBridge().auth.loginEmail({ email, password })),
+    unwrap(requireBridge().auth.loginEmail({ email, password })),
   loginTelegram: (initData: string) =>
-    unwrap(assertBridge().auth.loginTelegram({ initData })),
+    unwrap(requireBridge().auth.loginTelegram({ initData })),
   logout: () =>
-    unwrap(assertBridge().auth.logout()),
+    unwrap(requireBridge().auth.logout()),
   getMe: () =>
-    unwrap(assertBridge().auth.getMe()),
+    unwrap(requireBridge().auth.getMe()),
   refresh: () =>
-    unwrap(assertBridge().auth.refresh()),
+    unwrap(requireBridge().auth.refresh()),
 }
 
 export const vpnApi = {
   connect: () =>
-    unwrap(assertBridge().vpn.connect()),
+    unwrap(requireBridge().vpn.connect()),
   disconnect: () =>
-    unwrap(assertBridge().vpn.disconnect()),
+    unwrap(requireBridge().vpn.disconnect()),
   getStatus: () =>
-    unwrap(assertBridge().vpn.getStatus()),
+    unwrap(requireBridge().vpn.getStatus()),
   setMode: (mode: Parameters<SlaveVPNBridge['vpn']['setMode']>[0]['mode']) =>
-    unwrap(assertBridge().vpn.setMode({ mode })),
+    unwrap(requireBridge().vpn.setMode({ mode })),
+  getConnectivity: () =>
+    unwrap(requireBridge().vpn.getConnectivity()),
 }
 
 export const subscriptionApi = {
   get: () =>
-    unwrap(assertBridge().subscription.get()),
+    unwrap(requireBridge().subscription.get()),
   refresh: () =>
-    unwrap(assertBridge().subscription.refresh()),
+    unwrap(requireBridge().subscription.refresh()),
   getDevices: () =>
-    unwrap(assertBridge().subscription.getDevices()),
+    unwrap(requireBridge().subscription.getDevices()),
   removeDevice: (hwid: string) =>
-    unwrap(assertBridge().subscription.removeDevice({ hwid })),
+    unwrap(requireBridge().subscription.removeDevice({ hwid })),
 }
 
 export const settingsApi = {
   get: () =>
-    unwrap(assertBridge().settings.get()),
+    unwrap(requireBridge().settings.get()),
   set: (partial: Parameters<SlaveVPNBridge['settings']['set']>[0]) =>
-    unwrap(assertBridge().settings.set(partial)),
+    unwrap(requireBridge().settings.set(partial)),
 }
 
 export const diagnosticsApi = {
   collect: () =>
-    unwrap(assertBridge().diagnostics.collect()),
+    unwrap(requireBridge().diagnostics.collect()),
   getLogs: () =>
-    unwrap(assertBridge().diagnostics.getLogs()),
+    unwrap(requireBridge().diagnostics.getLogs()),
   exportLogs: () =>
-    unwrap(assertBridge().diagnostics.exportLogs()),
+    unwrap(requireBridge().diagnostics.exportLogs()),
 }
 
 export const providerApi = {
   getManifest: () =>
-    unwrap(assertBridge().provider.getManifest()),
+    unwrap(requireBridge().provider.getManifest()),
   getCapabilities: () =>
-    unwrap(assertBridge().provider.getCapabilities()),
+    unwrap(requireBridge().provider.getCapabilities()),
+}
+
+export const configSourceApi = {
+  getMeta: () =>
+    unwrap(requireBridge().configSource.getMeta()),
+  set: (payload: Parameters<SlaveVPNBridge['configSource']['set']>[0]) =>
+    unwrap(requireBridge().configSource.set(payload)),
+  validate: (payload: Parameters<SlaveVPNBridge['configSource']['validate']>[0]) =>
+    unwrap(requireBridge().configSource.validate(payload)),
+  clear: () =>
+    unwrap(requireBridge().configSource.clear()),
+}
+
+export const serversApi = {
+  list: () =>
+    unwrap(requireBridge().servers.list()),
+}
+
+export const updateApi = {
+  check: () =>
+    unwrap(requireBridge().update.check()),
+  download: () =>
+    unwrap(requireBridge().update.download()),
+  install: () =>
+    unwrap(requireBridge().update.install()),
+  getStatus: () =>
+    unwrap(requireBridge().update.getStatus()),
+  setChannel: (payload: UpdateSetChannelPayload) =>
+    unwrap(requireBridge().update.setChannel(payload)),
 }
 
 export const events = {
   onVpnStatus: (...args: Parameters<SlaveVPNBridge['events']['onVpnStatus']>) =>
-    assertBridge().events.onVpnStatus(...args),
+    getBridge()?.events.onVpnStatus(...args) ?? NOOP_UNSUB,
   onVpnTraffic: (...args: Parameters<SlaveVPNBridge['events']['onVpnTraffic']>) =>
-    assertBridge().events.onVpnTraffic(...args),
+    getBridge()?.events.onVpnTraffic(...args) ?? NOOP_UNSUB,
   onVpnError: (...args: Parameters<SlaveVPNBridge['events']['onVpnError']>) =>
-    assertBridge().events.onVpnError(...args),
+    getBridge()?.events.onVpnError(...args) ?? NOOP_UNSUB,
   onVpnHealth: (...args: Parameters<SlaveVPNBridge['events']['onVpnHealth']>) =>
-    assertBridge().events.onVpnHealth(...args),
+    getBridge()?.events.onVpnHealth(...args) ?? NOOP_UNSUB,
   onRuntimeEvent: (...args: Parameters<SlaveVPNBridge['events']['onRuntimeEvent']>) =>
-    assertBridge().events.onRuntimeEvent(...args),
+    getBridge()?.events.onRuntimeEvent(...args) ?? NOOP_UNSUB,
   onSubscriptionUpdated: (...args: Parameters<SlaveVPNBridge['events']['onSubscriptionUpdated']>) =>
-    assertBridge().events.onSubscriptionUpdated(...args),
+    getBridge()?.events.onSubscriptionUpdated(...args) ?? NOOP_UNSUB,
   onAuthExpired: (...args: Parameters<SlaveVPNBridge['events']['onAuthExpired']>) =>
-    assertBridge().events.onAuthExpired(...args),
+    getBridge()?.events.onAuthExpired(...args) ?? NOOP_UNSUB,
   onUpdateAvailable: (...args: Parameters<SlaveVPNBridge['events']['onUpdateAvailable']>) =>
-    assertBridge().events.onUpdateAvailable(...args),
+    getBridge()?.events.onUpdateAvailable(...args) ?? NOOP_UNSUB,
   onUpdateDownloaded: (...args: Parameters<SlaveVPNBridge['events']['onUpdateDownloaded']>) =>
-    assertBridge().events.onUpdateDownloaded(...args),
+    getBridge()?.events.onUpdateDownloaded(...args) ?? NOOP_UNSUB,
+  onUpdateProgress: (...args: Parameters<SlaveVPNBridge['events']['onUpdateProgress']>) =>
+    getBridge()?.events.onUpdateProgress(...args) ?? NOOP_UNSUB,
   onNotification: (...args: Parameters<SlaveVPNBridge['events']['onNotification']>) =>
-    assertBridge().events.onNotification(...args),
+    getBridge()?.events.onNotification(...args) ?? NOOP_UNSUB,
 }

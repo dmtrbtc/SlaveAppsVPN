@@ -10,6 +10,7 @@ function createLogger(userDataPath?: string): pino.Logger {
   if (isDev || !userDataPath) {
     return pino({
       level: 'debug',
+      serializers: { err: pino.stdSerializers.err, error: pino.stdSerializers.err },
       transport: {
         target: 'pino-pretty',
         options: { colorize: true, translateTime: 'SYS:standard' },
@@ -21,7 +22,7 @@ function createLogger(userDataPath?: string): pino.Logger {
   mkdirSync(logDir, { recursive: true })
 
   return pino(
-    { level: 'info' },
+    { level: 'info', serializers: { err: pino.stdSerializers.err, error: pino.stdSerializers.err } },
     pino.destination({
       dest: join(logDir, 'main.log'),
       sync: false,

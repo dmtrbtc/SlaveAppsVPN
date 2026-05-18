@@ -1,3 +1,4 @@
+console.log('[preload] Loading — contextBridge available:', typeof contextBridge !== 'undefined')
 import { contextBridge, ipcRenderer } from 'electron'
 import { IpcChannel } from '../shared/ipc/channels'
 import type {
@@ -8,9 +9,13 @@ import type {
   RemoveDevicePayload,
   AppSettings,
   UpdateAvailablePayload,
+  UpdateProgressPayload,
+  UpdateSetChannelPayload,
   NotificationPayload,
   VpnHealthPayload,
   RuntimeEvent,
+  ConfigSourceSetPayload,
+  ConfigSourceValidatePayload,
 } from '../shared/ipc/types'
 import type { VPNStatus, TrafficStats, Subscription } from '@slave-vpn/shared'
 
@@ -54,6 +59,9 @@ const bridge: SlaveVPNBridge = {
 
     setMode: (payload: VpnSetModePayload) =>
       invoke(IpcChannel.VPN_SET_MODE, payload),
+
+    getConnectivity: () =>
+      invoke(IpcChannel.VPN_GET_CONNECTIVITY),
   },
 
   subscription: {
@@ -95,6 +103,42 @@ const bridge: SlaveVPNBridge = {
 
     getCapabilities: () =>
       invoke(IpcChannel.PROVIDER_GET_CAPABILITIES),
+  },
+
+  configSource: {
+    getMeta: () =>
+      invoke(IpcChannel.CONFIG_SOURCE_GET_META),
+
+    set: (payload: ConfigSourceSetPayload) =>
+      invoke(IpcChannel.CONFIG_SOURCE_SET, payload),
+
+    validate: (payload: ConfigSourceValidatePayload) =>
+      invoke(IpcChannel.CONFIG_SOURCE_VALIDATE, payload),
+
+    clear: () =>
+      invoke(IpcChannel.CONFIG_SOURCE_CLEAR),
+  },
+
+  servers: {
+    list: () =>
+      invoke(IpcChannel.SERVERS_LIST),
+  },
+
+  update: {
+    check: () =>
+      invoke(IpcChannel.UPDATE_CHECK),
+
+    download: () =>
+      invoke(IpcChannel.UPDATE_DOWNLOAD),
+
+    install: () =>
+      invoke(IpcChannel.UPDATE_INSTALL),
+
+    getStatus: () =>
+      invoke(IpcChannel.UPDATE_GET_STATUS),
+
+    setChannel: (payload: UpdateSetChannelPayload) =>
+      invoke(IpcChannel.UPDATE_SET_CHANNEL, payload),
   },
 
   controls: {
@@ -139,9 +183,17 @@ const bridge: SlaveVPNBridge = {
     onUpdateDownloaded: (callback: (payload: UpdateAvailablePayload) => void) =>
       on<UpdateAvailablePayload>(IpcChannel.EVENT_UPDATE_DOWNLOADED, callback),
 
+    onUpdateProgress: (callback: (payload: UpdateProgressPayload) => void) =>
+      on<UpdateProgressPayload>(IpcChannel.EVENT_UPDATE_PROGRESS, callback),
+
     onNotification: (callback: (payload: NotificationPayload) => void) =>
       on<NotificationPayload>(IpcChannel.EVENT_NOTIFICATION, callback),
   },
 }
 
-contextBridge.exposeInMainWorld('slaveVPN', bridge)
+try {
+  contextBridge.exposeInMainWorld('slaveVPN', bridge)
+  console.log('[preload] Bridge exposed successfully')
+} catch (err) {
+  console.error('[preload] Failed to expose bridge:', err)
+}

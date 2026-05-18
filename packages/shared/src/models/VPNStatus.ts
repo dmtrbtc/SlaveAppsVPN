@@ -29,6 +29,8 @@ export interface VPNStatus {
   countryCode: string | null
   connectedAt: number | null
   lastError: string | null
+  activeProxy?: string     // name of currently selected proxy in Mihomo
+  engineHealthScore?: number  // 0-100 composite health
 }
 
 export interface VPNError {

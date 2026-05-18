@@ -48,4 +48,13 @@ export function registerVpnHandlers(): void {
     await runtime.setMode(data.mode)
     return okResult(undefined)
   })
+
+  handleIpc(IpcChannel.VPN_GET_CONNECTIVITY, EmptySchema, async () => {
+    if (!services.has('runtime')) {
+      return okResult(null)
+    }
+    const runtime = services.resolve<RuntimeService>('runtime')
+    const info = await runtime.getConnectivity()
+    return okResult(info)
+  })
 }

@@ -3,6 +3,7 @@ import type {
   User,
   Subscription,
   Device,
+  Server,
   VPNStatus,
   VPNMode,
   TrafficStats,
@@ -70,6 +71,7 @@ export interface AppSettings {
   apiBaseUrl: string
   telegramBotUsername: string
   devMode: boolean
+  updateChannel: 'stable' | 'beta'
 }
 
 export type SettingsGetResult = IpcResult<AppSettings>
@@ -151,6 +153,8 @@ export type RuntimeEventKind =
   | 'vpn.connected'
   | 'vpn.disconnected'
   | 'vpn.error'
+  | 'vpn.preflight_warn'
+  | 'vpn.preflight_failed'
   | 'health.degraded'
   | 'health.recovered'
   | 'health.dns_failure'
@@ -161,6 +165,13 @@ export type RuntimeEventKind =
   | 'reconnect.exhausted'
   | 'sleep.suspend'
   | 'sleep.resume'
+  | 'proxy.reality_error'
+  | 'proxy.flow_error'
+  | 'proxy.tls_error'
+  | 'proxy.dns_error'
+  | 'proxy.connection_refused'
+  | 'proxy.timeout'
+  | 'proxy.selected'
 
 export interface RuntimeEvent {
   id: string
@@ -182,6 +193,99 @@ export interface NotificationPayload {
   title: string
   body: string
   type: 'info' | 'success' | 'warning' | 'error'
+}
+
+// ─── Config Source ────────────────────────────────────────────────────────────
+
+export type ConfigSourceType = 'provider' | 'subscription-url' | 'single-proxy' | 'remnawave-key'
+
+export interface ConfigSourceMeta {
+  type: ConfigSourceType
+  displayName: string
+  urlDomain?: string
+  proxyProtocol?: string
+  addedAt: number
+}
+
+export interface ConfigSourceSetPayload {
+  type: ConfigSourceType
+  input: string
+}
+
+export interface ConfigSourceValidatePayload {
+  type: ConfigSourceType
+  input: string
+}
+
+export interface ConfigSourceValidateResult {
+  valid: boolean
+  displayName?: string
+  error?: string
+}
+
+export type ConfigSourceGetMetaResult = IpcResult<ConfigSourceMeta | null>
+export type ConfigSourceSetResult = IpcResult<ConfigSourceMeta>
+export type ConfigSourceValidateResultEnvelope = IpcResult<ConfigSourceValidateResult>
+export type ConfigSourceClearResult = IpcResult<void>
+
+// ─── Servers ──────────────────────────────────────────────────────────────────
+
+export type ServersListResult = IpcResult<Server[]>
+
+// ─── Connectivity snapshot ───────────────────────────────────────────────────
+
+export interface VPNConnectivityInfo {
+  engineState: string          // RuntimeState: idle|starting|running|stopping|crashed|error
+  processAlive: boolean
+  apiResponding: boolean
+  tunAvailable: boolean
+  connectivityOk: boolean
+  dnsOk: boolean
+  trafficActive: boolean
+  activeProxy: string | null   // currently selected proxy name
+  proxyCount: number           // available proxies in subscription
+  healthScore: number          // 0-100 composite score
+  checkedAt: number
+}
+
+export type VpnGetConnectivityResult = IpcResult<VPNConnectivityInfo | null>
+
+// ─── Updates ─────────────────────────────────────────────────────────────────
+
+export type UpdateChannel = 'stable' | 'beta'
+export type UpdateState = 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'ready' | 'error'
+
+export interface UpdateStatus {
+  state: UpdateState
+  channel: UpdateChannel
+  currentVersion: string
+  availableVersion: string | null
+  downloadProgress: number
+  error: string | null
+  releaseNotes: string | null
+  checkedAt: number | null
+}
+
+export interface UpdateCheckPayload {
+  hasUpdate: boolean
+  version: string | null
+}
+
+export interface UpdateSetChannelPayload {
+  channel: UpdateChannel
+}
+
+export type UpdateGetStatusResult = IpcResult<UpdateStatus>
+export type UpdateCheckResult = IpcResult<UpdateCheckPayload>
+export type UpdateDownloadResult = IpcResult<void>
+export type UpdateInstallResult = IpcResult<void>
+export type UpdateSetChannelResult = IpcResult<void>
+
+export interface UpdateProgressPayload {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
 }
 
 // ─── Feature Flags ────────────────────────────────────────────────────────────
@@ -210,6 +314,7 @@ export interface SlaveVPNBridge {
     disconnect: () => Promise<VpnDisconnectResult>
     getStatus: () => Promise<VpnGetStatusResult>
     setMode: (payload: VpnSetModePayload) => Promise<IpcResult<void>>
+    getConnectivity: () => Promise<VpnGetConnectivityResult>
   }
   subscription: {
     get: () => Promise<SubscriptionGetResult>
@@ -230,6 +335,22 @@ export interface SlaveVPNBridge {
     getManifest: () => Promise<ProviderGetManifestResult>
     getCapabilities: () => Promise<ProviderGetCapabilitiesResult>
   }
+  configSource: {
+    getMeta: () => Promise<ConfigSourceGetMetaResult>
+    set: (payload: ConfigSourceSetPayload) => Promise<ConfigSourceSetResult>
+    validate: (payload: ConfigSourceValidatePayload) => Promise<ConfigSourceValidateResultEnvelope>
+    clear: () => Promise<ConfigSourceClearResult>
+  }
+  servers: {
+    list: () => Promise<ServersListResult>
+  }
+  update: {
+    check: () => Promise<UpdateCheckResult>
+    download: () => Promise<UpdateDownloadResult>
+    install: () => Promise<UpdateInstallResult>
+    getStatus: () => Promise<UpdateGetStatusResult>
+    setChannel: (payload: UpdateSetChannelPayload) => Promise<UpdateSetChannelResult>
+  }
   controls: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>
@@ -245,6 +366,7 @@ export interface SlaveVPNBridge {
     onAuthExpired: (callback: () => void) => () => void
     onUpdateAvailable: (callback: (payload: UpdateAvailablePayload) => void) => () => void
     onUpdateDownloaded: (callback: (payload: UpdateAvailablePayload) => void) => () => void
+    onUpdateProgress: (callback: (payload: UpdateProgressPayload) => void) => () => void
     onNotification: (callback: (payload: NotificationPayload) => void) => () => void
   }
 }

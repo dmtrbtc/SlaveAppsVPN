@@ -1,56 +1,102 @@
 import { create } from 'zustand'
 import type { User } from '@slave-vpn/shared'
-import { authApi, events } from '../lib/api'
+import type { ConfigSourceMeta } from '@shared/ipc/types'
+import { authApi, configSourceApi, events } from '../lib/api'
 
 interface AuthStore {
   user: User | null
   isAuthenticated: boolean
+  configSourceMeta: ConfigSourceMeta | null
   isBootstrapping: boolean
+
+  // True if the app has any valid way to connect (provider auth OR stored config source)
+  hasAccess: boolean
 
   bootstrap: () => Promise<void>
   loginEmail: (email: string, password: string) => Promise<void>
   loginTelegram: (initData: string) => Promise<void>
   logout: () => Promise<void>
+  setConfigSourceMeta: (meta: ConfigSourceMeta | null) => void
   subscribeToAuthEvents: () => () => void
+}
+
+function computeHasAccess(isAuthenticated: boolean, configSourceMeta: ConfigSourceMeta | null): boolean {
+  return isAuthenticated || configSourceMeta !== null
 }
 
 export const useAuthStore = create<AuthStore>()((set) => ({
   user: null,
   isAuthenticated: false,
+  configSourceMeta: null,
   isBootstrapping: true,
+  hasAccess: false,
 
   bootstrap: async () => {
     set({ isBootstrapping: true })
+
+    let user: User | null = null
+    let isAuthenticated = false
+    let configSourceMeta: ConfigSourceMeta | null = null
+
+    // Check for stored config source (non-provider path)
     try {
-      const user = await authApi.getMe()
-      set({ user, isAuthenticated: true })
+      configSourceMeta = await configSourceApi.getMeta()
     } catch {
-      set({ user: null, isAuthenticated: false })
-    } finally {
-      set({ isBootstrapping: false })
+      // ignore — no config source stored
     }
+
+    // Try provider auth
+    try {
+      user = await authApi.getMe()
+      isAuthenticated = true
+    } catch {
+      // no provider session
+    }
+
+    set({
+      user,
+      isAuthenticated,
+      configSourceMeta,
+      hasAccess: computeHasAccess(isAuthenticated, configSourceMeta),
+      isBootstrapping: false,
+    })
   },
 
   loginEmail: async (email, password) => {
     await authApi.loginEmail(email, password)
     const user = await authApi.getMe()
-    set({ user, isAuthenticated: true })
+    set({ user, isAuthenticated: true, hasAccess: true })
   },
 
   loginTelegram: async (initData) => {
     await authApi.loginTelegram(initData)
     const user = await authApi.getMe()
-    set({ user, isAuthenticated: true })
+    set({ user, isAuthenticated: true, hasAccess: true })
   },
 
   logout: async () => {
     await authApi.logout()
-    set({ user: null, isAuthenticated: false })
+    set(s => ({
+      user: null,
+      isAuthenticated: false,
+      hasAccess: computeHasAccess(false, s.configSourceMeta),
+    }))
+  },
+
+  setConfigSourceMeta: (meta) => {
+    set(s => ({
+      configSourceMeta: meta,
+      hasAccess: computeHasAccess(s.isAuthenticated, meta),
+    }))
   },
 
   subscribeToAuthEvents: () => {
     return events.onAuthExpired(() => {
-      set({ user: null, isAuthenticated: false })
+      set(s => ({
+        user: null,
+        isAuthenticated: false,
+        hasAccess: computeHasAccess(false, s.configSourceMeta),
+      }))
     })
   },
 }))
