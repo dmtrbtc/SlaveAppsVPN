@@ -138,6 +138,23 @@ function ConnectivityPanel({ info }: { info: VPNConnectivityInfo }) {
         </div>
       </div>
 
+      {/* Captive portal / suggestion */}
+      {info.captivePortal && (
+        <div className="rounded-md bg-connecting/10 border border-connecting/30 px-3 py-2 text-[11px] text-connecting">
+          Captive portal — подключитесь к сети через браузер
+        </div>
+      )}
+      {info.suggestion && !info.captivePortal && (
+        <div className="rounded-md bg-bg-secondary px-3 py-2 text-[11px] text-text-secondary">
+          {info.suggestion}
+        </div>
+      )}
+      {info.quarantinedNodes !== undefined && info.quarantinedNodes > 0 && (
+        <div className="text-[10px] text-text-muted">
+          {info.quarantinedNodes} узлов в карантине
+        </div>
+      )}
+
       {/* Last checked */}
       <div className="flex justify-end">
         <span className="text-[10px] text-text-muted">

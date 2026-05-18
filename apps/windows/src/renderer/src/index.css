@@ -75,6 +75,24 @@
   html.dark ::-webkit-scrollbar-thumb:hover {
     background: #3f376b;
   }
+
+  /* Reduced motion: disable all transitions and animations */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Focus ring — consistent across the app */
+  :focus-visible {
+    outline: 2px solid var(--color-accent, #ff7a59);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
 }
 
 @layer components {

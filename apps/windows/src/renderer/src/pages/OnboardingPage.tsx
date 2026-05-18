@@ -1,14 +1,16 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Link2, Key, Shield, CheckCircle, AlertCircle, Mail, Lock, Send } from 'lucide-react'
+import { Link2, Key, Shield, CheckCircle, AlertCircle, Mail, Lock, Send, Server } from 'lucide-react'
 import { Button } from '../components/ui/button'
+import { Badge } from '../components/ui/badge'
 import { Input } from '../components/ui/input'
 import { Segmented } from '../components/ui/segmented'
 import { useAuthStore } from '../stores/auth.store'
 import { useConfigSourceStore } from '../stores/config-source.store'
 import { useUIStore } from '../stores/ui.store'
 import { TitleBar } from '../components/layout/TitleBar'
+import type { ConfigSourceValidateResult } from '@shared/ipc/types'
 
 type OnboardingTab = 'subscription-url' | 'single-proxy' | 'remnawave-key' | 'provider'
 
@@ -26,7 +28,15 @@ const AUTH_TAB_OPTIONS: { value: AuthTab; label: string }[] = [
   { value: 'telegram', label: 'Telegram' },
 ]
 
-function ValidationBadge({ result }: { result: { valid: boolean; error?: string; displayName?: string } }) {
+const PROTOCOL_TONE: Record<string, 'ok' | 'warn' | 'neutral'> = {
+  reality: 'ok',
+  'vless+tls': 'ok',
+  'trojan+tls': 'ok',
+  ws: 'warn',
+  grpc: 'warn',
+}
+
+function ValidationBadge({ result }: { result: ConfigSourceValidateResult }) {
   if (result.valid) {
     return (
       <div className="flex items-center gap-1.5 text-[12px] text-connected">
@@ -40,6 +50,50 @@ function ValidationBadge({ result }: { result: { valid: boolean; error?: string;
       <AlertCircle className="h-3.5 w-3.5 shrink-0" />
       <span>{result.error ?? 'Неверный формат'}</span>
     </div>
+  )
+}
+
+function NodePreviewPanel({ result }: { result: ConfigSourceValidateResult }) {
+  if (!result.valid || !result.nodeCount) return null
+  const protocols = result.protocols ?? {}
+  const protocolEntries = Object.entries(protocols).sort((a, b) => b[1] - a[1])
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.2 }}
+      className="rounded-lg border border-border/60 bg-bg-secondary/50 p-3 flex flex-col gap-2"
+    >
+      {/* Protocol breakdown */}
+      {protocolEntries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {protocolEntries.map(([proto, count]) => (
+            <Badge key={proto} tone={PROTOCOL_TONE[proto] ?? 'neutral'}>
+              {proto.toUpperCase()} · {count}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {/* Sample nodes */}
+      {result.sampleNodes && result.sampleNodes.length > 0 && (
+        <div className="space-y-1">
+          {result.sampleNodes.slice(0, 3).map((node, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-[10px] text-text-muted font-mono truncate">
+              <Server className="h-2.5 w-2.5 shrink-0 text-text-muted/60" />
+              <span className="truncate">{node.name}</span>
+            </div>
+          ))}
+          {result.nodeCount > 3 && (
+            <p className="text-[10px] text-text-muted pl-4">
+              + ещё {result.nodeCount - 3}
+            </p>
+          )}
+        </div>
+      )}
+    </motion.div>
   )
 }
 
@@ -81,6 +135,7 @@ function SubscriptionUrlTab({ onSuccess }: { onSuccess: () => void }) {
         disabled={busy}
       />
       {validationResult && <ValidationBadge result={validationResult} />}
+      {validationResult && <NodePreviewPanel result={validationResult} />}
       {error && phase === 'error' && (
         <div className="flex items-center gap-1.5 text-[12px] text-error">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -154,6 +209,7 @@ function SingleProxyTab({ onSuccess }: { onSuccess: () => void }) {
         disabled={busy}
       />
       {validationResult && <ValidationBadge result={validationResult} />}
+      {validationResult && <NodePreviewPanel result={validationResult} />}
       {error && phase === 'error' && (
         <div className="flex items-center gap-1.5 text-[12px] text-error">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -224,6 +280,7 @@ function RemnawaveKeyTab({ onSuccess }: { onSuccess: () => void }) {
         disabled={busy}
       />
       {validationResult && <ValidationBadge result={validationResult} />}
+      {validationResult && <NodePreviewPanel result={validationResult} />}
       {error && phase === 'error' && (
         <div className="flex items-center gap-1.5 text-[12px] text-error">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />

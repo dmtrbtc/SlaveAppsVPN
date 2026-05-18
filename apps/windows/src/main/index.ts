@@ -7,6 +7,7 @@ import { registerAllHandlers } from './ipc/registry'
 import { getSettingsStore } from './services/SettingsStore'
 import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { getUpdateService } from './services/UpdateService'
+import { getSafeModeManager } from './services/SafeModeManager'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
 app.commandLine.appendSwitch('disable-http-cache')
@@ -39,6 +40,9 @@ process.on('unhandledRejection', (reason: unknown) => {
 // ─── Initialization ───────────────────────────────────────────────────────────
 
 initLogger()
+
+// Safe mode must be initialized before bootstrap — reads crash loop counter
+getSafeModeManager().init()
 
 const log = getLogger()
 

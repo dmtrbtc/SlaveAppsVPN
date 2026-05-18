@@ -17,6 +17,7 @@ import type {
   ConfigSourceSetPayload,
   ConfigSourceValidatePayload,
 } from '../shared/ipc/types'
+// SafeMode types are embedded directly via bridge type
 import type { VPNStatus, TrafficStats, Subscription } from '@slave-vpn/shared'
 
 function invoke<T>(channel: string, data?: unknown): Promise<T> {
@@ -122,6 +123,14 @@ const bridge: SlaveVPNBridge = {
   servers: {
     list: () =>
       invoke(IpcChannel.SERVERS_LIST),
+  },
+
+  safeMode: {
+    getStatus: () =>
+      invoke(IpcChannel.SAFE_MODE_GET_STATUS),
+
+    reset: () =>
+      invoke(IpcChannel.SAFE_MODE_RESET),
   },
 
   update: {

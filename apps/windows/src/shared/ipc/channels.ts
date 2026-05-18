@@ -41,6 +41,10 @@ export const IpcChannel = {
   // Servers — request/response
   SERVERS_LIST: 'servers:list',
 
+  // Safe mode — request/response
+  SAFE_MODE_GET_STATUS: 'safeMode:getStatus',
+  SAFE_MODE_RESET: 'safeMode:reset',
+
   // Updates — request/response
   UPDATE_CHECK: 'update:check',
   UPDATE_DOWNLOAD: 'update:download',
@@ -95,6 +99,8 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'CONFIG_SOURCE_VALIDATE'
   | 'CONFIG_SOURCE_CLEAR'
   | 'SERVERS_LIST'
+  | 'SAFE_MODE_GET_STATUS'
+  | 'SAFE_MODE_RESET'
   | 'UPDATE_CHECK'
   | 'UPDATE_DOWNLOAD'
   | 'UPDATE_INSTALL'

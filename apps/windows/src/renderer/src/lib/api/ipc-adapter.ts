@@ -110,6 +110,13 @@ export const serversApi = {
     unwrap(requireBridge().servers.list()),
 }
 
+export const safeModeApi = {
+  getStatus: () =>
+    unwrap(requireBridge().safeMode.getStatus()),
+  reset: () =>
+    unwrap(requireBridge().safeMode.reset()),
+}
+
 export const updateApi = {
   check: () =>
     unwrap(requireBridge().update.check()),

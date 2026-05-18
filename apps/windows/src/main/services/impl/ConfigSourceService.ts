@@ -1,5 +1,5 @@
 import type { ConfigSource } from '@slave-vpn/provider'
-import type { ConfigSourceMeta, ConfigSourceType, ConfigSourceValidateResult } from '../../../shared/ipc/types'
+import type { ConfigSourceMeta, ConfigSourceType, ConfigSourceValidateResult, NodePreview } from '../../../shared/ipc/types'
 import { getSecureStorage } from '../../security/SecureStorage'
 import { getSettingsStore } from '../SettingsStore'
 import { getLogger } from '../../logger'
@@ -21,7 +21,14 @@ interface StoredConfigSource {
 
 const PROBE_TIMEOUT_MS = 15_000
 
-async function probeUrl(url: string): Promise<{ displayName: string; proxyCount: number }> {
+interface ProbeResult {
+  displayName: string
+  proxyCount: number
+  protocols: Record<string, number>
+  sampleNodes: NodePreview[]
+}
+
+async function probeUrl(url: string): Promise<ProbeResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
@@ -37,7 +44,18 @@ async function probeUrl(url: string): Promise<{ displayName: string; proxyCount:
 
       try {
         const normalized = normalizeSubscriptionContent(text)
-        return { displayName: new URL(url).hostname, proxyCount: normalized.proxyCount }
+        const entries = extractProxiesFromYaml(normalized.yaml)
+        return {
+          displayName: new URL(url).hostname,
+          proxyCount: normalized.proxyCount,
+          protocols: buildProtocolMap(entries),
+          sampleNodes: entries.slice(0, 5).map(e => ({
+            name: e.name,
+            protocol: e.proxyProtocol,
+            transport: e.transport ?? 'tcp',
+            security: e.securityType ?? 'none',
+          })),
+        }
       } catch {
         continue
       }
@@ -46,6 +64,17 @@ async function probeUrl(url: string): Promise<{ displayName: string; proxyCount:
   } finally {
     clearTimeout(timer)
   }
+}
+
+function buildProtocolMap(entries: ServerListEntry[]): Record<string, number> {
+  const map: Record<string, number> = {}
+  for (const e of entries) {
+    const key = e.securityType === 'reality' ? 'reality'
+      : e.securityType === 'tls' ? `${e.proxyProtocol}+tls`
+      : e.proxyProtocol
+    map[key] = (map[key] ?? 0) + 1
+  }
+  return map
 }
 
 class ConfigSourceService {
@@ -82,8 +111,14 @@ class ConfigSourceService {
       switch (type) {
         case 'subscription-url': {
           new URL(input)  // throws if invalid URL
-          const { displayName, proxyCount } = await probeUrl(input)
-          return { valid: true, displayName: `${displayName} · ${proxyCount} ${serversWord(proxyCount)}` }
+          const probe = await probeUrl(input)
+          return {
+            valid: true,
+            displayName: `${probe.displayName} · ${probe.proxyCount} ${serversWord(probe.proxyCount)}`,
+            nodeCount: probe.proxyCount,
+            protocols: probe.protocols,
+            sampleNodes: probe.sampleNodes,
+          }
         }
 
         case 'single-proxy': {
@@ -92,7 +127,18 @@ class ConfigSourceService {
             : parsed.transport === 'ws' ? 'WS'
             : parsed.transport === 'grpc' ? 'gRPC'
             : parsed.type.toUpperCase()
-          return { valid: true, displayName: `${parsed.name} · ${badge}` }
+          return {
+            valid: true,
+            displayName: `${parsed.name} · ${badge}`,
+            nodeCount: 1,
+            protocols: { [parsed.securityType === 'reality' ? 'reality' : parsed.type]: 1 },
+            sampleNodes: [{
+              name: parsed.name,
+              protocol: parsed.type,
+              transport: parsed.transport ?? 'tcp',
+              security: parsed.securityType ?? 'none',
+            }],
+          }
         }
 
         case 'remnawave-key': {
@@ -101,8 +147,14 @@ class ConfigSourceService {
           }
           const settings = getSettingsStore()
           const url = `${settings.get('apiBaseUrl').replace(/\/$/, '')}/sub/${input.trim()}`
-          const { displayName, proxyCount } = await probeUrl(url)
-          return { valid: true, displayName: `Remnawave · ${displayName} · ${proxyCount} ${serversWord(proxyCount)}` }
+          const probe = await probeUrl(url)
+          return {
+            valid: true,
+            displayName: `Remnawave · ${probe.displayName} · ${probe.proxyCount} ${serversWord(probe.proxyCount)}`,
+            nodeCount: probe.proxyCount,
+            protocols: probe.protocols,
+            sampleNodes: probe.sampleNodes,
+          }
         }
       }
     } catch (err: unknown) {

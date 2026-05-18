@@ -11,6 +11,8 @@ import { getConfigSourceService } from './services/impl/ConfigSourceService'
 import { createWindowsEngineConfig } from './runtime/WindowsMihomoEngine'
 import { getSettingsStore } from './services/SettingsStore'
 import { RecoveryCoordinator } from './services/RecoveryCoordinator'
+import { getSafeModeManager } from './services/SafeModeManager'
+import { getNodeHealthManager } from './services/NodeHealthManager'
 import { VPN } from '@slave-vpn/shared'
 import { services } from './ipc/registry'
 import { sendToRenderer } from './window'
@@ -142,7 +144,10 @@ async function _bootstrap(): Promise<void> {
     }))
   }
 
-  log.info('Bootstrap complete')
+  // Schedule healthy mark — after 60s uptime without crash, reset crash counter
+  getSafeModeManager().scheduleHealthyMark()
+
+  log.info({ safeMode: getSafeModeManager().isSafeMode() }, 'Bootstrap complete')
 }
 
 export function updateRuntimeConfigSource(): void {
@@ -161,6 +166,8 @@ export async function shutdownBootstrap(): Promise<void> {
   }
   recoveryCoordinator?.dispose()
   recoveryCoordinator = null
+  getSafeModeManager().dispose()
+  getNodeHealthManager().dispose()
   if (runtimeManager) {
     await runtimeManager.dispose().catch(() => undefined)
     runtimeManager = null

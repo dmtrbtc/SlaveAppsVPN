@@ -217,10 +217,20 @@ export interface ConfigSourceValidatePayload {
   input: string
 }
 
+export interface NodePreview {
+  name: string
+  protocol: string
+  transport: string
+  security: string
+}
+
 export interface ConfigSourceValidateResult {
   valid: boolean
   displayName?: string
   error?: string
+  nodeCount?: number
+  protocols?: Record<string, number>
+  sampleNodes?: NodePreview[]
 }
 
 export type ConfigSourceGetMetaResult = IpcResult<ConfigSourceMeta | null>
@@ -246,9 +256,22 @@ export interface VPNConnectivityInfo {
   proxyCount: number           // available proxies in subscription
   healthScore: number          // 0-100 composite score
   checkedAt: number
+  captivePortal?: boolean      // captive portal detected
+  quarantinedNodes?: number    // nodes currently quarantined by NodeHealthManager
+  suggestion?: string          // actionable hint for degraded state
 }
 
 export type VpnGetConnectivityResult = IpcResult<VPNConnectivityInfo | null>
+
+// ─── Safe Mode ───────────────────────────────────────────────────────────────
+
+export interface SafeModeStatus {
+  active: boolean
+  launchCount: number
+}
+
+export type SafeModeGetStatusResult = IpcResult<SafeModeStatus>
+export type SafeModeResetResult = IpcResult<void>
 
 // ─── Updates ─────────────────────────────────────────────────────────────────
 
@@ -343,6 +366,10 @@ export interface SlaveVPNBridge {
   }
   servers: {
     list: () => Promise<ServersListResult>
+  }
+  safeMode: {
+    getStatus: () => Promise<SafeModeGetStatusResult>
+    reset: () => Promise<SafeModeResetResult>
   }
   update: {
     check: () => Promise<UpdateCheckResult>
