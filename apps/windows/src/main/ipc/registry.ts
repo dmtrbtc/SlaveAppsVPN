@@ -91,6 +91,14 @@ export async function registerAllHandlers(): Promise<void> {
       registerSafeModeHandlers()
       log.debug('Safe mode IPC handlers registered')
     }),
+    import('./handlers/runtime.handler').then(({ registerRuntimeHandlers }) => {
+      registerRuntimeHandlers()
+      log.debug('Runtime IPC handlers registered')
+    }),
+    import('./handlers/cache.handler').then(({ registerCacheHandlers }) => {
+      registerCacheHandlers()
+      log.debug('Cache IPC handlers registered')
+    }),
   ])
 
   log.info('IPC handlers registered')

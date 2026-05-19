@@ -54,6 +54,12 @@ export const IpcChannel = {
   UPDATE_GET_STATUS: 'update:getStatus',
   UPDATE_SET_CHANNEL: 'update:setChannel',
 
+  // Runtime controls — request/response
+  RUNTIME_RESTART: 'runtime:restart',
+
+  // Cache — request/response
+  CACHE_CLEAR: 'cache:clear',
+
   // Window controls — request/response
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',
@@ -111,6 +117,8 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'UPDATE_INSTALL'
   | 'UPDATE_GET_STATUS'
   | 'UPDATE_SET_CHANNEL'
+  | 'RUNTIME_RESTART'
+  | 'CACHE_CLEAR'
   | 'WINDOW_MINIMIZE'
   | 'WINDOW_MAXIMIZE'
   | 'WINDOW_CLOSE'

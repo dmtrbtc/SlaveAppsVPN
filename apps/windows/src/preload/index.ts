@@ -158,6 +158,16 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.UPDATE_SET_CHANNEL, payload),
   },
 
+  runtime: {
+    restart: () =>
+      invoke(IpcChannel.RUNTIME_RESTART),
+  },
+
+  cache: {
+    clear: () =>
+      invoke(IpcChannel.CACHE_CLEAR),
+  },
+
   controls: {
     minimize: () =>
       invoke(IpcChannel.WINDOW_MINIMIZE),

@@ -303,6 +303,14 @@ export interface SafeModeStatus {
 export type SafeModeGetStatusResult = IpcResult<SafeModeStatus>
 export type SafeModeResetResult = IpcResult<void>
 
+// ─── Runtime controls ─────────────────────────────────────────────────────────
+
+export type RuntimeRestartResult = IpcResult<void>
+
+// ─── Cache ────────────────────────────────────────────────────────────────────
+
+export type CacheClearResult = IpcResult<void>
+
 // ─── Updates ─────────────────────────────────────────────────────────────────
 
 export type UpdateChannel = 'stable' | 'beta'
@@ -409,6 +417,12 @@ export interface SlaveVPNBridge {
     install: () => Promise<UpdateInstallResult>
     getStatus: () => Promise<UpdateGetStatusResult>
     setChannel: (payload: UpdateSetChannelPayload) => Promise<UpdateSetChannelResult>
+  }
+  runtime: {
+    restart: () => Promise<RuntimeRestartResult>
+  }
+  cache: {
+    clear: () => Promise<CacheClearResult>
   }
   controls: {
     minimize: () => Promise<void>

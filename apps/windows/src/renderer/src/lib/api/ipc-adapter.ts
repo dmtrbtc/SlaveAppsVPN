@@ -119,6 +119,16 @@ export const safeModeApi = {
     unwrap(requireBridge().safeMode.reset()),
 }
 
+export const runtimeApi = {
+  restart: () =>
+    unwrap(requireBridge().runtime.restart()),
+}
+
+export const cacheApi = {
+  clear: () =>
+    unwrap(requireBridge().cache.clear()),
+}
+
 export const updateApi = {
   check: () =>
     unwrap(requireBridge().update.check()),

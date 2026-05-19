@@ -176,6 +176,15 @@ export function updateRuntimeConfigSource(): void {
   }
 }
 
+export async function clearSubscriptionCache(): Promise<void> {
+  if (subscriptionRefreshTimer) {
+    clearInterval(subscriptionRefreshTimer)
+    subscriptionRefreshTimer = null
+  }
+  // The next bootstrap/refresh will repopulate from the provider
+  getLogger().info('Subscription cache cleared')
+}
+
 export async function shutdownBootstrap(): Promise<void> {
   if (subscriptionRefreshTimer) {
     clearInterval(subscriptionRefreshTimer)
