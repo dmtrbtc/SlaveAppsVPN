@@ -279,6 +279,7 @@ export interface ServerListEntry {
   id: string
   name: string
   server: string
+  port?: number
   proxyProtocol: string
   transport?: string
   securityType?: string
@@ -292,7 +293,7 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
 
   let inProxies = false
   let currentProxy: Partial<{
-    name: string; server: string; type: string; network: string
+    name: string; server: string; port: number; type: string; network: string
     tls: boolean; realityOpts: boolean
   }> = {}
   let idx = 0
@@ -307,6 +308,7 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
         id: String(++idx),
         name: currentProxy.name,
         server: currentProxy.server,
+        ...(currentProxy.port ? { port: currentProxy.port } : {}),
         proxyProtocol: currentProxy.type ?? 'unknown',
         transport: currentProxy.network ?? 'tcp',
         securityType,
@@ -349,6 +351,9 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
 
     const serverMatch = trimmed.match(/^server:\s*(.+?)\s*$/)
     if (serverMatch?.[1]) { currentProxy.server = serverMatch[1].trim(); continue }
+
+    const portMatch = trimmed.match(/^port:\s*(\d+)/)
+    if (portMatch?.[1]) { currentProxy.port = parseInt(portMatch[1], 10); continue }
 
     const typeMatch = trimmed.match(/^type:\s*(\S+)/)
     if (typeMatch?.[1]) { currentProxy.type = typeMatch[1].trim(); continue }

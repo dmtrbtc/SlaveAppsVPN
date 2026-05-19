@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Search, Star, RefreshCw, Check } from 'lucide-react'
+import { Search, Star, RefreshCw, Check, Zap } from 'lucide-react'
 import { Input } from '../components/ui/input'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -11,8 +11,10 @@ import { useServers } from '../hooks/useServers'
 import { useVpnStore, selectVpnStatus } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
 import type { Server, ServerAvailability } from '@slave-vpn/shared'
+import type { ServerLatencyPayload } from '../../../shared/ipc/types'
 
 type SortKey = 'latency' | 'name' | 'country'
+type ProtocolFilter = 'all' | 'reality' | 'vless' | 'vmess' | 'trojan' | 'ss' | 'hysteria2' | 'tuic'
 
 const AVAILABILITY_BADGE: Record<ServerAvailability, { variant: 'ok' | 'warn' | 'bad' | 'neutral'; label: string }> = {
   online:   { variant: 'ok',      label: 'Онлайн'   },
@@ -27,28 +29,72 @@ const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: 'country', label: 'Страна' },
 ]
 
+const PROTOCOL_FILTERS: { value: ProtocolFilter; label: string }[] = [
+  { value: 'all',      label: 'Все'      },
+  { value: 'reality',  label: 'Reality'  },
+  { value: 'vless',    label: 'VLESS'    },
+  { value: 'vmess',    label: 'VMess'    },
+  { value: 'trojan',   label: 'Trojan'   },
+  { value: 'ss',       label: 'SS'       },
+  { value: 'hysteria2',label: 'HY2'      },
+  { value: 'tuic',     label: 'TUIC'     },
+]
+
 // ─── Protocol badge ───────────────────────────────────────────────────────────
 
-function protocolLabel(server: Server): string | null {
-  if (server.securityType === 'reality') return 'REALITY'
-  if (server.transport === 'grpc') return 'gRPC'
-  if (server.transport === 'ws') return 'WS'
-  if (server.securityType === 'tls') return 'TLS'
-  if (server.proxyType && server.proxyType !== 'vless') return server.proxyType.toUpperCase()
-  return null
+function protocolBadges(server: Server): Array<{ label: string; tone: 'ok' | 'warn' | 'bad' | 'neutral' }> {
+  const badges: Array<{ label: string; tone: 'ok' | 'warn' | 'bad' | 'neutral' }> = []
+
+  if (server.securityType === 'reality') {
+    badges.push({ label: 'REALITY', tone: 'warn' })
+  } else if (server.securityType === 'tls') {
+    badges.push({ label: 'TLS', tone: 'neutral' })
+  }
+
+  if (server.transport === 'grpc') badges.push({ label: 'gRPC', tone: 'ok' })
+  else if (server.transport === 'ws') badges.push({ label: 'WS', tone: 'ok' })
+  else if (server.transport === 'h2') badges.push({ label: 'H2', tone: 'neutral' })
+
+  if (server.proxyType && !['vless', 'trojan'].includes(server.proxyType)) {
+    badges.push({ label: server.proxyType.toUpperCase(), tone: 'neutral' })
+  }
+
+  return badges
 }
 
-function protocolTone(label: string): 'ok' | 'warn' | 'bad' | 'neutral' {
-  if (label === 'REALITY') return 'warn'
-  if (label === 'gRPC' || label === 'WS') return 'ok'
-  if (label === 'TLS') return 'neutral'
-  return 'neutral'
+function matchesProtocolFilter(server: Server, filter: ProtocolFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'reality') return server.securityType === 'reality'
+  return server.proxyType === filter
+}
+
+// ─── Latency display ──────────────────────────────────────────────────────────
+
+function LatencyDisplay({ ms, probing }: { ms: number | null; probing?: boolean }) {
+  if (probing) {
+    return <div className="h-2 w-8 rounded bg-border animate-pulse ml-auto" />
+  }
+  if (ms === null) {
+    return <span className="text-[12px] text-text-muted font-mono">—</span>
+  }
+  return (
+    <span className={cn(
+      'text-[12px] font-mono',
+      ms < 80  ? 'text-connected' :
+      ms < 200 ? 'text-connecting' :
+      'text-error'
+    )}>
+      {ms}ms
+    </span>
+  )
 }
 
 // ─── Server row ──────────────────────────────────────────────────────────────
 
 interface ServerRowProps {
   server: Server
+  liveLatency: number | null
+  isProbing: boolean
   isSelected: boolean
   isFav: boolean
   isConnecting: boolean
@@ -56,11 +102,12 @@ interface ServerRowProps {
   onFav: (e: React.MouseEvent) => void
 }
 
-function ServerRow({ server, isSelected, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
+function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
   const flag = countryFlagEmoji(server.countryCode)
   const avail = AVAILABILITY_BADGE[server.availability]
   const isOffline = server.availability === 'offline'
-  const proto = protocolLabel(server)
+  const badges = protocolBadges(server)
+  const displayLatency = liveLatency ?? server.latencyMs
 
   return (
     <div
@@ -76,36 +123,25 @@ function ServerRow({ server, isSelected, isFav, isConnecting, onSelect, onFav }:
       {/* Flag */}
       <span className="text-xl leading-none shrink-0">{flag}</span>
 
-      {/* Name + country + protocol badge */}
+      {/* Name + country + protocol badges */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span className="text-[13px] font-medium text-text-primary truncate">{server.name}</span>
           {isSelected && <Check className="h-3 w-3 text-accent shrink-0" />}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex items-center gap-1 mt-0.5 flex-wrap">
           <span className="text-[11px] text-text-muted">{server.countryName}</span>
-          {proto && (
-            <Badge tone={protocolTone(proto)} className="text-[9px] py-0 px-1 h-[14px] leading-none">
-              {proto}
+          {badges.map(b => (
+            <Badge key={b.label} tone={b.tone} className="text-[9px] py-0 px-1 h-[14px] leading-none">
+              {b.label}
             </Badge>
-          )}
+          ))}
         </div>
       </div>
 
       {/* Latency */}
-      <div className="w-[60px] text-right">
-        {server.latencyMs !== null ? (
-          <span className={cn(
-            'text-[12px] font-mono',
-            server.latencyMs < 80  ? 'text-connected' :
-            server.latencyMs < 200 ? 'text-connecting' :
-            'text-error'
-          )}>
-            {server.latencyMs}ms
-          </span>
-        ) : (
-          <span className="text-[12px] text-text-muted font-mono">—</span>
-        )}
+      <div className="w-[60px] flex justify-end">
+        <LatencyDisplay ms={displayLatency} probing={isProbing} />
       </div>
 
       {/* Status badge */}
@@ -134,6 +170,73 @@ function ServerRow({ server, isSelected, isFav, isConnecting, onSelect, onFav }:
   )
 }
 
+// ─── Probe hook ───────────────────────────────────────────────────────────────
+
+function useServerProbing(serverCount: number) {
+  const [latencyMap, setLatencyMap] = useState<Map<string, number | null>>(new Map())
+  const [probing, setProbing] = useState(false)
+  const [probingSet, setProbingSet] = useState<Set<string>>(new Set())
+  const unsubRef = useRef<(() => void) | null>(null)
+
+  const startProbe = useCallback(async () => {
+    if (serverCount === 0) return
+    setProbing(true)
+
+    try {
+      await window.slaveVPN.servers.probe()
+    } catch {
+      // probe failure is non-fatal
+    } finally {
+      setProbing(false)
+      setProbingSet(new Set())
+    }
+  }, [serverCount])
+
+  useEffect(() => {
+    // Subscribe to live latency events
+    const unsub = window.slaveVPN.events.onServerLatency((payload: ServerLatencyPayload) => {
+      setLatencyMap(prev => {
+        const next = new Map(prev)
+        next.set(payload.proxyName, payload.success ? payload.latencyMs : null)
+        return next
+      })
+      setProbingSet(prev => {
+        const next = new Set(prev)
+        next.delete(payload.proxyName)
+        return next
+      })
+    })
+    unsubRef.current = unsub
+    return () => { unsubRef.current?.(); unsubRef.current = null }
+  }, [])
+
+  // Auto-probe on mount (once servers are loaded)
+  const hasProbed = useRef(false)
+  useEffect(() => {
+    if (serverCount > 0 && !hasProbed.current) {
+      hasProbed.current = true
+      void startProbe()
+    }
+  }, [serverCount, startProbe])
+
+  return { latencyMap, probing, probingSet, startProbe }
+}
+
+// ─── Best node suggestion ─────────────────────────────────────────────────────
+
+function useBestNode(servers: Server[], latencyMap: Map<string, number | null>): string | null {
+  return useMemo(() => {
+    let best: { name: string; ms: number } | null = null
+    for (const s of servers) {
+      const ms = latencyMap.get(s.name)
+      if (ms !== null && ms !== undefined && ms > 0) {
+        if (best === null || ms < best.ms) best = { name: s.name, ms }
+      }
+    }
+    return best?.name ?? null
+  }, [servers, latencyMap])
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function ServersPage() {
@@ -143,24 +246,39 @@ export function ServersPage() {
 
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('latency')
+  const [protocolFilter, setProtocolFilter] = useState<ProtocolFilter>('all')
   const [connectingId, setConnectingId] = useState<string | null>(null)
 
   const connect = useVpnStore(s => s.connect)
 
+  const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
+  const bestNode = useBestNode(servers, latencyMap)
+
+  const handleRefresh = useCallback(async () => {
+    await refetch()
+    void startProbe()
+  }, [refetch, startProbe])
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
-    const list = servers.filter(s =>
-      s.name.toLowerCase().includes(q) || s.countryName.toLowerCase().includes(q)
-    )
+    const list = servers.filter(s => {
+      const matchesSearch = s.name.toLowerCase().includes(q) || s.countryName.toLowerCase().includes(q)
+      const matchesFilter = matchesProtocolFilter(s, protocolFilter)
+      return matchesSearch && matchesFilter
+    })
     return list.sort((a, b) => {
       const af = serverFavorites.includes(a.id) ? 0 : 1
       const bf = serverFavorites.includes(b.id) ? 0 : 1
       if (af !== bf) return af - bf
-      if (sortKey === 'latency') return (a.latencyMs ?? 9999) - (b.latencyMs ?? 9999)
+      if (sortKey === 'latency') {
+        const aMs = latencyMap.get(a.name) ?? a.latencyMs ?? 9999
+        const bMs = latencyMap.get(b.name) ?? b.latencyMs ?? 9999
+        return aMs - bMs
+      }
       if (sortKey === 'name') return a.name.localeCompare(b.name)
       return a.countryName.localeCompare(b.countryName)
     })
-  }, [servers, search, sortKey, serverFavorites])
+  }, [servers, search, sortKey, protocolFilter, serverFavorites, latencyMap])
 
   const handleSelect = async (server: Server) => {
     if (connectingId || server.availability === 'offline') return
@@ -186,14 +304,25 @@ export function ServersPage() {
             {!isLoading && (
               <span className="text-[12px] text-text-muted">{filtered.length}</span>
             )}
+            {bestNode && sortKey === 'latency' && (
+              <span className="flex items-center gap-1 text-[11px] text-connected">
+                <Zap className="h-3 w-3" />
+                Лучший: {bestNode}
+              </span>
+            )}
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={() => void refetch()} disabled={isFetching}>
-            <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
-          </Button>
+          <div className="flex items-center gap-1.5">
+            {probing && (
+              <span className="text-[11px] text-text-muted animate-pulse">Проверка пинга...</span>
+            )}
+            <Button variant="ghost" size="icon-sm" onClick={() => void handleRefresh()} disabled={isFetching || probing}>
+              <RefreshCw className={cn('h-3.5 w-3.5', (isFetching || probing) && 'animate-spin')} />
+            </Button>
+          </div>
         </div>
 
         {/* Search + sort */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-2">
           <div className="flex-1">
             <Input
               placeholder="Поиск по имени или стране..."
@@ -209,6 +338,24 @@ export function ServersPage() {
             size="sm"
           />
         </div>
+
+        {/* Protocol filter */}
+        <div className="flex gap-1 flex-wrap">
+          {PROTOCOL_FILTERS.map(f => (
+            <button
+              key={f.value}
+              onClick={() => setProtocolFilter(f.value)}
+              className={cn(
+                'text-[10px] px-2 py-0.5 rounded border transition-colors',
+                protocolFilter === f.value
+                  ? 'border-accent/60 bg-accent/10 text-accent'
+                  : 'border-border text-text-muted hover:border-border-strong hover:text-text-secondary'
+              )}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* List */}
@@ -216,12 +363,12 @@ export function ServersPage() {
         {isLoading ? (
           <LoadingState label="Загрузка серверов..." />
         ) : error ? (
-          <ErrorState error={error} retry={() => void refetch()} />
+          <ErrorState error={error} retry={() => void handleRefresh()} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={<Search className="h-8 w-8" />}
             label="Серверы не найдены"
-            description={search ? 'Попробуйте изменить запрос' : 'Нет доступных серверов'}
+            description={search ? 'Попробуйте изменить запрос' : protocolFilter !== 'all' ? 'Нет серверов с данным протоколом' : 'Нет доступных серверов'}
           />
         ) : (
           <div className="flex flex-col gap-1.5">
@@ -234,6 +381,8 @@ export function ServersPage() {
               >
                 <ServerRow
                   server={server}
+                  liveLatency={latencyMap.get(server.name) ?? null}
+                  isProbing={probing && !latencyMap.has(server.name)}
                   isSelected={status.serverName === server.name}
                   isFav={serverFavorites.includes(server.id)}
                   isConnecting={connectingId === server.id}

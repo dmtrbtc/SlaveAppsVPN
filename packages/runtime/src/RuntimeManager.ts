@@ -62,6 +62,10 @@ export class RuntimeManager {
     return this.engine?.engineVersion ?? null
   }
 
+  async probeLatency(tag: string, testUrl: string, timeoutMs: number): Promise<number | null> {
+    return this.engine?.probeLatency?.(tag, testUrl, timeoutMs) ?? null
+  }
+
   on<K extends EngineEventName>(event: K, handler: EngineEventHandler<K>): Unsubscribe {
     this.requireEngine()
     return this.engine!.on(event, handler)

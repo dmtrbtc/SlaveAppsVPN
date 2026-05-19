@@ -241,6 +241,16 @@ export type ConfigSourceClearResult = IpcResult<void>
 // ─── Servers ──────────────────────────────────────────────────────────────────
 
 export type ServersListResult = IpcResult<Server[]>
+export type ServersProbeResult = IpcResult<void>
+
+// ─── Server latency event (main → renderer) ──────────────────────────────────
+
+export interface ServerLatencyPayload {
+  proxyName: string            // matches Server.name / ProxyEntry.name
+  latencyMs: number | null     // null = failed
+  success: boolean
+  score: number                // 0-100 health score
+}
 
 // ─── Connectivity snapshot ───────────────────────────────────────────────────
 
@@ -259,6 +269,8 @@ export interface VPNConnectivityInfo {
   captivePortal?: boolean      // captive portal detected
   quarantinedNodes?: number    // nodes currently quarantined by NodeHealthManager
   suggestion?: string          // actionable hint for degraded state
+  realityStatus?: 'reality' | 'tls' | 'none'  // security type of active proxy
+  apiUrl?: string              // Mihomo API base URL when running
 }
 
 export type VpnGetConnectivityResult = IpcResult<VPNConnectivityInfo | null>
@@ -366,6 +378,7 @@ export interface SlaveVPNBridge {
   }
   servers: {
     list: () => Promise<ServersListResult>
+    probe: () => Promise<ServersProbeResult>
   }
   safeMode: {
     getStatus: () => Promise<SafeModeGetStatusResult>
@@ -395,5 +408,6 @@ export interface SlaveVPNBridge {
     onUpdateDownloaded: (callback: (payload: UpdateAvailablePayload) => void) => () => void
     onUpdateProgress: (callback: (payload: UpdateProgressPayload) => void) => () => void
     onNotification: (callback: (payload: NotificationPayload) => void) => () => void
+    onServerLatency: (callback: (payload: ServerLatencyPayload) => void) => () => void
   }
 }

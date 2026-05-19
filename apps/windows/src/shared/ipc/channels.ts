@@ -40,6 +40,7 @@ export const IpcChannel = {
 
   // Servers — request/response
   SERVERS_LIST: 'servers:list',
+  SERVERS_PROBE: 'servers:probe',
 
   // Safe mode — request/response
   SAFE_MODE_GET_STATUS: 'safeMode:getStatus',
@@ -69,6 +70,7 @@ export const IpcChannel = {
   EVENT_UPDATE_DOWNLOADED: 'event:update:downloaded',
   EVENT_UPDATE_PROGRESS: 'event:update:progress',
   EVENT_NOTIFICATION: 'event:notification',
+  EVENT_SERVER_LATENCY: 'event:server:latency',
 } as const
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel]
@@ -99,6 +101,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'CONFIG_SOURCE_VALIDATE'
   | 'CONFIG_SOURCE_CLEAR'
   | 'SERVERS_LIST'
+  | 'SERVERS_PROBE'
   | 'SAFE_MODE_GET_STATUS'
   | 'SAFE_MODE_RESET'
   | 'UPDATE_CHECK'

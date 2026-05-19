@@ -1,11 +1,19 @@
 import type { Server } from '@slave-vpn/shared'
+import { NodeProber, NodeHealthTracker } from '@slave-vpn/runtime'
 import { IpcChannel } from '../../../shared/ipc/channels'
 import { EmptySchema } from '../../../shared/ipc/schemas'
 import { okResult } from '../../../shared/ipc/types'
-import { handleIpc } from '../registry'
+import type { ServerLatencyPayload } from '../../../shared/ipc/types'
+import type { RuntimeService } from '../../services/RuntimeService'
+import { handleIpc, services } from '../registry'
 import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
 import type { ServerListEntry } from '../../services/impl/ConfigSourceService'
 import { getLogger } from '../../logger'
+import { sendToRenderer } from '../../window'
+
+const PROBE_TEST_URL = 'http://www.gstatic.com/generate_204'
+const PROBE_TIMEOUT_MS = 5000
+const PROBE_CONCURRENCY = 10
 
 // ─── Country detection ────────────────────────────────────────────────────────
 
@@ -107,7 +115,11 @@ function toServer(entry: ServerListEntry): Server {
   }
 }
 
-// ─── Handler ──────────────────────────────────────────────────────────────────
+// ─── Shared health tracker (survives across probe requests) ───────────────────
+
+const healthTracker = new NodeHealthTracker()
+
+// ─── Handlers ─────────────────────────────────────────────────────────────────
 
 export function registerServersHandlers(): void {
   handleIpc(IpcChannel.SERVERS_LIST, EmptySchema, async () => {
@@ -120,4 +132,83 @@ export function registerServersHandlers(): void {
       return okResult([])
     }
   })
+
+  handleIpc(IpcChannel.SERVERS_PROBE, EmptySchema, async () => {
+    const log = getLogger()
+    try {
+      const entries = await getConfigSourceService().getServerList()
+      if (entries.length === 0) return okResult(undefined)
+
+      const runtime = services.resolve<RuntimeService>('runtime')
+      const engineRunning = runtime.getState() === 'running'
+
+      if (engineRunning) {
+        await probeViaEngine(entries, runtime)
+      } else {
+        await probeViaTcp(entries)
+      }
+    } catch (err: unknown) {
+      log.warn({ err }, 'Server probe failed')
+    }
+    return okResult(undefined)
+  })
+}
+
+async function probeViaEngine(entries: ServerListEntry[], runtime: RuntimeService): Promise<void> {
+  // Run probes concurrently with limit
+  const chunks = chunkArray(entries, PROBE_CONCURRENCY)
+  for (const chunk of chunks) {
+    await Promise.all(
+      chunk.map(async (entry) => {
+        const latencyMs = await runtime.probeProxyLatency(entry.name, PROBE_TEST_URL, PROBE_TIMEOUT_MS)
+          .catch(() => null)
+        const result = {
+          id: entry.name,
+          latencyMs,
+          success: latencyMs !== null && latencyMs > 0,
+          timestamp: Date.now(),
+        }
+        const snapshot = healthTracker.record(result)
+        const payload: ServerLatencyPayload = {
+          proxyName: entry.name,
+          latencyMs,
+          success: result.success,
+          score: snapshot.score,
+        }
+        sendToRenderer(IpcChannel.EVENT_SERVER_LATENCY, payload)
+      })
+    )
+  }
+}
+
+async function probeViaTcp(entries: ServerListEntry[]): Promise<void> {
+  const prober = new NodeProber(PROBE_TIMEOUT_MS)
+  const targets = entries
+    .filter(e => e.server && e.port)
+    .map(e => ({ id: e.name, server: e.server, port: e.port! }))
+
+  const chunks = chunkArray(targets, PROBE_CONCURRENCY)
+  for (const chunk of chunks) {
+    await Promise.all(
+      chunk.map(async (target) => {
+        const result = await prober.probe(target)
+        const snapshot = healthTracker.record(result)
+        const payload: ServerLatencyPayload = {
+          proxyName: target.id,
+          latencyMs: result.latencyMs,
+          success: result.success,
+          score: snapshot.score,
+        }
+        sendToRenderer(IpcChannel.EVENT_SERVER_LATENCY, payload)
+      })
+    )
+  }
+}
+
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size))
+  }
+  return chunks
 }

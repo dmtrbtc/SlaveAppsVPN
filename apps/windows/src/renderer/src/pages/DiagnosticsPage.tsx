@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
-  Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server,
+  Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -112,30 +112,64 @@ function ConnectivityPanel({ info }: { info: VPNConnectivityInfo }) {
         <StatusDot ok={info.trafficActive}  label="Трафик" />
       </div>
 
-      {/* Active proxy */}
-      <div className="flex items-center justify-between border-t border-border/50 pt-3">
-        <div className="flex items-center gap-1.5">
-          <Server className="h-3.5 w-3.5 text-text-muted" />
-          <span className="text-[11px] text-text-muted">Активный прокси</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {info.activeProxy ? (
-            <>
-              <span className="text-[11px] font-medium text-text-primary truncate max-w-[180px]">
-                {info.activeProxy}
-              </span>
-              {info.proxyCount > 0 && (
-                <span className="text-[10px] text-text-muted">
-                  из {info.proxyCount}
+      {/* Active proxy + security info */}
+      <div className="flex flex-col gap-2 border-t border-border/50 pt-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Server className="h-3.5 w-3.5 text-text-muted" />
+            <span className="text-[11px] text-text-muted">Активный прокси</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {info.activeProxy ? (
+              <>
+                <span className="text-[11px] font-medium text-text-primary truncate max-w-[160px]">
+                  {info.activeProxy}
                 </span>
-              )}
-            </>
-          ) : (
-            <span className="text-[11px] text-text-muted italic">
-              {info.engineState === 'running' ? 'Определяется...' : 'Нет подключения'}
-            </span>
-          )}
+                {info.proxyCount > 0 && (
+                  <span className="text-[10px] text-text-muted">
+                    из {info.proxyCount}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-[11px] text-text-muted italic">
+                {info.engineState === 'running' ? 'Определяется...' : 'Нет подключения'}
+              </span>
+            )}
+          </div>
         </div>
+
+        {/* Reality / TLS status */}
+        {info.realityStatus && info.realityStatus !== 'none' && (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Lock className="h-3.5 w-3.5 text-text-muted" />
+              <span className="text-[11px] text-text-muted">Безопасность</span>
+            </div>
+            {info.realityStatus === 'reality' ? (
+              <Badge tone="warn">REALITY</Badge>
+            ) : (
+              <Badge tone="neutral">TLS</Badge>
+            )}
+          </div>
+        )}
+
+        {/* Mihomo API URL */}
+        {info.apiUrl && (
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Activity className="h-3.5 w-3.5 text-text-muted" />
+              <span className="text-[11px] text-text-muted">API</span>
+            </div>
+            <span className="text-[10px] font-mono text-text-secondary">
+              {info.apiUrl}
+              {' '}
+              <span className={cn(info.apiResponding ? 'text-connected' : 'text-error')}>
+                {info.apiResponding ? '●' : '○'}
+              </span>
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Captive portal / suggestion */}
@@ -205,6 +239,11 @@ export function DiagnosticsPage() {
   const eventLog = useDiagnosticsStore(selectEventLog)
 
   const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => l.level === logFilter)
+
+  const lastError = useMemo(
+    () => [...eventLog].reverse().find(e => e.severity === 'error' || e.severity === 'critical'),
+    [eventLog]
+  )
 
   const handleExport = async () => {
     setIsExporting(true)
@@ -289,6 +328,28 @@ export function DiagnosticsPage() {
             </div>
           ) : null}
         </motion.div>
+
+        {/* Last classified error */}
+        {lastError && (
+          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.2 }}>
+            <div className="rounded-lg border border-error/30 bg-error/5 px-4 py-3 flex items-start gap-3">
+              <AlertCircle className="h-4 w-4 text-error shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 mb-0.5">
+                  <span className="text-[11px] font-semibold text-error uppercase tracking-wide">
+                    {lastError.kind ?? 'ОШИБКА'}
+                  </span>
+                  <span className="text-[10px] text-text-muted shrink-0">
+                    {new Date(lastError.timestamp).toLocaleTimeString('ru-RU', {
+                      hour: '2-digit', minute: '2-digit', second: '2-digit',
+                    })}
+                  </span>
+                </div>
+                <p className="text-[11px] text-text-secondary break-all">{lastError.message}</p>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         {/* Runtime events */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.2 }}>

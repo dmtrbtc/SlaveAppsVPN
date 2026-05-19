@@ -59,6 +59,18 @@ export class MihomoApiClient {
     await this.put(`/proxies/${encodeURIComponent(groupName)}`, { name: proxyName })
   }
 
+  // GET /proxies/{tag}/delay?timeout={ms}&url={testUrl}
+  // Returns latency in ms, or null if timeout/error.
+  async getProxyDelay(tag: string, testUrl: string, timeoutMs: number): Promise<number | null> {
+    const path = `/proxies/${encodeURIComponent(tag)}/delay?timeout=${timeoutMs}&url=${encodeURIComponent(testUrl)}`
+    try {
+      const res = await this.get<{ delay?: number; message?: string }>(path)
+      return res.delay ?? null
+    } catch {
+      return null
+    }
+  }
+
   async isAlive(): Promise<boolean> {
     try {
       await this.getVersion()

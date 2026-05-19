@@ -29,3 +29,13 @@ export type {
 
 export { RuntimeStateMachine } from './state/RuntimeStateMachine'
 export { EMPTY_HEALTH } from './state/RuntimeState'
+
+// Node probing subsystem
+export type {
+  ProbeTarget,
+  ProbeResult,
+  NodeHealthSnapshot,
+  ProbeSchedulerOptions,
+  ProbeFailureReason,
+} from './probing'
+export { NodeProber, NodeHealthTracker, ProbeScheduler } from './probing'

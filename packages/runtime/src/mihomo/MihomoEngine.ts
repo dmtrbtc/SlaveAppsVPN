@@ -146,6 +146,11 @@ export class MihomoEngine implements VPNEngine {
     await this.start(profile)
   }
 
+  async probeLatency(tag: string, testUrl: string, timeoutMs: number): Promise<number | null> {
+    if (this.fsm.state !== 'running' || !this.api) return null
+    return this.api.getProxyDelay(tag, testUrl, timeoutMs)
+  }
+
   async updateProfile(profile: ConnectionProfile): Promise<HotReloadType> {
     this.requireInitialized()
     if (!this.currentProfile) throw new Error('Engine not started')

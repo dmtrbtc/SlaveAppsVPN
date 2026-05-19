@@ -38,6 +38,9 @@ export interface VPNEngine {
 
   updateProfile(profile: ConnectionProfile): Promise<HotReloadType>
 
+  // Returns RTT in ms via engine's delay API, or null if not running / unsupported.
+  probeLatency?(tag: string, testUrl: string, timeoutMs: number): Promise<number | null>
+
   getState(): RuntimeState
   getHealth(): HealthStatus
   getTraffic(): TrafficStats

@@ -17,6 +17,7 @@ import type {
   RuntimeEvent,
   ConfigSourceSetPayload,
   ConfigSourceValidatePayload,
+  ServerLatencyPayload,
 } from '../shared/ipc/types'
 // SafeMode types are embedded directly via bridge type
 import type { VPNStatus, TrafficStats, Subscription } from '@slave-vpn/shared'
@@ -124,6 +125,9 @@ const bridge: SlaveVPNBridge = {
   servers: {
     list: () =>
       invoke(IpcChannel.SERVERS_LIST),
+
+    probe: () =>
+      invoke(IpcChannel.SERVERS_PROBE),
   },
 
   safeMode: {
@@ -198,6 +202,9 @@ const bridge: SlaveVPNBridge = {
 
     onNotification: (callback: (payload: NotificationPayload) => void) =>
       on<NotificationPayload>(IpcChannel.EVENT_NOTIFICATION, callback),
+
+    onServerLatency: (callback: (payload: ServerLatencyPayload) => void) =>
+      on<ServerLatencyPayload>(IpcChannel.EVENT_SERVER_LATENCY, callback),
   },
 }
 
