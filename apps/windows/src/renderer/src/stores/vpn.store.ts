@@ -69,7 +69,6 @@ export const useVpnStore = create<VpnStore>()(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         set(s => ({ status: { ...s.status, state: 'error', lastError: message }, connectionStartedAt: null }))
-        throw err
       }
     },
 
@@ -82,7 +81,6 @@ export const useVpnStore = create<VpnStore>()(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
-        throw err
       }
     },
 
