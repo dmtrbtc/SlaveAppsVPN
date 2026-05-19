@@ -1,6 +1,7 @@
 import type { ConfigSource } from '@slave-vpn/provider'
 import { normalizeSubscriptionContent } from '@slave-vpn/config'
 import { buildSubscriptionHeaders } from './subscriptionHeaders'
+import { getLogger } from '../../../logger'
 
 const FETCH_TIMEOUT_MS = 30_000
 const CACHE_TTL_MS = 5 * 60_000  // 5 minutes
@@ -37,6 +38,14 @@ export class SubscriptionUrlSource implements ConfigSource {
       const headers: Record<string, string> = buildSubscriptionHeaders(ua)
       if (etag) headers['If-None-Match'] = etag
       if (lastModified) headers['If-Modified-Since'] = lastModified
+
+      getLogger().info({
+        url: this.url,
+        ua,
+        hwid: headers['X-HWID'] ? `${headers['X-HWID'].slice(0, 8)}...` : undefined,
+        engine: headers['X-Engine'],
+        version: headers['X-Client-Version'],
+      }, 'subscription fetch')
 
       const res = await fetch(this.url, { headers, signal: controller.signal })
       const text = res.ok ? await res.text() : ''

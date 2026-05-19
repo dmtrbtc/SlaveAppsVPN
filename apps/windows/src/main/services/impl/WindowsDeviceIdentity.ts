@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'crypto'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
+import { getLogger } from '../../logger'
 
 const DEVICE_ID_FILE = 'device-id.json'
 
@@ -43,14 +44,20 @@ class WindowsDeviceIdentity {
   }
 
   private resolveHwid(): string {
+    const log = getLogger()
+
     const persisted = this.loadPersisted()
-    if (persisted) return persisted
+    if (persisted) {
+      log.info({ hwid: `${persisted.slice(0, 8)}...` }, 'Device HWID loaded from cache')
+      return persisted
+    }
 
     const machineGuid = readWindowsMachineGuid()
     const source: DeviceIdRecord['source'] = machineGuid ? 'registry' : 'uuid'
     const raw = machineGuid ?? randomUUID()
     const hwid = deriveHwid(raw)
 
+    log.info({ source, hwid: `${hwid.slice(0, 8)}...` }, 'Device HWID generated')
     this.persist({ hwid, source, createdAt: Date.now() })
     return hwid
   }
