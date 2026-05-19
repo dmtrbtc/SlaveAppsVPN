@@ -19,9 +19,25 @@ import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPh
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
+  fatal: 'text-error',
   warn:  'text-connecting',
   info:  'text-text-secondary',
   debug: 'text-text-muted',
+  trace: 'text-text-muted',
+}
+
+// Pino encodes level as a number (30=info, 40=warn, 50=error, 60=fatal).
+function pinoLevelToString(level: unknown): string {
+  if (typeof level === 'string') return level
+  if (typeof level === 'number') {
+    if (level >= 60) return 'fatal'
+    if (level >= 50) return 'error'
+    if (level >= 40) return 'warn'
+    if (level >= 30) return 'info'
+    if (level >= 20) return 'debug'
+    return 'trace'
+  }
+  return 'info'
 }
 
 const EVENT_SEVERITY_COLOR: Record<RuntimeEventSeverity, string> = {
@@ -285,7 +301,7 @@ export function DiagnosticsPage() {
   const { data: configSourceMeta } = useConfigSourceMeta()
   const eventLog = useDiagnosticsStore(selectEventLog)
 
-  const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => l.level === logFilter)
+  const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => pinoLevelToString(l.level) === logFilter)
 
   const lastError = useMemo(
     () => [...eventLog].reverse().find(e => e.severity === 'error' || e.severity === 'critical'),
@@ -501,8 +517,8 @@ export function DiagnosticsPage() {
                           hour: '2-digit', minute: '2-digit', second: '2-digit',
                         })}
                       </span>
-                      <span className={cn('shrink-0 uppercase font-semibold w-8', LOG_LEVEL_COLOR[entry.level] ?? 'text-text-muted')}>
-                        {entry.level.slice(0, 4)}
+                      <span className={cn('shrink-0 uppercase font-semibold w-8', LOG_LEVEL_COLOR[pinoLevelToString(entry.level)] ?? 'text-text-muted')}>
+                        {pinoLevelToString(entry.level).slice(0, 4)}
                       </span>
                       <span className="text-text-secondary break-all">{entry.msg}</span>
                     </div>
