@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME ?? '',
   devMode: false,
   updateChannel: 'stable',
+  selectedEngine: 'mihomo',
 }
 
 class SettingsStore {

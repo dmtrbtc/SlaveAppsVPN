@@ -1,10 +1,11 @@
 import type { ConfigSource } from '@slave-vpn/provider'
 import { normalizeSubscriptionContent } from '@slave-vpn/config'
+import { buildSubscriptionHeaders } from './subscriptionHeaders'
 
 const FETCH_TIMEOUT_MS = 30_000
 const CACHE_TTL_MS = 5 * 60_000  // 5 minutes
 
-const USER_AGENTS = [
+const FALLBACK_USER_AGENTS = [
   'clash.meta',
   'Mihomo/1.18.7',
   'ClashX/1.8.0',
@@ -33,10 +34,7 @@ export class SubscriptionUrlSource implements ConfigSource {
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
 
     try {
-      const headers: Record<string, string> = {
-        'User-Agent': ua,
-        'Accept': 'text/plain, application/x-yaml, */*',
-      }
+      const headers: Record<string, string> = buildSubscriptionHeaders(ua)
       if (etag) headers['If-None-Match'] = etag
       if (lastModified) headers['If-Modified-Since'] = lastModified
 
@@ -68,7 +66,7 @@ export class SubscriptionUrlSource implements ConfigSource {
 
     let lastError: unknown
 
-    for (const ua of USER_AGENTS) {
+    for (const ua of FALLBACK_USER_AGENTS) {
       try {
         const { status, text, etag, lastModified } = await this.fetchRaw(
           ua,

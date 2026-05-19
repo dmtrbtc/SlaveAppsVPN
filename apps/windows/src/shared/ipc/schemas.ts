@@ -29,6 +29,7 @@ export const SettingsSetSchema = z
     apiBaseUrl: z.string().url().max(512).optional(),
     telegramBotUsername: z.string().max(64).optional(),
     devMode: z.boolean().optional(),
+    selectedEngine: z.enum(['mihomo', 'singbox', 'xray']).optional(),
   })
   .strict()
 

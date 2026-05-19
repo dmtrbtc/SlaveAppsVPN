@@ -10,6 +10,9 @@ export type {
   TunHooks,
 } from './engine/VPNEngine.interface'
 
+export type { EngineCapabilities } from './engine/EngineCapabilities'
+export { getEngineCapabilities } from './engine/EngineCapabilities'
+
 export { EngineEventBus } from './engine/EngineEvents'
 export type {
   EngineEventMap,

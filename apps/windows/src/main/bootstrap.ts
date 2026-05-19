@@ -80,9 +80,10 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const apiSecret = crypto.randomBytes(16).toString('hex')
   const engineConfig = createWindowsEngineConfig(userDataPath, apiSecret)
 
+  const selectedEngine = settings.get('selectedEngine') ?? 'mihomo'
   runtimeManager = new RuntimeManager()
-  await runtimeManager.initialize('mihomo', engineConfig)
-  log.debug('RuntimeManager initialized')
+  await runtimeManager.initialize(selectedEngine, engineConfig)
+  log.debug({ engine: selectedEngine }, 'RuntimeManager initialized')
 
   // ─── Determine config source ───────────────────────────────────────────────
   // Priority:

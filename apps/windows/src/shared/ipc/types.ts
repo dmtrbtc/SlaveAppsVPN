@@ -60,6 +60,8 @@ export type SubscriptionRemoveDeviceResult = IpcResult<void>
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
+export type SelectedEngine = 'mihomo' | 'singbox' | 'xray'
+
 export interface AppSettings {
   language: 'ru' | 'en'
   vpnMode: VPNMode
@@ -72,6 +74,7 @@ export interface AppSettings {
   telegramBotUsername: string
   devMode: boolean
   updateChannel: 'stable' | 'beta'
+  selectedEngine: SelectedEngine
 }
 
 export type SettingsGetResult = IpcResult<AppSettings>

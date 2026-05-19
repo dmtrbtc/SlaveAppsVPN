@@ -7,6 +7,7 @@ import { SubscriptionUrlSource } from './sources/SubscriptionUrlSource'
 import { SingleProxySource, parseProxyLink } from './sources/SingleProxySource'
 import { RemnawaveKeySource } from './sources/RemnawaveKeySource'
 import { normalizeSubscriptionContent } from './sources/subscriptionNormalizer'
+import { buildSubscriptionHeaders, getEngineUserAgents } from './sources/subscriptionHeaders'
 
 const STORAGE_KEY = 'config-source'
 
@@ -32,10 +33,10 @@ async function probeUrl(url: string): Promise<ProbeResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    const UAs = ['Mihomo/1.18.7', 'clash.meta', 'ClashX/1.8.0']
+    const UAs = getEngineUserAgents()
     for (const ua of UAs) {
       const res = await fetch(url, {
-        headers: { 'User-Agent': ua, Accept: 'text/plain, application/x-yaml, */*' },
+        headers: buildSubscriptionHeaders(ua),
         signal: controller.signal,
       })
       if (!res.ok) continue

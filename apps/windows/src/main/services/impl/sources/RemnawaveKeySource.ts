@@ -1,5 +1,6 @@
 import type { ConfigSource } from '@slave-vpn/provider'
 import { normalizeSubscriptionContent } from './subscriptionNormalizer'
+import { buildSubscriptionHeaders } from './subscriptionHeaders'
 
 const FETCH_TIMEOUT_MS = 30_000
 const CACHE_TTL_MS = 5 * 60_000
@@ -31,10 +32,7 @@ export class RemnawaveKeySource implements ConfigSource {
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
 
     try {
-      const headers: Record<string, string> = {
-        'User-Agent': 'Mihomo/1.18.7',
-        'Accept': 'text/plain, application/x-yaml, */*',
-      }
+      const headers: Record<string, string> = buildSubscriptionHeaders()
       if (this.cache?.etag) headers['If-None-Match'] = this.cache.etag
 
       const res = await fetch(this.subscriptionUrl, { headers, signal: controller.signal })

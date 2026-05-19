@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import {
   LogOut, User, CreditCard, Monitor, Bell, Shield, Smartphone, Sun,
   RefreshCw, Download, RotateCcw, Link, Key, CheckCircle, XCircle,
-  Trash2, Edit3, Server, Clock,
+  Trash2, Edit3, Server, Clock, Cpu,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -23,7 +23,7 @@ import {
   useUpdateChannel, useUpdateProgress, useUpdateEvents,
 } from '../hooks/useUpdate'
 import { configSourceApi, cacheApi } from '../lib/api'
-import type { AppSettings, UpdateChannel, ConfigSourceValidateResult } from '@shared/ipc/types'
+import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
 
 const SUB_STATUS_CONFIG: Record<SubscriptionStatus, { label: string; tone: 'ok' | 'neutral' | 'warn' }> = {
@@ -565,6 +565,13 @@ export function SettingsPage() {
     })
   }
 
+  const handleEngineChange = (engine: SelectedEngine) => {
+    updateSetting({ selectedEngine: engine }, {
+      onSuccess: () => notify({ type: 'info', title: 'Движок изменён', message: `${engine} будет использован при следующем подключении` }),
+      onError: () => notify({ type: 'error', title: 'Ошибка сохранения', message: 'Настройка не сохранена' }),
+    })
+  }
+
   const handleLogout = async () => {
     setLoggingOut(true)
     try {
@@ -654,6 +661,34 @@ export function SettingsPage() {
                 onChange={v => handleToggle('killSwitch', v)}
                 loading={isKeyPending('killSwitch')}
               />
+            </CardRow>
+          ) : null}
+        </Section>
+
+        {/* Engine selection */}
+        <Section label="VPN движок" icon={<Cpu className="h-3.5 w-3.5" />}>
+          {settings ? (
+            <CardRow>
+              <div className="p-4 flex flex-col gap-3">
+                <Segmented<SelectedEngine>
+                  options={[
+                    { value: 'mihomo',  label: 'Mihomo' },
+                    { value: 'singbox', label: 'Sing-box' },
+                    { value: 'xray',    label: 'Xray' },
+                  ]}
+                  value={settings.selectedEngine ?? 'mihomo'}
+                  onChange={handleEngineChange}
+                  size="sm"
+                />
+                <p className="text-[11px] text-text-muted">
+                  {(settings.selectedEngine === 'singbox' || settings.selectedEngine === 'xray')
+                    ? 'Экспериментальный движок — применится при следующем подключении'
+                    : 'Mihomo — стабильный движок для роутинга трафика'}
+                </p>
+                {isKeyPending('selectedEngine') && (
+                  <p className="text-[11px] text-text-muted">Сохранение...</p>
+                )}
+              </div>
             </CardRow>
           ) : null}
         </Section>
