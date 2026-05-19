@@ -8,6 +8,7 @@ import { getSettingsStore } from './services/SettingsStore'
 import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { getUpdateService } from './services/UpdateService'
 import { getSafeModeManager } from './services/SafeModeManager'
+import { startupTracker } from './startup-tracker'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
 app.commandLine.appendSwitch('disable-http-cache')
@@ -72,17 +73,23 @@ app.whenReady().then(async () => {
   const logger = initLogger(userDataPath)
   setCrashLogPath(userDataPath)
 
+  startupTracker.begin('app_ready', 'App ready')
   logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeFlag }, 'App ready')
+  startupTracker.complete('app_ready')
 
   // PHASE 2: Register IPC handlers (dynamic imports of handler chunks)
+  startupTracker.begin('ipc_register', 'Register IPC handlers')
   logger.info({ phase: 'ipc_register_start' }, 'Registering IPC handlers')
   await registerAllHandlers()
+  startupTracker.complete('ipc_register')
   logger.info({ phase: 'ipc_register_done' }, 'IPC handlers registered')
 
   // PHASE 3: Create window — must happen before bootstrap so UI is visible during startup
+  startupTracker.begin('window_create', 'Create main window')
   logger.info({ phase: 'window_create_start' }, 'Creating main window')
   createMainWindow()
   createTray()
+  startupTracker.complete('window_create')
   logger.info({ phase: 'window_create_done' }, 'Main window created')
 
   setupAutoStart()
@@ -90,10 +97,16 @@ app.whenReady().then(async () => {
   setupPowerMonitor()
 
   // PHASE 4: Provider/runtime bootstrap (fire-and-forget, degraded mode on failure)
+  startupTracker.begin('bootstrap', 'Provider & runtime bootstrap')
   logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeFlag }, 'Starting provider bootstrap')
   bootstrap(isSafeModeFlag)
-    .then(() => logger.info({ phase: 'bootstrap_complete' }, 'Bootstrap complete'))
+    .then(() => {
+      startupTracker.complete('bootstrap')
+      startupTracker.markComplete()
+      logger.info({ phase: 'bootstrap_complete' }, 'Bootstrap complete')
+    })
     .catch((err: unknown) => {
+      startupTracker.fail('bootstrap', err instanceof Error ? err.message : String(err))
       writeCrashLog('bootstrap_failed', err)
       logger.error({ err, phase: 'bootstrap_failed' }, 'Bootstrap failed — app running in degraded mode')
     })

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
   Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
+  Database, Zap, RotateCcw,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -11,10 +12,10 @@ import { InfoTile } from '../components/ui/info-tile'
 import { LoadingState, ErrorState } from '../components/ui/states'
 import { cn, formatMemoryMb, formatUptime } from '../lib/utils'
 import { diagnosticsApi } from '../lib/api'
-import { useSystemInfo, useLogs, useConnectivity } from '../hooks/useDiagnostics'
+import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSourceMeta } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
-import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo } from '@shared/ipc/types'
+import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
@@ -34,6 +35,50 @@ const EVENT_SEVERITY_COLOR: Record<RuntimeEventSeverity, string> = {
 const LOG_LEVELS = ['all', 'error', 'warn', 'info', 'debug'] as const
 type LogFilter = typeof LOG_LEVELS[number]
 const LOG_FILTER_OPTIONS = LOG_LEVELS.map(l => ({ value: l, label: l === 'all' ? 'Все' : l.toUpperCase() }))
+
+// ─── Startup phases panel ─────────────────────────────────────────────────────
+
+function StartupPhasesPanel({ phases, totalMs }: { phases: StartupPhaseEntry[]; totalMs: number }) {
+  return (
+    <div className="rounded-lg border border-border bg-bg-primary p-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] font-semibold text-text-muted uppercase tracking-wide">Фазы запуска</span>
+        <span className={cn(
+          'text-[10px] font-mono',
+          totalMs > 20000 ? 'text-error' : totalMs > 10000 ? 'text-connecting' : 'text-connected'
+        )}>
+          {(totalMs / 1000).toFixed(1)}s total
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {phases.map(p => (
+          <div key={p.phase} className="flex items-center gap-2">
+            {p.error
+              ? <XCircle className="h-3 w-3 text-error shrink-0" />
+              : p.completedAt !== null
+                ? <CheckCircle2 className="h-3 w-3 text-connected shrink-0" />
+                : <div className="h-3 w-3 rounded-full border-2 border-connecting/40 border-t-connecting animate-spin shrink-0" />
+            }
+            <span className="flex-1 text-[10px] text-text-secondary truncate">{p.label}</span>
+            {p.durationMs !== null && (
+              <span className={cn(
+                'text-[10px] font-mono shrink-0',
+                p.durationMs > 5000 ? 'text-error' : p.durationMs > 2000 ? 'text-connecting' : 'text-text-muted'
+              )}>
+                {p.durationMs}ms
+              </span>
+            )}
+            {p.error && (
+              <span className="text-[9px] text-error truncate max-w-[100px]" title={p.error}>
+                {p.error}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 // ─── Connectivity panel ───────────────────────────────────────────────────────
 
@@ -236,12 +281,24 @@ export function DiagnosticsPage() {
   const { data: sysInfo, isLoading: sysLoading, error: sysError, refetch: refetchSys, isFetching: sysFetching } = useSystemInfo()
   const { data: logs = [], isLoading: logsLoading, error: logsError, refetch: refetchLogs, isFetching: logsFetching } = useLogs()
   const { data: connectivity, isFetching: connFetching, refetch: refetchConn } = useConnectivity()
+  const { data: startupReport } = useStartupReport()
+  const { data: configSourceMeta } = useConfigSourceMeta()
   const eventLog = useDiagnosticsStore(selectEventLog)
 
   const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => l.level === logFilter)
 
   const lastError = useMemo(
     () => [...eventLog].reverse().find(e => e.severity === 'error' || e.severity === 'critical'),
+    [eventLog]
+  )
+
+  const reconnectCount = useMemo(
+    () => eventLog.filter(e => e.kind === 'reconnect.attempt').length,
+    [eventLog]
+  )
+
+  const lastErrors = useMemo(
+    () => eventLog.filter(e => e.severity === 'error' || e.severity === 'critical').slice(-10).reverse(),
     [eventLog]
   )
 
@@ -309,6 +366,17 @@ export function DiagnosticsPage() {
           }
         </motion.div>
 
+        {/* Startup phases */}
+        {startupReport && (
+          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.04, duration: 0.2 }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Zap className="h-3.5 w-3.5 text-text-muted" />
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Запуск</p>
+            </div>
+            <StartupPhasesPanel phases={startupReport.phases} totalMs={startupReport.totalMs} />
+          </motion.div>
+        )}
+
         {/* System info grid */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>
           <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-3">Система</p>
@@ -325,6 +393,20 @@ export function DiagnosticsPage() {
               <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ всего" value={formatMemoryMb(sysInfo.totalMemoryMb)} />
               <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ свободно" value={formatMemoryMb(sysInfo.freeMemoryMb)} />
               <InfoTile icon={<Info className="h-3 w-3" />} label="Аптайм системы" value={formatUptime(Date.now() - sysInfo.uptime * 1000)} />
+              {configSourceMeta && (
+                <InfoTile
+                  icon={<Database className="h-3 w-3" />}
+                  label="Config source"
+                  value={configSourceMeta.displayName}
+                />
+              )}
+              {reconnectCount > 0 && (
+                <InfoTile
+                  icon={<RotateCcw className="h-3 w-3" />}
+                  label="Реконнектов"
+                  value={String(reconnectCount)}
+                />
+              )}
             </div>
           ) : null}
         </motion.div>
@@ -357,6 +439,12 @@ export function DiagnosticsPage() {
             <div className="flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-text-muted" />
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Runtime события</p>
+              {reconnectCount > 0 && (
+                <Badge tone="warn">{reconnectCount} реконн.</Badge>
+              )}
+              {lastErrors.length > 0 && (
+                <Badge tone="bad">{lastErrors.length} ошибок</Badge>
+              )}
             </div>
             <span className="text-[10px] text-text-muted">{eventLog.length} / 200</span>
           </div>

@@ -98,6 +98,9 @@ const bridge: SlaveVPNBridge = {
 
     getLogs: () =>
       invoke(IpcChannel.DIAGNOSTICS_GET_LOGS),
+
+    getStartup: () =>
+      invoke(IpcChannel.DIAGNOSTICS_GET_STARTUP),
   },
 
   provider: {

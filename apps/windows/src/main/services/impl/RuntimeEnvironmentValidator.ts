@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, accessSync, writeFileSync, unlinkSync, constants } from 'fs'
 import { join, dirname } from 'path'
 import net from 'net'
+import { execSync } from 'child_process'
 
 export interface ValidationIssue {
   code: string
@@ -22,6 +23,30 @@ async function isPortFree(port: number): Promise<boolean> {
   })
 }
 
+// Kill any process listening on the given port (Windows-only: netstat + taskkill).
+// Returns true if at least one orphan was found and killed.
+function killOrphanOnPort(port: number): boolean {
+  try {
+    const output = execSync('netstat -ano', { encoding: 'utf8', timeout: 4000 })
+    const pids = new Set<string>()
+    const portRe = new RegExp(`:${port}\\s`)
+    for (const line of output.split('\n')) {
+      const upper = line.toUpperCase()
+      if (!portRe.test(line)) continue
+      if (!upper.includes('LISTENING') && !upper.includes('LISTEN')) continue
+      const parts = line.trim().split(/\s+/)
+      const pid = parts[parts.length - 1]
+      if (pid && /^\d+$/.test(pid) && pid !== '0') pids.add(pid)
+    }
+    for (const pid of pids) {
+      try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000 }) } catch { /* ignore */ }
+    }
+    return pids.size > 0
+  } catch {
+    return false
+  }
+}
+
 function isDirectoryWritable(dir: string): boolean {
   try {
     mkdirSync(dir, { recursive: true })
@@ -32,6 +57,10 @@ function isDirectoryWritable(dir: string): boolean {
   } catch {
     return false
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 export async function validateRuntimeEnvironment(config: {
@@ -80,14 +109,28 @@ export async function validateRuntimeEnvironment(config: {
     })
   }
 
-  // ── 4. API port availability ─────────────────────────────────────────────
+  // ── 4. API port: clean up orphan, then verify ────────────────────────────
   const portFree = await isPortFree(config.apiPort)
   if (!portFree) {
-    issues.push({
-      code: 'API_PORT_IN_USE',
-      message: `Port ${config.apiPort} is occupied — a previous Mihomo instance may still be running.`,
-      fatal: false,
-    })
+    const killed = killOrphanOnPort(config.apiPort)
+    if (killed) {
+      await delay(500)
+      const freeNow = await isPortFree(config.apiPort)
+      if (!freeNow) {
+        issues.push({
+          code: 'API_PORT_IN_USE',
+          message: `Port ${config.apiPort} is still occupied after orphan cleanup. Another service may be using it.`,
+          fatal: false,
+        })
+      }
+      // else: port was freed — no issue to report
+    } else {
+      issues.push({
+        code: 'API_PORT_IN_USE',
+        message: `Port ${config.apiPort} is occupied. A previous Mihomo instance may still be running.`,
+        fatal: false,
+      })
+    }
   }
 
   return {

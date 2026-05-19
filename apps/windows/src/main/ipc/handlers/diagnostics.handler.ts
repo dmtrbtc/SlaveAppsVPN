@@ -11,6 +11,7 @@ import os from 'os'
 import type { SystemInfo } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
 import { getSessionId } from '../../logger'
+import { startupTracker } from '../../startup-tracker'
 
 const execFileAsync = promisify(execFile)
 
@@ -71,6 +72,10 @@ export function registerDiagnosticsHandlers(): void {
     const { writeFileSync } = await import('fs')
     writeFileSync(fallbackPath, content)
     return okResult(fallbackPath)
+  })
+
+  handleIpc(IpcChannel.DIAGNOSTICS_GET_STARTUP, EmptySchema, async () => {
+    return okResult(startupTracker.getReport())
   })
 
   handleIpc(IpcChannel.DIAGNOSTICS_GET_LOGS, EmptySchema, async () => {

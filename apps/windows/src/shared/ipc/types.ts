@@ -99,6 +99,24 @@ export interface LogEntry {
 
 export type DiagnosticsCollectResult = IpcResult<SystemInfo>
 export type DiagnosticsExportLogsResult = IpcResult<string>
+
+export interface StartupPhaseEntry {
+  phase: string
+  label: string
+  startedAt: number
+  completedAt: number | null
+  durationMs: number | null
+  error?: string
+}
+
+export interface StartupReport {
+  phases: StartupPhaseEntry[]
+  totalMs: number
+  appStartedAt: number
+  completedAt: number | null
+}
+
+export type DiagnosticsGetStartupResult = IpcResult<StartupReport>
 export type DiagnosticsGetLogsResult = IpcResult<LogEntry[]>
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -365,6 +383,7 @@ export interface SlaveVPNBridge {
     collect: () => Promise<DiagnosticsCollectResult>
     exportLogs: () => Promise<DiagnosticsExportLogsResult>
     getLogs: () => Promise<DiagnosticsGetLogsResult>
+    getStartup: () => Promise<DiagnosticsGetStartupResult>
   }
   provider: {
     getManifest: () => Promise<ProviderGetManifestResult>

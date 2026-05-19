@@ -85,6 +85,8 @@ export const diagnosticsApi = {
     unwrap(requireBridge().diagnostics.getLogs()),
   exportLogs: () =>
     unwrap(requireBridge().diagnostics.exportLogs()),
+  getStartup: () =>
+    unwrap(requireBridge().diagnostics.getStartup()),
 }
 
 export const providerApi = {
