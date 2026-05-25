@@ -63,6 +63,26 @@ export class MihomoDnsCompiler implements DnsCompiler {
       config['use-hosts'] = false
     }
 
+    // Per-domain DNS policy (G.2): { "+.openai.com": "https://...", "geosite:cn": "system" }
+    // Resolver tags: 'primary' → first nameserver; 'fallback' → first fallback;
+    // anything starting with https://, tls://, quic:// → used as-is.
+    if (profile.rules && profile.rules.length > 0) {
+      const policy: Record<string, string> = {}
+      for (const rule of profile.rules) {
+        const key = mihomoRuleKey(rule.matchType, rule.value)
+        const value = resolveRuleTarget(rule.resolverTag, profile)
+        if (key && value) policy[key] = value
+      }
+      if (Object.keys(policy).length > 0) {
+        config['nameserver-policy'] = policy
+      }
+    }
+
+    // DNS warming / prefetch (G.4) — pre-resolve these domains at start
+    if (profile.prefetchDomains && profile.prefetchDomains.length > 0) {
+      config['prefetch-domain'] = [...profile.prefetchDomains]
+    }
+
     return {
       config,
       metadata: {
@@ -71,6 +91,31 @@ export class MihomoDnsCompiler implements DnsCompiler {
       },
     }
   }
+}
+
+// Map internal rule match type to mihomo nameserver-policy key syntax.
+// mihomo accepts: "example.com" (exact), "+.example.com" (suffix),
+// "*.example.com" (wildcard), "geosite:cn", "rule-set:..."
+function mihomoRuleKey(matchType: import('../profiles/DnsProfile').DnsRuleMatchType, value: string): string | null {
+  if (!value) return null
+  switch (matchType) {
+    case 'domain':         return value
+    case 'domain_suffix':  return `+.${value.replace(/^\+\./, '')}`
+    case 'domain_keyword': return `*${value}*`
+    case 'geosite':        return `geosite:${value.toLowerCase()}`
+  }
+}
+
+function resolveRuleTarget(tag: string, profile: import('../profiles/DnsProfile').DnsProfile): string | null {
+  if (!tag) return null
+  if (tag === 'direct' || tag === 'system') return 'system'
+  if (tag === 'primary')  return profile.nameservers[0] ? resolverUrl(profile.nameservers[0]) : null
+  if (tag === 'fallback' && profile.fallbackNameservers && profile.fallbackNameservers[0]) {
+    return resolverUrl(profile.fallbackNameservers[0])
+  }
+  // Inline absolute URL — pass through
+  if (/^(https?|tls|tcp|quic):\/\//.test(tag)) return tag
+  return null
 }
 
 function resolverUrl(resolver: DnsResolver): string {
@@ -83,6 +128,8 @@ function resolverUrl(resolver: DnsResolver): string {
       return resolver.url.startsWith('tls://') ? resolver.url : `tls://${resolver.url}`
     case 'tcp':
       return resolver.url.startsWith('tcp://') ? resolver.url : `tcp://${resolver.url}`
+    case 'doq':
+      return resolver.url.startsWith('quic://') ? resolver.url : `quic://${resolver.url}`
     case 'udp':
       return resolver.url
   }

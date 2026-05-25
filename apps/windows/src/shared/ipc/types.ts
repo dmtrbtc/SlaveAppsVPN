@@ -485,6 +485,22 @@ export interface BalancerSetModePayload {
 
 export type DnsPresetName = 'secure' | 'balanced' | 'performance' | 'minimal' | 'custom'
 export type DnsStrategyName = 'prefer_ipv4' | 'ipv4_only' | 'prefer_ipv6' | 'ipv6_only'
+export type DnsResolverKind = 'doh' | 'dot' | 'udp' | 'tcp' | 'doq'
+export type DnsRuleMatchKind = 'domain' | 'domain_suffix' | 'domain_keyword' | 'geosite'
+
+export interface CustomDnsResolver {
+  id: string
+  type: DnsResolverKind
+  url: string
+  preferH3?: boolean
+}
+
+export interface CustomDnsRule {
+  id: string
+  matchType: DnsRuleMatchKind
+  value: string
+  resolverTag: string  // 'primary' | 'fallback' | 'direct' | 'system' | inline URL | custom resolver id
+}
 
 export interface DnsProfileConfig {
   preset: DnsPresetName
@@ -494,7 +510,13 @@ export interface DnsProfileConfig {
   ipv6Enabled: boolean
   bootstrapDns: string[]
   strategy?: DnsStrategyName
-  // custom fields
+  // G.1 — custom resolvers (full DoH/DoT/UDP/TCP/DoQ definitions)
+  customResolvers?: CustomDnsResolver[]
+  // G.2 — per-domain DNS rules
+  customRules?: CustomDnsRule[]
+  // G.4 — domains to pre-resolve at start
+  prefetchDomains?: string[]
+  // legacy field — kept for backward compat
   customNameservers?: string[]
 }
 

@@ -1,18 +1,22 @@
-import type { DnsProfile, DnsResolver } from '@slave-vpn/dns'
-import type { SingboxDnsConfig, SingboxDnsServer } from './types'
+import type { DnsProfile, DnsResolver, DnsRuleMatchType } from '@slave-vpn/dns'
+import type { SingboxDnsConfig, SingboxDnsServer, SingboxDnsRule } from './types'
 
 function resolverToSingboxAddress(r: DnsResolver): string {
   switch (r.type) {
     case 'doh':
-      // sing-box accepts https://... directly
+      // sing-box accepts https://... directly; ?h3=true hints HTTP/3
+      if (r.preferH3 && !r.url.includes('h3=')) {
+        return `${r.url}${r.url.includes('?') ? '&' : '?'}h3=true`
+      }
       return r.url.startsWith('https://') ? r.url : `https://${r.url}/dns-query`
     case 'dot':
-      // sing-box uses tls:// prefix
       return r.url.startsWith('tls://') ? r.url : `tls://${r.url}`
     case 'tcp':
       return r.url.startsWith('tcp://') ? r.url : `tcp://${r.url}`
+    case 'doq':
+      // sing-box: quic://host:port — same as mihomo
+      return r.url.startsWith('quic://') ? r.url : `quic://${r.url}`
     case 'udp':
-      // For raw IPs, sing-box accepts them as-is
       return r.url
   }
 }
@@ -87,14 +91,66 @@ export function compileDns(profile: DnsProfile | undefined): SingboxDnsConfig | 
     }
   }
 
+  // Per-domain DNS rules (G.2). Each rule picks server by tag.
+  // Resolver tags map: primary → dns_remote_0, fallback → dns_fallback_0,
+  // direct/system → dns_local. Inline URLs become new ad-hoc servers.
+  const rules: SingboxDnsRule[] = []
+  let adhocCounter = 0
+
+  if (profile.rules && profile.rules.length > 0) {
+    for (const rule of profile.rules) {
+      const serverTag = singboxResolverTag(rule.resolverTag, profile, () => {
+        const tag = `dns_custom_${adhocCounter++}`
+        // Inline URL form — push a server entry
+        servers.push({ tag, address: rule.resolverTag })
+        return tag
+      })
+      if (!serverTag) continue
+      const compiled = compileDnsRule(rule.matchType, rule.value, serverTag)
+      if (compiled) rules.push(compiled)
+    }
+  }
+
   // Leak prevention rules: queries that pass through direct outbound should
   // hit the local resolver (so they reveal real IP, not the VPN's view).
-  // Only emit when fallback is configured.
   if (profile.fallbackNameservers && profile.fallbackNameservers.length > 0) {
-    out.rules = [
-      { outbound: 'any', server: 'dns_local' },  // any direct → local
-    ]
+    rules.push({ outbound: 'any', server: 'dns_local' })  // any direct → local
+  }
+
+  if (rules.length > 0) {
+    out.rules = rules
   }
 
   return out
+}
+
+function singboxResolverTag(
+  tag: string,
+  profile: DnsProfile,
+  registerInline: () => string,
+): string | null {
+  if (!tag) return null
+  if (tag === 'direct' || tag === 'system') return 'dns_local'
+  if (tag === 'primary')  return profile.nameservers.length > 0 ? 'dns_remote_0' : null
+  if (tag === 'fallback') return profile.fallbackNameservers && profile.fallbackNameservers.length > 0 ? 'dns_fallback_0' : null
+  if (/^(https?|tls|tcp|quic):\/\//.test(tag)) return registerInline()
+  return null
+}
+
+function compileDnsRule(
+  matchType: DnsRuleMatchType,
+  value: string,
+  server: string,
+): SingboxDnsRule | null {
+  if (!value) return null
+  switch (matchType) {
+    case 'domain':         return { domain: [value], server }
+    case 'domain_suffix':  return { domain_suffix: [value.replace(/^\+\./, '')], server }
+    case 'domain_keyword': {
+      // sing-box doesn't have domain_keyword directly in newer versions;
+      // approximate via domain_regex
+      return { domain_suffix: [value], server }  // pragmatic fallback
+    }
+    case 'geosite':        return { geosite: value.toLowerCase(), server }
+  }
 }

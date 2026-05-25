@@ -5,6 +5,7 @@ import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
 import { useUIStore } from '../stores/ui.store'
 import { dnsApi, settingsApi } from '../lib/api'
+import { DnsAdvancedSection } from '../components/dns/DnsAdvancedSection'
 import type { DnsPresetName, DnsStrategyName, DnsStrategyInfo } from '@shared/ipc/types'
 
 interface DnsProfileDef {
@@ -248,6 +249,9 @@ export function DnsPage() {
             )}
           </motion.div>
         )}
+
+        {/* G.1 + G.2 + G.4 — Custom resolvers / per-domain rules / prefetch */}
+        <DnsAdvancedSection />
       </div>
     </div>
   )

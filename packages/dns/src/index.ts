@@ -4,6 +4,8 @@ export type {
   DnsResolver,
   DnsResolverType,
   DnsStrategy,
+  DnsRule,
+  DnsRuleMatchType,
   FakeIpConfig,
   LeakPreventionConfig,
   IPv6Config,

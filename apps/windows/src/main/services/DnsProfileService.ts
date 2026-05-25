@@ -1,4 +1,4 @@
-import type { DnsProfile, DnsResolver, DnsResolverType, DnsStrategy } from '@slave-vpn/dns'
+import type { DnsProfile, DnsResolver, DnsResolverType, DnsStrategy, DnsRule } from '@slave-vpn/dns'
 import { DnsProfilePresets, DEFAULT_FAKE_IP_FILTER } from '@slave-vpn/dns'
 import type {
   DnsProfileConfig,
@@ -6,6 +6,8 @@ import type {
   DnsPresetInfo,
   DnsStrategyName,
   DnsStrategyInfo,
+  CustomDnsResolver,
+  CustomDnsRule,
 } from '../../shared/ipc/types'
 
 export const DNS_STRATEGIES: DnsStrategyInfo[] = [
@@ -164,6 +166,12 @@ function customToProfile(custom: DnsProfileConfig): DnsProfile {
     },
     ipv6: { enabled: custom.ipv6Enabled },
     ...(strategy ? { strategy } : {}),
+    ...(custom.customRules && custom.customRules.length > 0
+      ? { rules: custom.customRules.map(toEngineRule) }
+      : {}),
+    ...(custom.prefetchDomains && custom.prefetchDomains.length > 0
+      ? { prefetchDomains: [...custom.prefetchDomains] }
+      : {}),
     sniffing: {
       enabled: true,
       overrideDestination: false,
@@ -178,20 +186,68 @@ function withStrategy(profile: DnsProfile, strategy: DnsStrategy | undefined): D
   return { ...profile, strategy }
 }
 
+// Convert UI CustomDnsResolver → engine DnsResolver.
+function toEngineResolver(r: CustomDnsResolver): DnsResolver {
+  const base: DnsResolver = { url: r.url, type: r.type }
+  if (r.type === 'doh' && r.preferH3) return { ...base, preferH3: true }
+  return base
+}
+
+// Convert UI CustomDnsRule → engine DnsRule.
+function toEngineRule(r: CustomDnsRule): DnsRule {
+  return {
+    id: r.id,
+    matchType: r.matchType,
+    value: r.value,
+    resolverTag: r.resolverTag,
+  }
+}
+
+// Merge user customisations (resolvers/rules/prefetch) into a base preset profile.
+function withCustomisations(base: DnsProfile, custom?: DnsProfileConfig | null): DnsProfile {
+  if (!custom) return base
+  let next: DnsProfile = base
+
+  // Custom resolvers replace primary nameservers if non-empty
+  if (custom.customResolvers && custom.customResolvers.length > 0) {
+    const ns = custom.customResolvers.map(toEngineResolver)
+    next = { ...next, nameservers: ns }
+  }
+
+  if (custom.customRules && custom.customRules.length > 0) {
+    next = { ...next, rules: custom.customRules.map(toEngineRule) }
+  }
+
+  if (custom.prefetchDomains && custom.prefetchDomains.length > 0) {
+    next = { ...next, prefetchDomains: [...custom.prefetchDomains] }
+  }
+
+  return next
+}
+
 export function buildEngineDnsProfile(
   preset: DnsPresetName,
   custom?: DnsProfileConfig | null,
   strategyOverride?: DnsStrategyName,
 ): DnsProfile {
   const strategy = toEngineStrategy(strategyOverride)
+
+  // Pick base profile from preset
+  let base: DnsProfile
   switch (preset) {
-    case 'secure':      return withStrategy(DnsProfilePresets.secure(), strategy)
-    case 'balanced':    return withStrategy(DnsProfilePresets.balanced(), strategy)
-    case 'performance': return withStrategy(DnsProfilePresets.performance(), strategy)
-    case 'minimal':     return withStrategy(DnsProfilePresets.minimal(), strategy)
+    case 'secure':      base = DnsProfilePresets.secure();      break
+    case 'balanced':    base = DnsProfilePresets.balanced();    break
+    case 'performance': base = DnsProfilePresets.performance(); break
+    case 'minimal':     base = DnsProfilePresets.minimal();     break
     case 'custom':
-      return custom ? customToProfile(custom) : withStrategy(DnsProfilePresets.secure(), strategy)
+      base = custom ? customToProfile(custom) : DnsProfilePresets.secure()
+      break
   }
+
+  // Layer user customisations on top — works for ALL presets, not just custom
+  base = withCustomisations(base, custom)
+  base = withStrategy(base, strategy)
+  return base
 }
 
 export function getStrategies(): DnsStrategyInfo[] {
