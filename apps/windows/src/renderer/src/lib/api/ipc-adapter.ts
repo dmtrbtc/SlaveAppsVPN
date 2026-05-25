@@ -120,6 +120,8 @@ export const diagnosticsApi = {
     unwrap(requireBridge().diagnostics.exportLogs()),
   getStartup: () =>
     unwrap(requireBridge().diagnostics.getStartup()),
+  selfTest: () =>
+    unwrap(requireBridge().diagnostics.selfTest()),
 }
 
 export const providerApi = {

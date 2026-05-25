@@ -232,6 +232,7 @@ export class SingboxEngine implements VPNEngine {
       apiSecret: this.initConfig!.apiSecret,
       ...(profile.dnsProfile !== undefined ? { dnsProfile: profile.dnsProfile } : {}),
       ...(profile.routingPolicy !== undefined ? { routingPolicy: profile.routingPolicy } : {}),
+      ...(this.initConfig!.rulesDir ? { rulesDir: this.initConfig!.rulesDir } : {}),
     })
     await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
     await fs.writeFile(this.configPath(), json, 'utf-8')

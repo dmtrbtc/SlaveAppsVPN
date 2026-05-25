@@ -36,6 +36,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 const REPO_ROOT = join(__dirname, '..')
 const BIN_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'bin')
+const RULES_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'rules')
 
 // ─── Engine specs ─────────────────────────────────────────────────────────────
 // Versions pinned for reproducibility. Update when bumping engine versions —
@@ -62,6 +63,44 @@ const ENGINES = {
     archive: 'zip',
     archiveMember: /wintun\/bin\/amd64\/wintun\.dll$/,
     outName: 'wintun.dll',
+  },
+}
+
+// Geo databases. Two parallel formats:
+//   - Mihomo / Clash:    .dat (MetaCubeX/meta-rules-dat, Loyalsoldier-compatible)
+//   - Sing-box ≥ 1.8:    .db  (SagerNet/sing-geoip + sing-geosite)
+// Both engines need their own files — kept separate by filename.
+// Direct raw downloads, no archive extraction.
+const GEO_DATABASES = {
+  // mihomo
+  'mihomo-geoip': {
+    label: 'geoip.dat (mihomo)',
+    url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+    archive: 'raw',
+    outName: 'geoip.dat',
+    dir: RULES_DIR,
+  },
+  'mihomo-geosite': {
+    label: 'geosite.dat (mihomo)',
+    url: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+    archive: 'raw',
+    outName: 'geosite.dat',
+    dir: RULES_DIR,
+  },
+  // sing-box
+  'singbox-geoip': {
+    label: 'geoip.db (sing-box)',
+    url: 'https://github.com/SagerNet/sing-geoip/releases/latest/download/geoip.db',
+    archive: 'raw',
+    outName: 'geoip.db',
+    dir: RULES_DIR,
+  },
+  'singbox-geosite': {
+    label: 'geosite.db (sing-box)',
+    url: 'https://github.com/SagerNet/sing-geosite/releases/latest/download/geosite.db',
+    archive: 'raw',
+    outName: 'geosite.db',
+    dir: RULES_DIR,
   },
 }
 
@@ -181,18 +220,39 @@ function extractZipMember(zipPath, memberRegex, destPath) {
 }
 
 async function processEngine(name, spec) {
-  const outPath = join(BIN_DIR, spec.outName)
+  const outDir = spec.dir ?? BIN_DIR
+  const outPath = join(outDir, spec.outName)
   if (existsSync(outPath) && !force) {
     const size = statSync(outPath).size
     log(`✓ ${name} — already present (${bytesHuman(size)})`)
     return { name, status: 'skipped' }
   }
 
-  log(`▼ ${name} ${spec.version}`)
+  log(`▼ ${name}${spec.version ? ` ${spec.version}` : ''}`)
   log(`  ${spec.url}`)
 
-  mkdirSync(BIN_DIR, { recursive: true })
+  mkdirSync(outDir, { recursive: true })
 
+  // Raw downloads (geo databases) go directly to outPath, no archive
+  if (spec.archive === 'raw') {
+    const tmpFile = join(tmpdir(), `slave-${name}-${Date.now()}.tmp`)
+    try {
+      const bytes = await downloadTo(spec.url, tmpFile)
+      copyFileSync(tmpFile, outPath)
+      unlinkSync(tmpFile)
+      const sha = sha256File(outPath)
+      log(`  downloaded ${bytesHuman(bytes)}`)
+      log(`  → ${outPath}`)
+      log(`  sha256: ${sha}`)
+      return { name, status: 'ok', sha }
+    } catch (err) {
+      fail(`${name} failed: ${err.message}`)
+      if (existsSync(tmpFile)) rmSync(tmpFile, { force: true })
+      return { name, status: 'failed', error: err.message }
+    }
+  }
+
+  // Archived downloads (engines) — extract one member
   const tmpArchive = join(tmpdir(), `slave-${name}-${Date.now()}.${spec.archive}`)
   try {
     const bytes = await downloadTo(spec.url, tmpArchive)
@@ -211,16 +271,26 @@ async function processEngine(name, spec) {
 }
 
 async function main() {
-  log('Target dir:', BIN_DIR)
+  log('Bin dir:', BIN_DIR)
+  log('Rules dir:', RULES_DIR)
   if (force) log('Mode: --force (re-downloading existing)')
 
+  const allTargets = { ...ENGINES, ...GEO_DATABASES }
+
+  const skipGeo = args.includes('--no-geo')
+  const onlyGeo = args.includes('--geo-only')
+
   const targets = onlyEngine
-    ? { [onlyEngine]: ENGINES[onlyEngine] }
-    : ENGINES
+    ? { [onlyEngine]: allTargets[onlyEngine] }
+    : onlyGeo
+    ? GEO_DATABASES
+    : skipGeo
+    ? ENGINES
+    : allTargets
 
   for (const k of Object.keys(targets)) {
     if (!targets[k]) {
-      fail(`Unknown engine: ${k}. Available: ${Object.keys(ENGINES).join(', ')}`)
+      fail(`Unknown target: ${k}. Available: ${Object.keys(allTargets).join(', ')}`)
       process.exit(2)
     }
   }
@@ -239,7 +309,7 @@ async function main() {
 
   const failures = results.filter(r => r.status === 'failed')
   if (failures.length > 0) {
-    fail(`${failures.length} engine(s) failed`)
+    fail(`${failures.length} target(s) failed`)
     process.exit(1)
   }
 }

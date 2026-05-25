@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
   Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
-  Database, Zap, RotateCcw, Search,
+  Database, Zap, RotateCcw, Search, Stethoscope, MinusCircle, Loader2,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -15,7 +15,7 @@ import { diagnosticsApi, dnsApi } from '../lib/api'
 import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSourceMeta } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
-import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport } from '@shared/ipc/types'
+import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
@@ -287,6 +287,98 @@ function LogCard({ className, children }: { className?: string; children: React.
   )
 }
 
+// ─── Self-test panel ──────────────────────────────────────────────────────────
+
+const SELF_TEST_ICON: Record<SelfTestStatus, React.ReactNode> = {
+  ok:       <CheckCircle2 className="h-3.5 w-3.5 text-connected shrink-0" />,
+  warning:  <AlertCircle  className="h-3.5 w-3.5 text-connecting shrink-0" />,
+  error:    <XCircle      className="h-3.5 w-3.5 text-error shrink-0" />,
+  skipped:  <MinusCircle  className="h-3.5 w-3.5 text-text-muted shrink-0" />,
+}
+
+const SELF_TEST_OVERALL_TONE: Record<SelfTestStatus, string> = {
+  ok:      'border-connected/30 bg-connected/5 text-connected',
+  warning: 'border-connecting/30 bg-connecting/5 text-connecting',
+  error:   'border-error/30 bg-error/5 text-error',
+  skipped: 'border-border bg-bg-secondary text-text-muted',
+}
+
+const SELF_TEST_OVERALL_LABEL: Record<SelfTestStatus, string> = {
+  ok: 'Всё в порядке',
+  warning: 'Есть предупреждения',
+  error: 'Найдены проблемы',
+  skipped: 'Пропущено',
+}
+
+function SelfTestPanel() {
+  const { notify } = useUIStore()
+  const [report, setReport] = useState<SelfTestReport | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const handleRun = async (): Promise<void> => {
+    if (running) return
+    setRunning(true)
+    try {
+      const r = await diagnosticsApi.selfTest()
+      setReport(r)
+      if (r.overall === 'error') {
+        notify({ type: 'error', title: 'Найдены проблемы', message: 'См. результаты теста' })
+      } else if (r.overall === 'warning') {
+        notify({ type: 'warning', title: 'Предупреждения', message: 'См. результаты теста' })
+      } else {
+        notify({ type: 'success', title: 'Self-test OK', message: 'Все проверки пройдены' })
+      }
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка self-test', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-primary p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-[12px] font-semibold text-text-primary">Self-test</p>
+          <p className="text-[11px] text-text-muted">
+            Проверка binaries, geo баз, портов, прав, подписок
+          </p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => void handleRun()} disabled={running}>
+          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}
+          {running ? 'Тестируем...' : 'Запустить'}
+        </Button>
+      </div>
+
+      {report && (
+        <>
+          <div className={cn(
+            'flex items-center gap-2 rounded-md border px-3 py-2 mb-2',
+            SELF_TEST_OVERALL_TONE[report.overall],
+          )}>
+            {SELF_TEST_ICON[report.overall]}
+            <span className="text-[12px] font-medium">{SELF_TEST_OVERALL_LABEL[report.overall]}</span>
+            <span className="ml-auto text-[10px] text-text-muted font-mono">{report.totalMs} ms</span>
+          </div>
+
+          <div className="rounded-md border border-border bg-bg-secondary divide-y divide-border/40">
+            {report.checks.map(check => (
+              <div key={check.id} className="flex items-start gap-2 px-3 py-1.5">
+                {SELF_TEST_ICON[check.status]}
+                <div className="flex-1 min-w-0">
+                  <span className="text-[11px] text-text-secondary font-medium">{check.label}</span>
+                  <div className="text-[10px] text-text-muted leading-tight break-words">{check.detail}</div>
+                </div>
+                <span className="text-[9px] text-text-muted font-mono shrink-0 mt-0.5">{check.durationMs}ms</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── DNS leak test panel ─────────────────────────────────────────────────────
 
 function DnsLeakPanel() {
@@ -501,6 +593,15 @@ export function DiagnosticsPage() {
             <StartupPhasesPanel phases={startupReport.phases} totalMs={startupReport.totalMs} />
           </motion.div>
         )}
+
+        {/* Self-test */}
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06, duration: 0.2 }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Stethoscope className="h-3.5 w-3.5 text-text-muted" />
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Self-test</p>
+          </div>
+          <SelfTestPanel />
+        </motion.div>
 
         {/* DNS leak test */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.2 }}>

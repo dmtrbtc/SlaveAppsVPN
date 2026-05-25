@@ -28,6 +28,7 @@ export const IpcChannel = {
   DIAGNOSTICS_EXPORT_LOGS: 'diagnostics:exportLogs',
   DIAGNOSTICS_GET_LOGS: 'diagnostics:getLogs',
   DIAGNOSTICS_GET_STARTUP: 'diagnostics:getStartup',
+  DIAGNOSTICS_SELF_TEST: 'diagnostics:selfTest',
 
   // Provider — request/response
   PROVIDER_GET_MANIFEST: 'provider:getManifest',
@@ -152,6 +153,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DIAGNOSTICS_EXPORT_LOGS'
   | 'DIAGNOSTICS_GET_LOGS'
   | 'DIAGNOSTICS_GET_STARTUP'
+  | 'DIAGNOSTICS_SELF_TEST'
   | 'PROVIDER_GET_MANIFEST'
   | 'PROVIDER_GET_CAPABILITIES'
   | 'CONFIG_SOURCE_GET_META'

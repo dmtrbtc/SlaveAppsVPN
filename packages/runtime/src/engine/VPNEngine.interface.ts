@@ -15,6 +15,10 @@ export interface EngineInitConfig {
   apiPort: number
   apiSecret: string
   tunHooks?: TunHooks
+  // Path to the directory containing geo databases (geoip.dat / geosite.dat for
+  // mihomo; geoip.db / geosite.db for sing-box). When unset, engines fall back
+  // to working directory and may attempt to download on first use.
+  rulesDir?: string
 }
 
 export interface ConnectionProfile {

@@ -142,6 +142,9 @@ const bridge: SlaveVPNBridge = {
 
     getStartup: () =>
       invoke(IpcChannel.DIAGNOSTICS_GET_STARTUP),
+
+    selfTest: () =>
+      invoke(IpcChannel.DIAGNOSTICS_SELF_TEST),
   },
 
   provider: {

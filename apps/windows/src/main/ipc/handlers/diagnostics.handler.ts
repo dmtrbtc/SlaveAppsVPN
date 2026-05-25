@@ -1,7 +1,8 @@
 import { IpcChannel } from '../../../shared/ipc/channels'
 import { EmptySchema } from '../../../shared/ipc/schemas'
-import { okResult } from '../../../shared/ipc/types'
+import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
+import { runSelfTest } from '../../services/SelfTestService'
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
@@ -100,6 +101,15 @@ export function registerDiagnosticsHandlers(): void {
       })
 
     return okResult(lines)
+  })
+
+  handleIpc(IpcChannel.DIAGNOSTICS_SELF_TEST, EmptySchema, async () => {
+    try {
+      const report = await runSelfTest()
+      return okResult(report)
+    } catch (err) {
+      return errResult('SELF_TEST_ERROR', err instanceof Error ? err.message : String(err))
+    }
   })
 }
 

@@ -115,6 +115,27 @@ export interface LogEntry {
 export type DiagnosticsCollectResult = IpcResult<SystemInfo>
 export type DiagnosticsExportLogsResult = IpcResult<string>
 
+// ─── Self-test ────────────────────────────────────────────────────────────────
+
+export type SelfTestStatus = 'ok' | 'warning' | 'error' | 'skipped'
+
+export interface SelfTestCheck {
+  id: string
+  label: string
+  status: SelfTestStatus
+  detail: string
+  durationMs: number
+}
+
+export interface SelfTestReport {
+  checks: SelfTestCheck[]
+  overall: SelfTestStatus
+  ranAt: number
+  totalMs: number
+}
+
+export type DiagnosticsSelfTestResult = IpcResult<SelfTestReport>
+
 export interface StartupPhaseEntry {
   phase: string
   label: string
@@ -721,6 +742,7 @@ export interface SlaveVPNBridge {
     exportLogs: () => Promise<DiagnosticsExportLogsResult>
     getLogs: () => Promise<DiagnosticsGetLogsResult>
     getStartup: () => Promise<DiagnosticsGetStartupResult>
+    selfTest: () => Promise<DiagnosticsSelfTestResult>
   }
   provider: {
     getManifest: () => Promise<ProviderGetManifestResult>

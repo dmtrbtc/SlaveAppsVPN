@@ -51,6 +51,8 @@ export function createWindowsEngineConfig(
   const resourcesPath = process.resourcesPath ?? path.dirname(process.execPath)
   const binaryPath = path.join(resourcesPath, 'bin', layout.binary)
   const binaryExists = existsSync(binaryPath)
+  const rulesDir = path.join(resourcesPath, 'rules')
+  const rulesExist = existsSync(rulesDir)
 
   // [DIAG] Binary path diagnostics — helps diagnose packaged runtime issues
   const tag = `Windows${layout.label}Engine`
@@ -61,6 +63,8 @@ export function createWindowsEngineConfig(
     `[${tag}] __dirname=${__dirname}`,
     `[${tag}] binaryPath=${binaryPath}`,
     `[${tag}] binaryExists=${binaryExists}`,
+    `[${tag}] rulesDir=${rulesDir}`,
+    `[${tag}] rulesExist=${rulesExist}`,
   ]
   if (binaryExists) {
     try {
@@ -81,5 +85,6 @@ export function createWindowsEngineConfig(
     // TUN hooks are mihomo-specific; sing-box manages its own TUN adapter.
     // We keep checking wintun.dll presence as a generic sanity check.
     tunHooks: new WindowsTunHooks(),
+    ...(rulesExist ? { rulesDir } : {}),
   }
 }

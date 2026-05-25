@@ -26,6 +26,10 @@ export interface ConfigGenerationContext {
   apiSecret: string
   routingPolicy?: NormalizedPolicy
   dnsProfile?: DnsProfile
+  // Absolute path to geo databases directory (geoip.dat/geosite.dat for mihomo,
+  // geoip.db/geosite.db for sing-box). When unset, engines fall back to
+  // working dir + may attempt auto-download.
+  rulesDir?: string
 }
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
@@ -70,6 +74,17 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     'tcp-concurrent': true,
     'external-controller': `127.0.0.1:${ctx.apiPort}`,
     secret: ctx.apiSecret,
+    // Use file-based geo databases instead of auto-downloading.
+    // file://-prefixed URLs work cross-platform; Windows paths get normalised.
+    ...(ctx.rulesDir ? {
+      'geodata-mode': true,
+      'geo-auto-update': false,
+      'geox-url': {
+        geoip:   pathToFileUrl(ctx.rulesDir, 'geoip.dat'),
+        geosite: pathToFileUrl(ctx.rulesDir, 'geosite.dat'),
+        mmdb:    pathToFileUrl(ctx.rulesDir, 'geoip.dat'),  // fallback
+      },
+    } : {}),
     proxies: profile.proxies as unknown[],
     'proxy-groups': [
       ...managedGroups,
@@ -211,6 +226,16 @@ function buildLegacyRules(mode: VPNMode, splitProcesses?: string[]): string[] {
         `MATCH,${SLAVE_SELECT_GROUP}`,
       ]
   }
+}
+
+// Convert OS path to a file:// URL accepted by mihomo's geox-url.
+// On Windows: "E:\path\to\file.dat" → "file:///E:/path/to/file.dat".
+// On POSIX:  "/path/to/file.dat"   → "file:///path/to/file.dat".
+function pathToFileUrl(dir: string, filename: string): string {
+  const normalized = `${dir}/${filename}`.replace(/\\/g, '/')
+  return normalized.startsWith('/')
+    ? `file://${normalized}`
+    : `file:///${normalized}`
 }
 
 export function getAutoSelectGroupName(): string {

@@ -128,6 +128,10 @@ export function generateSingboxConfig(ctx: ConfigGenerationContext): string {
       rules: routeRules,
       final: finalOutbound,
       auto_detect_interface: true,
+      ...(ctx.rulesDir ? {
+        geoip:   { path: `${ctx.rulesDir.replace(/\\/g, '/')}/geoip.db` },
+        geosite: { path: `${ctx.rulesDir.replace(/\\/g, '/')}/geosite.db` },
+      } : {}),
     },
     experimental: {
       clash_api: {

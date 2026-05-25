@@ -139,6 +139,18 @@ export interface SingboxRoute {
   final: string
   auto_detect_interface: boolean
   override_android_vpn?: boolean
+  // sing-box ≤ 1.10 inline geo databases; ≥ 1.11 prefers rule_set,
+  // but the inline form still works and is simpler for offline builds.
+  geoip?: {
+    path: string
+    download_url?: string
+    download_detour?: string
+  }
+  geosite?: {
+    path: string
+    download_url?: string
+    download_detour?: string
+  }
 }
 
 export interface SingboxExperimental {
