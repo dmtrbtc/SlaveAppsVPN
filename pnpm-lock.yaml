@@ -62,6 +62,9 @@ importers:
       '@slave-vpn/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@slave-vpn/dns':
+        specifier: workspace:*
+        version: link:../../packages/dns
       '@slave-vpn/localization':
         specifier: workspace:*
         version: link:../../packages/localization
@@ -71,6 +74,9 @@ importers:
       '@slave-vpn/provider-remnawave':
         specifier: workspace:*
         version: link:../../packages/provider-remnawave
+      '@slave-vpn/routing':
+        specifier: workspace:*
+        version: link:../../packages/routing
       '@slave-vpn/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -328,6 +334,12 @@ importers:
       '@slave-vpn/config':
         specifier: workspace:*
         version: link:../config
+      '@slave-vpn/dns':
+        specifier: workspace:*
+        version: link:../dns
+      '@slave-vpn/routing':
+        specifier: workspace:*
+        version: link:../routing
       '@slave-vpn/shared':
         specifier: workspace:*
         version: link:../shared

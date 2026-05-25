@@ -40,7 +40,7 @@ export class SubscriptionUrlSource implements ConfigSource {
       if (lastModified) headers['If-Modified-Since'] = lastModified
 
       getLogger().info({
-        url: this.url,
+        urlDomain: new URL(this.url).hostname,
         ua,
         hwid: headers['X-HWID'] ? `${headers['X-HWID'].slice(0, 8)}...` : undefined,
         engine: headers['X-Engine'],
@@ -90,6 +90,7 @@ export class SubscriptionUrlSource implements ConfigSource {
         }
 
         if (status < 200 || status >= 300) {
+          getLogger().warn({ ua, status, urlDomain: new URL(this.url).hostname }, 'subscription HTTP error')
           lastError = new Error(`HTTP ${status}`)
           continue
         }
@@ -110,6 +111,14 @@ export class SubscriptionUrlSource implements ConfigSource {
         try {
           normalized = normalizeSubscriptionContent(text)
         } catch (parseErr) {
+          // Log first 600 chars of the response to diagnose server-side issues
+          getLogger().warn({
+            ua,
+            status,
+            parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+            responsePreview: text.slice(0, 600),
+            responseLength: text.length,
+          }, 'subscription parse failed')
           // New content is invalid — keep stale cache if available
           lastError = parseErr
           if (this.cache) return this.cache.yaml

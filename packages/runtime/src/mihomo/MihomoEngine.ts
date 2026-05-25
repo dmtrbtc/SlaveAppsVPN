@@ -151,6 +151,24 @@ export class MihomoEngine implements VPNEngine {
     return this.api.getProxyDelay(tag, testUrl, timeoutMs)
   }
 
+  async getConnections(): Promise<import('./MihomoApiClient').MihomoConnectionsInfo | null> {
+    if (this.fsm.state !== 'running' || !this.api) return null
+    try {
+      return await this.api.getConnections()
+    } catch {
+      return null
+    }
+  }
+
+  async closeConnection(id: string): Promise<void> {
+    if (this.fsm.state !== 'running' || !this.api) return
+    try {
+      await this.api.closeConnection(id)
+    } catch {
+      // non-fatal
+    }
+  }
+
   async updateProfile(profile: ConnectionProfile): Promise<HotReloadType> {
     this.requireInitialized()
     if (!this.currentProfile) throw new Error('Engine not started')
@@ -222,9 +240,15 @@ export class MihomoEngine implements VPNEngine {
       settings: profile.generatorSettings,
       apiPort: this.initConfig!.apiPort,
       apiSecret: this.initConfig!.apiSecret,
+      ...(profile.dnsProfile !== undefined ? { dnsProfile: profile.dnsProfile } : {}),
+      ...(profile.routingPolicy !== undefined ? { routingPolicy: profile.routingPolicy } : {}),
     })
     await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
+
+    // Log generated config for production diagnostics (secret is obfuscated in yaml already)
+    console.log(`[MihomoEngine] config written to: ${this.configPath()}`)
+    console.log(`[MihomoEngine] config preview (first 2000 chars):\n${yaml.slice(0, 2000)}`)
   }
 
   private async waitForApi(): Promise<void> {
@@ -263,13 +287,20 @@ export class MihomoEngine implements VPNEngine {
       return 'full_restart'
     }
 
+    // tun stack swap requires full restart — driver-level reinit
+    if (ps.tunStack !== ns.tunStack) {
+      return 'full_restart'
+    }
+
     if (
       prev.vpnMode === next.vpnMode &&
       prev.subscriptionYaml === next.subscriptionYaml &&
       ps.fakeIpEnabled === ns.fakeIpEnabled &&
       ps.dnsOverHttps === ns.dnsOverHttps &&
       JSON.stringify(ps.fallbackDns) === JSON.stringify(ns.fallbackDns) &&
-      JSON.stringify(ps.splitTunnelProcesses) === JSON.stringify(ns.splitTunnelProcesses)
+      JSON.stringify(ps.splitTunnelProcesses) === JSON.stringify(ns.splitTunnelProcesses) &&
+      JSON.stringify(prev.dnsProfile) === JSON.stringify(next.dnsProfile) &&
+      JSON.stringify(prev.routingPolicy) === JSON.stringify(next.routingPolicy)
     ) {
       return 'hot'
     }

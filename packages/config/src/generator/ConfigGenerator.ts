@@ -66,6 +66,8 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     'allow-lan': false,
     mode: 'rule',
     'log-level': 'info',
+    'unified-delay': true,
+    'tcp-concurrent': true,
     'external-controller': `127.0.0.1:${ctx.apiPort}`,
     secret: ctx.apiSecret,
     proxies: profile.proxies as unknown[],
@@ -79,11 +81,14 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
 
   if (ctx.settings.tunEnabled) {
     config['tun'] = buildTunSection(ctx.settings)
+    config['sniffer'] = buildSnifferSection()
   }
 
   config['dns'] = ctx.dnsProfile
     ? dnsCompiler.compile(ctx.dnsProfile).config
     : buildLegacyDnsSection(ctx.settings)
+
+  config['profile'] = { 'store-selected': true, 'store-fake-ip': false }
 
   return yaml.dump(config, { lineWidth: -1, noRefs: true })
 }
@@ -92,19 +97,70 @@ function buildTunSection(settings: GeneratorSettings): Record<string, unknown> {
   return {
     enable: true,
     stack: settings.tunStack,
+    device: 'Mihomo',
+    mtu: 9000,
     'dns-hijack': ['any:53'],
     'auto-route': true,
+    'strict-route': true,
     'auto-detect-interface': true,
   }
 }
 
+function buildSnifferSection(): Record<string, unknown> {
+  return {
+    enable: true,
+    sniff: {
+      TLS: { ports: [443, 8443] },
+      HTTP: { ports: [80, '8080-8880'], 'override-destination': true },
+      QUIC: { ports: [443, 8443] },
+    },
+    'skip-domain': [
+      '+.push.apple.com',
+      '+.apple.com',
+      'Mijia Cloud',
+    ],
+  }
+}
+
+// Domains that MUST get real IPs (fake-ip breaks them)
+const FAKE_IP_FILTER = [
+  '*.lan',
+  '*.local',
+  '*.localhost',
+  'localhost.ptlogin2.qq.com',
+  '*.msftconnecttest.com',
+  '*.msftncsi.com',
+  'time.*.com',
+  'time.*.gov',
+  'ntp.*.com',
+  '*.ntp.org.cn',
+  'time.cloudflare.com',
+  '*.apple.com',
+  'gateway.icloud.com',
+  '*.srv.nintendo.net',
+  '*.stun.*.*',
+  'stun.*.*',
+]
+
 function buildLegacyDnsSection(settings: GeneratorSettings): Record<string, unknown> {
   return {
     enable: true,
+    // Port 53 is occupied by Windows DNS Client on many systems; use a
+    // non-conflicting port. TUN dns-hijack intercepts at packet level
+    // and does not depend on this listen address.
+    listen: '0.0.0.0:1053',
+    ipv6: false,
+    'use-system-hosts': false,
     'enhanced-mode': settings.fakeIpEnabled ? 'fake-ip' : 'normal',
-    ...(settings.fakeIpEnabled ? { 'fake-ip-range': '198.18.0.1/16' } : {}),
-    nameserver: [settings.dnsOverHttps],
-    fallback: settings.fallbackDns,
+    ...(settings.fakeIpEnabled ? {
+      'fake-ip-range': '198.18.0.1/16',
+      'fake-ip-filter': FAKE_IP_FILTER,
+    } : {}),
+    nameserver: [
+      settings.dnsOverHttps,
+      'https://1.1.1.1/dns-query',
+    ],
+    fallback: ['8.8.8.8', '1.1.1.1', ...settings.fallbackDns],
     'fallback-filter': {
       geoip: true,
       'geoip-code': 'CN',
@@ -112,28 +168,48 @@ function buildLegacyDnsSection(settings: GeneratorSettings): Record<string, unkn
   }
 }
 
+// Private IP ranges — always direct regardless of mode to prevent routing loops.
+// GEOIP,private is Mihomo built-in and does NOT require geoip.dat.
+const PRIVATE_DIRECT_RULES = [
+  'GEOIP,private,DIRECT,no-resolve',
+  'IP-CIDR,127.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,10.0.0.0/8,DIRECT,no-resolve',
+  'IP-CIDR,172.16.0.0/12,DIRECT,no-resolve',
+  'IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+  'IP-CIDR,169.254.0.0/16,DIRECT,no-resolve',
+  'IP-CIDR,224.0.0.0/4,DIRECT,no-resolve',
+  'IP-CIDR,240.0.0.0/4,DIRECT,no-resolve',
+]
+
 function buildLegacyRules(mode: VPNMode, splitProcesses?: string[]): string[] {
   switch (mode) {
     case 'full':
-      return [`MATCH,${SLAVE_SELECT_GROUP}`]
+      return [
+        ...PRIVATE_DIRECT_RULES,
+        `MATCH,${SLAVE_SELECT_GROUP}`,
+      ]
 
     case 'bypass':
+      // All non-private traffic through VPN.
+      // Geo-based bypass (RU, CN) requires geoip.dat/geosite.dat which must be
+      // packaged separately — added when geo data is available.
       return [
-        'GEOSITE,private,DIRECT',
-        'GEOSITE,cn,DIRECT',
-        'GEOIP,private,DIRECT,no-resolve',
-        'GEOIP,CN,DIRECT',
+        ...PRIVATE_DIRECT_RULES,
         `MATCH,${SLAVE_SELECT_GROUP}`,
       ]
 
     case 'split':
       return [
         ...(splitProcesses ?? []).map((p) => `PROCESS-NAME,${p},${SLAVE_SELECT_GROUP}`),
+        ...PRIVATE_DIRECT_RULES,
         'MATCH,DIRECT',
       ]
 
     case 'custom':
-      return [`MATCH,${SLAVE_SELECT_GROUP}`]
+      return [
+        ...PRIVATE_DIRECT_RULES,
+        `MATCH,${SLAVE_SELECT_GROUP}`,
+      ]
   }
 }
 

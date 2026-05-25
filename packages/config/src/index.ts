@@ -1,5 +1,12 @@
 export type { ConfigCompiler, CompileInput, CompilerEngineType } from './compiler'
-export { MihomoConfigCompiler, SingboxConfigCompiler, XrayConfigCompiler } from './compiler'
+export {
+  MihomoConfigCompiler,
+  SingboxConfigCompiler,
+  XrayConfigCompiler,
+  generateSingboxConfig,
+  getSingboxSelectGroup,
+  getSingboxAutoGroup,
+} from './compiler'
 
 export { SubscriptionParser } from './parser/SubscriptionParser'
 export type { ParsedProfile, ParsedProxy, ParsedProxyGroup } from './parser/ParsedProfile'
@@ -31,4 +38,5 @@ export {
   buildClashYaml,
   normalizeSubscriptionContent,
   ConnectionCompatibilityValidator,
+  parseProxiesFromYaml,
 } from './subscription'

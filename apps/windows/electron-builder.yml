@@ -31,7 +31,7 @@ extraResources:
 
 win:
   executableName: slave-vpn
-  requestedExecutionLevel: asInvoker
+  requestedExecutionLevel: requireAdministrator
   icon: resources/icons/icon.ico
   target:
     - target: nsis

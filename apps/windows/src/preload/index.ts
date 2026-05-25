@@ -7,6 +7,23 @@ import type {
   LoginEmailPayload,
   LoginTelegramPayload,
   VpnSetModePayload,
+  VpnSetProxyPayload,
+  BalancerSetEnabledPayload,
+  BalancerSetModePayload,
+  BalancerState,
+  DnsSetProfilePayload,
+  RuleProviderAddPayload,
+  RuleProviderRemovePayload,
+  RuleProviderUpdatePayload,
+  RuleProviderReorderPayload,
+  SplitSetProcessListPayload,
+  RoutingSetEnabledScenariosPayload,
+  SubscriptionAddPayload,
+  SubscriptionRemovePayload,
+  SubscriptionUpdatePayload,
+  SubscriptionRefreshPayload,
+  SubscriptionEntry,
+  ConnectionCloseRequest,
   RemoveDevicePayload,
   AppSettings,
   UpdateAvailablePayload,
@@ -65,6 +82,30 @@ const bridge: SlaveVPNBridge = {
 
     getConnectivity: () =>
       invoke(IpcChannel.VPN_GET_CONNECTIVITY),
+
+    setProxy: (payload: VpnSetProxyPayload) =>
+      invoke(IpcChannel.VPN_SET_PROXY, payload),
+
+    getProxyList: () =>
+      invoke(IpcChannel.VPN_GET_PROXY_LIST),
+
+    getConnections: () =>
+      invoke(IpcChannel.VPN_GET_CONNECTIONS),
+
+    closeConnection: (payload: ConnectionCloseRequest) =>
+      invoke(IpcChannel.VPN_CLOSE_CONNECTION, payload),
+
+    getBalancerState: () =>
+      invoke(IpcChannel.VPN_GET_BALANCER_STATE),
+
+    setBalancerEnabled: (payload: BalancerSetEnabledPayload) =>
+      invoke(IpcChannel.VPN_SET_BALANCER_ENABLED, payload),
+
+    setBalancerMode: (payload: BalancerSetModePayload) =>
+      invoke(IpcChannel.VPN_SET_BALANCER_MODE, payload),
+
+    probeAll: () =>
+      invoke(IpcChannel.VPN_PROBE_ALL),
   },
 
   subscription: {
@@ -168,6 +209,85 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.CACHE_CLEAR),
   },
 
+  dns: {
+    getProfile: () =>
+      invoke(IpcChannel.DNS_GET_PROFILE),
+
+    setProfile: (payload: DnsSetProfilePayload) =>
+      invoke(IpcChannel.DNS_SET_PROFILE, payload),
+
+    getPresets: () =>
+      invoke(IpcChannel.DNS_GET_PRESETS),
+
+    getStrategies: () =>
+      invoke(IpcChannel.DNS_GET_STRATEGIES),
+
+    leakTest: () =>
+      invoke(IpcChannel.DNS_LEAK_TEST),
+  },
+
+  rules: {
+    list: () =>
+      invoke(IpcChannel.RULES_LIST),
+
+    add: (payload: RuleProviderAddPayload) =>
+      invoke(IpcChannel.RULES_ADD, payload),
+
+    remove: (payload: RuleProviderRemovePayload) =>
+      invoke(IpcChannel.RULES_REMOVE, payload),
+
+    update: (payload: RuleProviderUpdatePayload) =>
+      invoke(IpcChannel.RULES_UPDATE, payload),
+
+    reorder: (payload: RuleProviderReorderPayload) =>
+      invoke(IpcChannel.RULES_REORDER, payload),
+
+    reload: () =>
+      invoke(IpcChannel.RULES_RELOAD),
+  },
+
+  split: {
+    getProcesses: () =>
+      invoke(IpcChannel.SPLIT_GET_PROCESSES),
+
+    getProcessList: () =>
+      invoke(IpcChannel.SPLIT_GET_PROCESS_LIST),
+
+    setProcessList: (payload: SplitSetProcessListPayload) =>
+      invoke(IpcChannel.SPLIT_SET_PROCESS_LIST, payload),
+  },
+
+  routing: {
+    listScenarios: () =>
+      invoke(IpcChannel.ROUTING_LIST_SCENARIOS),
+
+    setEnabledScenarios: (payload: RoutingSetEnabledScenariosPayload) =>
+      invoke(IpcChannel.ROUTING_SET_ENABLED_SCENARIOS, payload),
+  },
+
+  subscriptions: {
+    list: () =>
+      invoke(IpcChannel.SUBSCRIPTIONS_LIST),
+
+    add: (payload: SubscriptionAddPayload) =>
+      invoke(IpcChannel.SUBSCRIPTIONS_ADD, payload),
+
+    remove: (payload: SubscriptionRemovePayload) =>
+      invoke(IpcChannel.SUBSCRIPTIONS_REMOVE, payload),
+
+    update: (payload: SubscriptionUpdatePayload) =>
+      invoke(IpcChannel.SUBSCRIPTIONS_UPDATE, payload),
+
+    refresh: (payload: SubscriptionRefreshPayload) =>
+      invoke(IpcChannel.SUBSCRIPTIONS_REFRESH, payload),
+
+    refreshAll: () =>
+      invoke(IpcChannel.SUBSCRIPTIONS_REFRESH_ALL),
+
+    detectClipboard: () =>
+      invoke(IpcChannel.SUBSCRIPTIONS_DETECT_CLIPBOARD),
+  },
+
   controls: {
     minimize: () =>
       invoke(IpcChannel.WINDOW_MINIMIZE),
@@ -218,6 +338,15 @@ const bridge: SlaveVPNBridge = {
 
     onServerLatency: (callback: (payload: ServerLatencyPayload) => void) =>
       on<ServerLatencyPayload>(IpcChannel.EVENT_SERVER_LATENCY, callback),
+
+    onBalancerState: (callback: (state: BalancerState) => void) =>
+      on<BalancerState>(IpcChannel.EVENT_BALANCER_STATE, callback),
+
+    onProxyChanged: (callback: (proxyName: string) => void) =>
+      on<string>(IpcChannel.EVENT_PROXY_CHANGED, callback),
+
+    onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) =>
+      on<SubscriptionEntry[]>(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, callback),
   },
 }
 

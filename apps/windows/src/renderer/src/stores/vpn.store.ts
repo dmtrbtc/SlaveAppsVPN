@@ -2,8 +2,8 @@ import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
 import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
-import type { VpnHealthPayload } from '@shared/ipc/types'
-import { vpnApi, events } from '../lib/api'
+import type { VpnHealthPayload, ProxyEntry, BalancerState, BalancerMode } from '@shared/ipc/types'
+import { vpnApi, settingsApi, events } from '../lib/api'
 
 interface VpnStore {
   status: VPNStatus
@@ -12,12 +12,23 @@ interface VpnStore {
   engineVersion: string | null
   reconnectAttempts: number
   connectionStartedAt: number | null
+  proxyList: ProxyEntry[]
+  balancerState: BalancerState | null
+  selectedProxy: string | null
+  // Live latency map populated from EVENT_SERVER_LATENCY — shared by
+  // ServersPage, ConnectionTargetSelector, and any future UI that needs it.
+  serverLatency: Record<string, number | null>
+  serverLatencyUpdatedAt: number
 
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   setMode: (mode: VPNMode) => Promise<void>
   fetchStatus: () => Promise<void>
   setEngineVersion: (v: string | null) => void
+  fetchProxyList: () => Promise<void>
+  setProxy: (name: string) => Promise<void>
+  setBalancerEnabled: (enabled: boolean) => Promise<void>
+  setBalancerMode: (mode: BalancerMode) => Promise<void>
   subscribeToEvents: () => () => void
 }
 
@@ -54,6 +65,11 @@ export const useVpnStore = create<VpnStore>()(
     engineVersion: null,
     reconnectAttempts: 0,
     connectionStartedAt: null,
+    proxyList: [],
+    balancerState: null,
+    selectedProxy: null,
+    serverLatency: {},
+    serverLatencyUpdatedAt: 0,
 
     connect: async () => {
       const state = get().status.state
@@ -100,6 +116,49 @@ export const useVpnStore = create<VpnStore>()(
 
     setEngineVersion: (v) => set({ engineVersion: v }),
 
+    fetchProxyList: async () => {
+      try {
+        const list = await vpnApi.getProxyList()
+        set({ proxyList: list })
+      } catch {
+        // Non-fatal
+      }
+    },
+
+    setProxy: async (name: string) => {
+      try {
+        const vpnState = get().status.state
+        if (vpnState === 'connected') {
+          await vpnApi.setProxy({ proxyName: name })
+        } else {
+          await settingsApi.set({ selectedProxy: name })
+        }
+        set({ selectedProxy: name })
+      } catch {
+        // Non-fatal
+      }
+    },
+
+    setBalancerEnabled: async (enabled: boolean) => {
+      try {
+        await vpnApi.setBalancerEnabled({ enabled })
+        const state = await vpnApi.getBalancerState()
+        set({ balancerState: state })
+      } catch {
+        // Non-fatal
+      }
+    },
+
+    setBalancerMode: async (mode: BalancerMode) => {
+      try {
+        await vpnApi.setBalancerMode({ mode })
+        const state = await vpnApi.getBalancerState()
+        set({ balancerState: state })
+      } catch {
+        // Non-fatal
+      }
+    },
+
     subscribeToEvents: () => {
       const unsubStatus = events.onVpnStatus(status => {
         set(s => ({ status, ...deriveConnectionMeta(s, status) }))
@@ -112,11 +171,25 @@ export const useVpnStore = create<VpnStore>()(
         }))
       })
       const unsubHealth = events.onVpnHealth(health => set({ health }))
+      const unsubBalancer = events.onBalancerState(balancerState => set({ balancerState }))
+      const unsubProxyChanged = events.onProxyChanged(selectedProxy => set({ selectedProxy }))
+      const unsubLatency = events.onServerLatency(payload => {
+        set(s => ({
+          serverLatency: {
+            ...s.serverLatency,
+            [payload.proxyName]: payload.success ? payload.latencyMs : null,
+          },
+          serverLatencyUpdatedAt: Date.now(),
+        }))
+      })
       return () => {
         unsubStatus()
         unsubTraffic()
         unsubError()
         unsubHealth()
+        unsubBalancer()
+        unsubProxyChanged()
+        unsubLatency()
       }
     },
   }))
@@ -130,3 +203,7 @@ export const selectVpnMode = (s: VpnStore) => s.status.mode
 export const selectEngineVersion = (s: VpnStore) => s.engineVersion
 export const selectReconnectAttempts = (s: VpnStore) => s.reconnectAttempts
 export const selectConnectionStartedAt = (s: VpnStore) => s.connectionStartedAt
+export const selectProxyList = (s: VpnStore) => s.proxyList
+export const selectBalancerState = (s: VpnStore) => s.balancerState
+export const selectSelectedProxy = (s: VpnStore) => s.selectedProxy
+export const selectServerLatency = (s: VpnStore) => s.serverLatency

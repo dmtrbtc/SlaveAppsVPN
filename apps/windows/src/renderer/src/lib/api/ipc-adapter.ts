@@ -1,4 +1,21 @@
-import type { SlaveVPNBridge, UpdateSetChannelPayload } from '@shared/ipc/types'
+import type {
+  SlaveVPNBridge,
+  UpdateSetChannelPayload,
+  VpnSetProxyPayload,
+  BalancerSetEnabledPayload,
+  BalancerSetModePayload,
+  DnsSetProfilePayload,
+  RuleProviderAddPayload,
+  RuleProviderRemovePayload,
+  RuleProviderUpdatePayload,
+  RuleProviderReorderPayload,
+  SplitSetProcessListPayload,
+  BalancerState,
+  SubscriptionAddPayload,
+  SubscriptionRemovePayload,
+  SubscriptionUpdatePayload,
+  SubscriptionRefreshPayload,
+} from '@shared/ipc/types'
 
 const IPC_TIMEOUT_MS = 15_000
 const NOOP_UNSUB = (): void => {}
@@ -58,6 +75,22 @@ export const vpnApi = {
     unwrap(requireBridge().vpn.setMode({ mode })),
   getConnectivity: () =>
     unwrap(requireBridge().vpn.getConnectivity()),
+  setProxy: (payload: VpnSetProxyPayload) =>
+    unwrap(requireBridge().vpn.setProxy(payload)),
+  getProxyList: () =>
+    unwrap(requireBridge().vpn.getProxyList()),
+  getConnections: () =>
+    unwrap(requireBridge().vpn.getConnections()),
+  closeConnection: (id: string) =>
+    unwrap(requireBridge().vpn.closeConnection({ id })),
+  getBalancerState: () =>
+    unwrap(requireBridge().vpn.getBalancerState()),
+  setBalancerEnabled: (payload: BalancerSetEnabledPayload) =>
+    unwrap(requireBridge().vpn.setBalancerEnabled(payload)),
+  setBalancerMode: (payload: BalancerSetModePayload) =>
+    unwrap(requireBridge().vpn.setBalancerMode(payload)),
+  probeAll: () =>
+    unwrap(requireBridge().vpn.probeAll()),
 }
 
 export const subscriptionApi = {
@@ -129,6 +162,67 @@ export const cacheApi = {
     unwrap(requireBridge().cache.clear()),
 }
 
+export const dnsApi = {
+  getProfile: () =>
+    unwrap(requireBridge().dns.getProfile()),
+  setProfile: (payload: DnsSetProfilePayload) =>
+    unwrap(requireBridge().dns.setProfile(payload)),
+  getPresets: () =>
+    unwrap(requireBridge().dns.getPresets()),
+  getStrategies: () =>
+    unwrap(requireBridge().dns.getStrategies()),
+  leakTest: () =>
+    unwrap(requireBridge().dns.leakTest()),
+}
+
+export const rulesApi = {
+  list: () =>
+    unwrap(requireBridge().rules.list()),
+  add: (payload: RuleProviderAddPayload) =>
+    unwrap(requireBridge().rules.add(payload)),
+  remove: (payload: RuleProviderRemovePayload) =>
+    unwrap(requireBridge().rules.remove(payload)),
+  update: (payload: RuleProviderUpdatePayload) =>
+    unwrap(requireBridge().rules.update(payload)),
+  reorder: (payload: RuleProviderReorderPayload) =>
+    unwrap(requireBridge().rules.reorder(payload)),
+  reload: () =>
+    unwrap(requireBridge().rules.reload()),
+}
+
+export const splitApi = {
+  getProcesses: () =>
+    unwrap(requireBridge().split.getProcesses()),
+  getProcessList: () =>
+    unwrap(requireBridge().split.getProcessList()),
+  setProcessList: (payload: SplitSetProcessListPayload) =>
+    unwrap(requireBridge().split.setProcessList(payload)),
+}
+
+export const routingApi = {
+  listScenarios: () =>
+    unwrap(requireBridge().routing.listScenarios()),
+  setEnabledScenarios: (scenarioIds: string[]) =>
+    unwrap(requireBridge().routing.setEnabledScenarios({ scenarioIds })),
+}
+
+export const subscriptionsApi = {
+  list: () =>
+    unwrap(requireBridge().subscriptions.list()),
+  add: (payload: SubscriptionAddPayload) =>
+    unwrap(requireBridge().subscriptions.add(payload)),
+  remove: (payload: SubscriptionRemovePayload) =>
+    unwrap(requireBridge().subscriptions.remove(payload)),
+  update: (payload: SubscriptionUpdatePayload) =>
+    unwrap(requireBridge().subscriptions.update(payload)),
+  refresh: (payload: SubscriptionRefreshPayload) =>
+    unwrap(requireBridge().subscriptions.refresh(payload)),
+  refreshAll: () =>
+    unwrap(requireBridge().subscriptions.refreshAll()),
+  detectClipboard: () =>
+    unwrap(requireBridge().subscriptions.detectClipboard()),
+}
+
 export const updateApi = {
   check: () =>
     unwrap(requireBridge().update.check()),
@@ -165,4 +259,12 @@ export const events = {
     getBridge()?.events.onUpdateProgress(...args) ?? NOOP_UNSUB,
   onNotification: (...args: Parameters<SlaveVPNBridge['events']['onNotification']>) =>
     getBridge()?.events.onNotification(...args) ?? NOOP_UNSUB,
+  onBalancerState: (callback: (state: BalancerState) => void) =>
+    getBridge()?.events.onBalancerState(callback) ?? NOOP_UNSUB,
+  onProxyChanged: (callback: (proxyName: string) => void) =>
+    getBridge()?.events.onProxyChanged(callback) ?? NOOP_UNSUB,
+  onServerLatency: (...args: Parameters<SlaveVPNBridge['events']['onServerLatency']>) =>
+    getBridge()?.events.onServerLatency(...args) ?? NOOP_UNSUB,
+  onSubscriptionsChanged: (...args: Parameters<SlaveVPNBridge['events']['onSubscriptionsChanged']>) =>
+    getBridge()?.events.onSubscriptionsChanged(...args) ?? NOOP_UNSUB,
 }

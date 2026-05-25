@@ -4,6 +4,22 @@ import { ProcessWatcher } from './ProcessWatcher'
 import type { StopReason } from '../state/RuntimeState'
 import type { EngineEventBus } from '../engine/EngineEvents'
 
+// Mihomo writes structured log lines to stdout:
+//   time="..." level=info msg="..."
+//   time="..." level=warning msg="..."
+//   time="..." level=error msg="..."
+// Parse the embedded level so downstream handlers can filter properly.
+function parseMihomoLogLevel(line: string): 'debug' | 'info' | 'warn' | 'error' {
+  const m = line.match(/\blevel=(\w+)/)
+  if (!m) return 'info'
+  switch (m[1]) {
+    case 'error':                  return 'error'
+    case 'warning': case 'warn':   return 'warn'
+    case 'debug':   case 'trace':  return 'debug'
+    default:                       return 'info'
+  }
+}
+
 interface ProcessManagerConfig {
   binaryPath: string
   workingDir: string
@@ -57,14 +73,15 @@ export class ProcessManager {
     proc.stdout?.on('data', (chunk: Buffer) => {
       const lines = chunk.toString().split('\n').filter(Boolean)
       for (const line of lines) {
-        this.events.emit('logLine', { level: 'info', message: line })
+        this.events.emit('logLine', { level: parseMihomoLogLevel(line), message: line })
       }
     })
 
     proc.stderr?.on('data', (chunk: Buffer) => {
       const lines = chunk.toString().split('\n').filter(Boolean)
       for (const line of lines) {
-        this.events.emit('logLine', { level: 'warn', message: line })
+        // stderr from Mihomo is always unexpected — treat as error
+        this.events.emit('logLine', { level: 'error', message: line })
       }
     })
 

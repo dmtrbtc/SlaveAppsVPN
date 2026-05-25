@@ -63,15 +63,19 @@ cache/
 temp/
 tmp/
 
-# Mihomo runtime binary (downloaded separately, not committed)
+# Engine binaries (downloaded by scripts/download-binaries.mjs, not committed)
 apps/windows/resources/bin/mihomo.exe
+apps/windows/resources/bin/sing-box.exe
+apps/windows/resources/bin/xray.exe
 apps/windows/resources/bin/wintun.dll
 apps/windows/resources/rules/*.dat
 apps/windows/resources/rules/*.mmdb
 
 # Generated configs (runtime working directory — NOT source code)
 **/AppData/**/mihomo/
+**/AppData/**/singbox/
 apps/windows/mihomo/
+apps/windows/singbox/
 *.mihomo.yaml
 generated-config.yaml
 
@@ -94,6 +98,7 @@ codesign/
 # Electron builder output
 dist-electron/
 electron-builder-output/
+*.tgz
 
 # Test coverage
 coverage/

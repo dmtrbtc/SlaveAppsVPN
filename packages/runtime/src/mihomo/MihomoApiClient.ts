@@ -10,10 +10,33 @@ export interface MihomoTrafficSnapshot {
   down: number
 }
 
+export interface MihomoConnectionMetadata {
+  network?: string         // tcp | udp
+  type?: string            // HTTP | HTTPS | Socks5 | ...
+  sourceIP?: string
+  sourcePort?: string
+  destinationIP?: string
+  destinationPort?: string
+  host?: string
+  processPath?: string
+  process?: string
+}
+
+export interface MihomoConnection {
+  id: string
+  upload: number
+  download: number
+  start: string            // ISO timestamp
+  metadata: MihomoConnectionMetadata
+  chains: string[]         // proxy chain: ["DIRECT"] | ["SLAVE-SELECT", "ProxyName"]
+  rule: string
+  rulePayload: string
+}
+
 export interface MihomoConnectionsInfo {
   downloadTotal: number
   uploadTotal: number
-  connections: unknown[]
+  connections: MihomoConnection[]
 }
 
 export interface MihomoMemoryInfo {
@@ -53,6 +76,10 @@ export class MihomoApiClient {
 
   async closeAllConnections(): Promise<void> {
     await this.delete('/connections')
+  }
+
+  async closeConnection(id: string): Promise<void> {
+    await this.delete(`/connections/${encodeURIComponent(id)}`)
   }
 
   async selectProxy(groupName: string, proxyName: string): Promise<void> {

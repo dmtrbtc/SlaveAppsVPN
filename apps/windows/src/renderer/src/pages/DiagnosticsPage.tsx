@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
   Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
-  Database, Zap, RotateCcw,
+  Database, Zap, RotateCcw, Search,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -11,11 +11,11 @@ import { Segmented } from '../components/ui/segmented'
 import { InfoTile } from '../components/ui/info-tile'
 import { LoadingState, ErrorState } from '../components/ui/states'
 import { cn, formatMemoryMb, formatUptime } from '../lib/utils'
-import { diagnosticsApi } from '../lib/api'
+import { diagnosticsApi, dnsApi } from '../lib/api'
 import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSourceMeta } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
-import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry } from '@shared/ipc/types'
+import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
@@ -287,6 +287,115 @@ function LogCard({ className, children }: { className?: string; children: React.
   )
 }
 
+// ─── DNS leak test panel ─────────────────────────────────────────────────────
+
+function DnsLeakPanel() {
+  const { notify } = useUIStore()
+  const [report, setReport] = useState<DnsLeakReport | null>(null)
+  const [running, setRunning] = useState(false)
+
+  const handleRun = async () => {
+    if (running) return
+    setRunning(true)
+    try {
+      const result = await dnsApi.leakTest()
+      setReport(result)
+      if (result.leaked) {
+        notify({ type: 'warning', title: 'Возможна утечка DNS', message: result.warning ?? 'См. результат' })
+      } else {
+        notify({ type: 'success', title: 'Утечек не обнаружено', message: 'DNS-резолвер ожидаемый' })
+      }
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка теста', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-primary p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-[12px] font-semibold text-text-primary">DNS Leak Test</p>
+          <p className="text-[11px] text-text-muted">Проверка реального резолвера и публичного IP</p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => void handleRun()} disabled={running}>
+          <Search className={cn('h-3.5 w-3.5', running && 'animate-pulse')} />
+          {running ? 'Тестируем...' : 'Запустить'}
+        </Button>
+      </div>
+
+      {report && (
+        <div className="flex flex-col gap-2 mt-3">
+          {/* Verdict */}
+          <div className={cn(
+            'flex items-center gap-2 rounded-md border px-3 py-2',
+            report.leaked
+              ? 'border-error/30 bg-error/5 text-error'
+              : 'border-connected/30 bg-connected/5 text-connected',
+          )}>
+            {report.leaked ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+            <span className="text-[12px] font-medium">
+              {report.leaked ? 'Возможна утечка' : 'Утечек не обнаружено'}
+            </span>
+          </div>
+
+          {report.warning && (
+            <p className="text-[11px] text-text-muted">{report.warning}</p>
+          )}
+
+          <div className="grid grid-cols-2 gap-2 mt-1">
+            <InfoTile
+              icon={<Wifi className="h-3.5 w-3.5" />}
+              label="Публичный IP"
+              value={report.publicIp ?? '—'}
+            />
+            <InfoTile
+              icon={<Server className="h-3.5 w-3.5" />}
+              label="Локация / colo"
+              value={[report.publicCountry, report.publicColo].filter(Boolean).join(' / ') || '—'}
+            />
+          </div>
+
+          <div className="rounded-md border border-border bg-bg-secondary px-3 py-2">
+            <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wide mb-1">
+              Резолверы, ответившие на запрос
+            </p>
+            {report.resolvers.length === 0 ? (
+              <span className="text-[11px] text-text-muted">Не удалось определить</span>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {report.resolvers.map((r, i) => (
+                  <code key={i} className="text-[11px] text-text-secondary font-mono break-all">
+                    {r.ip ?? '—'}
+                  </code>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {report.expectedResolverHosts.length > 0 && (
+            <div className="rounded-md border border-border bg-bg-secondary px-3 py-2">
+              <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wide mb-1">
+                Ожидаемые хосты (по настройкам)
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {report.expectedResolverHosts.map(h => (
+                  <Badge key={h} tone="neutral" className="text-[10px] font-mono">{h}</Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-text-muted text-right">
+            Тест занял {report.durationMs} ms
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function DiagnosticsPage() {
@@ -392,6 +501,15 @@ export function DiagnosticsPage() {
             <StartupPhasesPanel phases={startupReport.phases} totalMs={startupReport.totalMs} />
           </motion.div>
         )}
+
+        {/* DNS leak test */}
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.2 }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Search className="h-3.5 w-3.5 text-text-muted" />
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Проверка DNS</p>
+          </div>
+          <DnsLeakPanel />
+        </motion.div>
 
         {/* System info grid */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>

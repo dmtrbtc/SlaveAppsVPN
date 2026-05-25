@@ -78,6 +78,56 @@ export const IpcChannel = {
   EVENT_UPDATE_PROGRESS: 'event:update:progress',
   EVENT_NOTIFICATION: 'event:notification',
   EVENT_SERVER_LATENCY: 'event:server:latency',
+
+  // VPN extended
+  VPN_SET_PROXY: 'vpn:setProxy',
+  VPN_GET_PROXY_LIST: 'vpn:getProxyList',
+  VPN_GET_CONNECTIONS: 'vpn:getConnections',
+  VPN_CLOSE_CONNECTION: 'vpn:closeConnection',
+
+  // Balancer
+  VPN_GET_BALANCER_STATE: 'vpn:getBalancerState',
+  VPN_SET_BALANCER_ENABLED: 'vpn:setBalancerEnabled',
+  VPN_SET_BALANCER_MODE: 'vpn:setBalancerMode',
+  VPN_PROBE_ALL: 'vpn:probeAll',
+
+  // DNS
+  DNS_GET_PROFILE: 'dns:getProfile',
+  DNS_SET_PROFILE: 'dns:setProfile',
+  DNS_GET_PRESETS: 'dns:getPresets',
+  DNS_GET_STRATEGIES: 'dns:getStrategies',
+  DNS_LEAK_TEST: 'diag:dnsLeakTest',
+
+  // Rules
+  RULES_LIST: 'rules:list',
+  RULES_ADD: 'rules:add',
+  RULES_REMOVE: 'rules:remove',
+  RULES_REORDER: 'rules:reorder',
+  RULES_UPDATE: 'rules:update',
+  RULES_RELOAD: 'rules:reload',
+
+  // Routing scenarios (Karing-style recipes)
+  ROUTING_LIST_SCENARIOS: 'routing:listScenarios',
+  ROUTING_SET_ENABLED_SCENARIOS: 'routing:setEnabledScenarios',
+
+  // Multi-subscription manager (B.1)
+  SUBSCRIPTIONS_LIST: 'subscriptions:list',
+  SUBSCRIPTIONS_ADD: 'subscriptions:add',
+  SUBSCRIPTIONS_REMOVE: 'subscriptions:remove',
+  SUBSCRIPTIONS_UPDATE: 'subscriptions:update',
+  SUBSCRIPTIONS_REFRESH: 'subscriptions:refresh',
+  SUBSCRIPTIONS_REFRESH_ALL: 'subscriptions:refreshAll',
+  SUBSCRIPTIONS_DETECT_CLIPBOARD: 'subscriptions:detectClipboard',
+  EVENT_SUBSCRIPTIONS_CHANGED: 'event:subscriptions:changed',
+
+  // Split tunnel
+  SPLIT_GET_PROCESSES: 'split:getProcesses',
+  SPLIT_SET_PROCESS_LIST: 'split:setProcessList',
+  SPLIT_GET_PROCESS_LIST: 'split:getProcessList',
+
+  // Events
+  EVENT_BALANCER_STATE: 'event:balancer:state',
+  EVENT_PROXY_CHANGED: 'event:proxy:changed',
 } as const
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel]
@@ -122,4 +172,35 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'WINDOW_MINIMIZE'
   | 'WINDOW_MAXIMIZE'
   | 'WINDOW_CLOSE'
+  | 'VPN_SET_PROXY'
+  | 'VPN_GET_PROXY_LIST'
+  | 'VPN_GET_CONNECTIONS'
+  | 'VPN_CLOSE_CONNECTION'
+  | 'VPN_GET_BALANCER_STATE'
+  | 'VPN_SET_BALANCER_ENABLED'
+  | 'VPN_SET_BALANCER_MODE'
+  | 'VPN_PROBE_ALL'
+  | 'DNS_GET_PROFILE'
+  | 'DNS_SET_PROFILE'
+  | 'DNS_GET_PRESETS'
+  | 'DNS_GET_STRATEGIES'
+  | 'DNS_LEAK_TEST'
+  | 'RULES_LIST'
+  | 'RULES_ADD'
+  | 'RULES_REMOVE'
+  | 'RULES_REORDER'
+  | 'RULES_UPDATE'
+  | 'RULES_RELOAD'
+  | 'ROUTING_LIST_SCENARIOS'
+  | 'ROUTING_SET_ENABLED_SCENARIOS'
+  | 'SUBSCRIPTIONS_LIST'
+  | 'SUBSCRIPTIONS_ADD'
+  | 'SUBSCRIPTIONS_REMOVE'
+  | 'SUBSCRIPTIONS_UPDATE'
+  | 'SUBSCRIPTIONS_REFRESH'
+  | 'SUBSCRIPTIONS_REFRESH_ALL'
+  | 'SUBSCRIPTIONS_DETECT_CLIPBOARD'
+  | 'SPLIT_GET_PROCESSES'
+  | 'SPLIT_SET_PROCESS_LIST'
+  | 'SPLIT_GET_PROCESS_LIST'
 ]

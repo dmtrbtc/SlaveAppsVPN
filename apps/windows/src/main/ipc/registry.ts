@@ -99,6 +99,30 @@ export async function registerAllHandlers(): Promise<void> {
       registerCacheHandlers()
       log.debug('Cache IPC handlers registered')
     }),
+    import('./handlers/balancer.handler').then(({ registerBalancerHandlers }) => {
+      registerBalancerHandlers()
+      log.debug('Balancer IPC handlers registered')
+    }),
+    import('./handlers/dns.handler').then(({ registerDnsHandlers }) => {
+      registerDnsHandlers()
+      log.debug('DNS IPC handlers registered')
+    }),
+    import('./handlers/rules.handler').then(({ registerRulesHandlers }) => {
+      registerRulesHandlers()
+      log.debug('Rules IPC handlers registered')
+    }),
+    import('./handlers/split.handler').then(({ registerSplitHandlers }) => {
+      registerSplitHandlers()
+      log.debug('Split tunnel IPC handlers registered')
+    }),
+    import('./handlers/routing.handler').then(({ registerRoutingHandlers }) => {
+      registerRoutingHandlers()
+      log.debug('Routing scenarios IPC handlers registered')
+    }),
+    import('./handlers/subscriptions.handler').then(({ registerSubscriptionsHandlers }) => {
+      registerSubscriptionsHandlers()
+      log.debug('Subscriptions IPC handlers registered')
+    }),
   ])
 
   log.info('IPC handlers registered')

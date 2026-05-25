@@ -30,7 +30,7 @@ export function formatMemoryMb(mb: number): string {
   return `${mb} MB`
 }
 
-export function countryFlagEmoji(code: string | null): string {
+export function countryFlagEmoji(code: string | null | undefined): string {
   if (!code || code.length !== 2) return '🌐'
   const offset = 0x1f1e6 - 65
   return String.fromCodePoint(code.toUpperCase().charCodeAt(0) + offset) +

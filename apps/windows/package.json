@@ -21,9 +21,11 @@
   "dependencies": {
     "@slave-vpn/api": "workspace:*",
     "@slave-vpn/config": "workspace:*",
+    "@slave-vpn/dns": "workspace:*",
     "@slave-vpn/localization": "workspace:*",
     "@slave-vpn/provider": "workspace:*",
     "@slave-vpn/provider-remnawave": "workspace:*",
+    "@slave-vpn/routing": "workspace:*",
     "@slave-vpn/runtime": "workspace:*",
     "@slave-vpn/shared": "workspace:*",
     "@slave-vpn/state-sync": "workspace:*",

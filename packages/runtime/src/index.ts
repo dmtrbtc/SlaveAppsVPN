@@ -42,3 +42,14 @@ export type {
   ProbeFailureReason,
 } from './probing'
 export { NodeProber, NodeHealthTracker, ProbeScheduler } from './probing'
+
+// Balancer
+export { NodeBalancer } from './balancer/NodeBalancer'
+export type { BalancerMode, NodeScore, BalancerState, LatencyProber } from './balancer/NodeBalancer'
+
+// Mihomo API types (re-exported so apps don't depend on internal paths)
+export type {
+  MihomoConnection,
+  MihomoConnectionMetadata,
+  MihomoConnectionsInfo,
+} from './mihomo/MihomoApiClient'

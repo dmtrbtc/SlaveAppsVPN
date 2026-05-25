@@ -14,7 +14,10 @@
     "clean": "turbo run clean && rimraf node_modules",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\" --ignore-path .gitignore",
     "validate:boundaries": "node scripts/validate-boundaries.mjs",
-    "validate:all": "pnpm typecheck && pnpm validate:boundaries && pnpm audit --audit-level=high"
+    "validate:all": "pnpm typecheck && pnpm validate:boundaries && pnpm audit --audit-level=high",
+    "download:binaries": "node scripts/download-binaries.mjs",
+    "download:binaries:force": "node scripts/download-binaries.mjs --force",
+    "prebuild": "node scripts/download-binaries.mjs"
   },
   "devDependencies": {
     "@slave-vpn/tsconfig": "workspace:*",

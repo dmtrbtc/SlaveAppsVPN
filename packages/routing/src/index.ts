@@ -33,3 +33,19 @@ export type { CustomPolicyConfig } from './policies/CustomPolicy'
 
 export { RoutingManager } from './manager/RoutingManager'
 export type { RoutingManagerConfig } from './manager/RoutingManager'
+
+// Engine-neutral routing scenarios (Karing-style ready-to-use recipes)
+export type {
+  RoutingScenario,
+  ScenarioId,
+  ScenarioCategory,
+  ScenarioMetadata,
+  ComposeResult,
+} from './scenarios'
+export {
+  listScenarios,
+  listScenarioMetadata,
+  getScenarioById,
+  composeScenarios,
+  getDefaultEnabledScenarios,
+} from './scenarios'

@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import {
   LogOut, User, CreditCard, Monitor, Bell, Shield, Smartphone, Sun,
   RefreshCw, Download, RotateCcw, Link, Key, CheckCircle, XCircle,
-  Trash2, Edit3, Server, Clock, Cpu,
+  Trash2, Edit3, Server, Clock, Cpu, Bot,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -23,7 +23,7 @@ import {
   useUpdateChannel, useUpdateProgress, useUpdateEvents,
 } from '../hooks/useUpdate'
 import { configSourceApi, cacheApi } from '../lib/api'
-import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine } from '@shared/ipc/types'
+import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine, BalancerMode } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
 
 const SUB_STATUS_CONFIG: Record<SubscriptionStatus, { label: string; tone: 'ok' | 'neutral' | 'warn' }> = {
@@ -687,6 +687,41 @@ export function SettingsPage() {
                 </p>
                 {isKeyPending('selectedEngine') && (
                   <p className="text-[11px] text-text-muted">Сохранение...</p>
+                )}
+              </div>
+            </CardRow>
+          ) : null}
+        </Section>
+
+        {/* Balancer */}
+        <Section label="Балансировщик" icon={<Bot className="h-3.5 w-3.5" />}>
+          {settings ? (
+            <CardRow>
+              <div className="divide-y divide-border">
+                <ToggleRow
+                  label="Intelligent Balancer"
+                  sub="Автоматически выбирать лучший сервер по задержке и стабильности"
+                  value={settings.balancerEnabled}
+                  onChange={v => updateSetting({ balancerEnabled: v })}
+                  loading={isKeyPending('balancerEnabled')}
+                />
+                {settings.balancerEnabled && (
+                  <div className="flex items-center justify-between px-4 py-3 gap-3">
+                    <div>
+                      <p className="text-[13px] font-medium text-text-primary">Стратегия</p>
+                      <p className="text-[11px] text-text-muted mt-0.5">Критерий выбора лучшего сервера</p>
+                    </div>
+                    <Segmented<BalancerMode>
+                      options={[
+                        { value: 'latency',   label: 'Пинг'        },
+                        { value: 'stability', label: 'Стабильность' },
+                        { value: 'balanced',  label: 'Баланс'       },
+                      ]}
+                      value={settings.balancerMode ?? 'balanced'}
+                      onChange={mode => updateSetting({ balancerMode: mode })}
+                      size="sm"
+                    />
+                  </div>
                 )}
               </div>
             </CardRow>

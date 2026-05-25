@@ -1,5 +1,6 @@
 export type DnsMode = 'fake-ip' | 'redir-host' | 'normal'
 export type DnsResolverType = 'doh' | 'dot' | 'udp' | 'tcp'
+export type DnsStrategy = 'prefer_ipv4' | 'ipv4_only' | 'prefer_ipv6' | 'ipv6_only'
 
 export interface DnsResolver {
   readonly url: string
@@ -42,4 +43,7 @@ export interface DnsProfile {
   readonly leakPrevention: LeakPreventionConfig
   readonly ipv6: IPv6Config
   readonly sniffing: SniffingConfig
+  // Resolution strategy — controls A vs AAAA preference.
+  // Default (when omitted): 'prefer_ipv4' — works best in Russia where IPv6 often breaks Reality.
+  readonly strategy?: DnsStrategy
 }

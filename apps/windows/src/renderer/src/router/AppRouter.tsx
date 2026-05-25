@@ -7,6 +7,7 @@ import { RoutingPage } from '../pages/RoutingPage'
 import { DnsPage } from '../pages/DnsPage'
 import { DiagnosticsPage } from '../pages/DiagnosticsPage'
 import { SettingsPage } from '../pages/SettingsPage'
+import { SubscriptionsPage } from '../pages/SubscriptionsPage'
 import { useAuthStore } from '../stores/auth.store'
 
 function ProtectedShell() {
@@ -31,6 +32,7 @@ const router = createHashRouter([
       { index: true, element: <Navigate to="/dashboard" replace /> },
       { path: '/dashboard', element: <DashboardPage /> },
       { path: '/servers', element: <ServersPage /> },
+      { path: '/subscriptions', element: <SubscriptionsPage /> },
       { path: '/routing', element: <RoutingPage /> },
       { path: '/dns', element: <DnsPage /> },
       { path: '/diagnostics', element: <DiagnosticsPage /> },

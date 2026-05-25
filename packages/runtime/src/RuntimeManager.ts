@@ -66,6 +66,14 @@ export class RuntimeManager {
     return this.engine?.probeLatency?.(tag, testUrl, timeoutMs) ?? null
   }
 
+  async getConnections(): Promise<import('./mihomo/MihomoApiClient').MihomoConnectionsInfo | null> {
+    return this.engine?.getConnections?.() ?? null
+  }
+
+  async closeConnection(id: string): Promise<void> {
+    await this.engine?.closeConnection?.(id)
+  }
+
   on<K extends EngineEventName>(event: K, handler: EngineEventHandler<K>): Unsubscribe {
     this.requireEngine()
     return this.engine!.on(event, handler)

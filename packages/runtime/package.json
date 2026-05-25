@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@slave-vpn/config": "workspace:*",
+    "@slave-vpn/dns": "workspace:*",
+    "@slave-vpn/routing": "workspace:*",
     "@slave-vpn/shared": "workspace:*"
   },
   "devDependencies": {

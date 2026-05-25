@@ -3,6 +3,7 @@ export type {
   DnsMode,
   DnsResolver,
   DnsResolverType,
+  DnsStrategy,
   FakeIpConfig,
   LeakPreventionConfig,
   IPv6Config,
