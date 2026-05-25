@@ -1,0 +1,40 @@
+{
+  "name": "@slave-vpn/android",
+  "version": "0.0.1",
+  "private": true,
+  "description": "SLAVE VPN — Android client (Capacitor wrapper)",
+  "scripts": {
+    "sync": "cap sync",
+    "copy": "cap copy",
+    "open": "cap open android",
+    "build:web": "pnpm --filter @slave-vpn/windows build",
+    "build:android": "cd android && ./gradlew assembleRelease",
+    "dev": "echo 'See docs/ANDROID.md — Android dev requires Android Studio + JDK 17 + Android SDK'",
+    "doctor": "cap doctor",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf android/app/build node_modules"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/filesystem": "^7.0.0",
+    "@capacitor/preferences": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0",
+    "@slave-vpn/api": "workspace:*",
+    "@slave-vpn/config": "workspace:*",
+    "@slave-vpn/dns": "workspace:*",
+    "@slave-vpn/provider": "workspace:*",
+    "@slave-vpn/provider-remnawave": "workspace:*",
+    "@slave-vpn/routing": "workspace:*",
+    "@slave-vpn/shared": "workspace:*",
+    "@slave-vpn/state-sync": "workspace:*"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0",
+    "@slave-vpn/tsconfig": "workspace:*",
+    "@types/node": "^22.10.5",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.3"
+  }
+}
