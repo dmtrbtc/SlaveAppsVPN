@@ -16,7 +16,8 @@ import { getNodeHealthManager } from './services/NodeHealthManager'
 import { getSubscriptionStore } from './services/SubscriptionStore'
 import { getSubscriptionScheduler } from './services/SubscriptionScheduler'
 import { getNodeBalancerService } from './services/NodeBalancerService'
-import { setTrayActions, updateTrayStatus, updateTrayMode, updateTraySelectedProxy, updateTrayProxyList, updateTrayBalancer } from './tray'
+import { getProfileStore } from './services/ProfileStore'
+import { setTrayActions, updateTrayStatus, updateTrayMode, updateTraySelectedProxy, updateTrayProxyList, updateTrayBalancer, updateTrayProfiles } from './tray'
 import { VPN } from '@slave-vpn/shared'
 import { services } from './ipc/registry'
 import { sendToRenderer } from './window'
@@ -187,6 +188,8 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
   const log = getLogger()
   const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, settings.get('apiBaseUrl') ?? '')
 
+  const profileStore = getProfileStore()
+
   setTrayActions({
     connect: () => runtime.connect(),
     disconnect: () => runtime.disconnect(),
@@ -200,6 +203,25 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
       await balancer.setEnabled(enabled)
       settings.patch({ balancerEnabled: enabled })
       updateTrayBalancer(enabled)
+    },
+    applyProfile: async (id) => {
+      const profile = profileStore.getById(id)
+      if (!profile) return
+      const patch: Record<string, unknown> = {}
+      const snap = profile.snapshot
+      if (snap.enabledScenarios !== undefined) patch.enabledScenarios = snap.enabledScenarios
+      if (snap.dnsPreset !== undefined)        patch.dnsPreset = snap.dnsPreset
+      if (snap.dnsStrategy !== undefined)      patch.dnsStrategy = snap.dnsStrategy
+      if (snap.selectedEngine !== undefined)   patch.selectedEngine = snap.selectedEngine
+      if (snap.selectedProxy !== undefined)    patch.selectedProxy = snap.selectedProxy
+      if (snap.vpnMode !== undefined)          patch.vpnMode = snap.vpnMode
+      if (snap.balancerEnabled !== undefined)  patch.balancerEnabled = snap.balancerEnabled
+      if (Object.keys(patch).length > 0) settings.patch(patch)
+      profileStore.markApplied(id)
+      updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
+      if (runtime.getState() === 'running') {
+        runtime.notifySubscriptionsChanged().catch(() => undefined)
+      }
     },
   })
 
@@ -229,6 +251,9 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
     updateTrayProxyList(list.map(p => ({ name: p.name })))
   }).catch((err: unknown) => log.debug({ err }, 'Tray proxy list initial load failed'))
 
+  // Initial profiles load
+  updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
+
   // Periodic re-sync of tray state — cheap enough to run every 5s and keeps
   // tray accurate without wiring a dedicated event bus. Reads from settings
   // (fast) and runtime status (already in memory).
@@ -237,6 +262,7 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
     updateTrayMode(s.vpnMode)
     updateTraySelectedProxy(s.selectedProxy)
     updateTrayBalancer(s.balancerEnabled)
+    updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
 
     // Refresh proxy list lazily: only when status is connected
     if (runtime.getState() === 'running') {

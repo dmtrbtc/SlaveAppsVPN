@@ -111,6 +111,13 @@ export const IpcChannel = {
   ROUTING_LIST_SCENARIOS: 'routing:listScenarios',
   ROUTING_SET_ENABLED_SCENARIOS: 'routing:setEnabledScenarios',
 
+  // Quick-switch profiles (H.1)
+  PROFILES_LIST: 'profiles:list',
+  PROFILES_SAVE_CURRENT: 'profiles:saveCurrent',
+  PROFILES_REMOVE: 'profiles:remove',
+  PROFILES_APPLY: 'profiles:apply',
+  EVENT_PROFILES_CHANGED: 'event:profiles:changed',
+
   // Multi-subscription manager (B.1)
   SUBSCRIPTIONS_LIST: 'subscriptions:list',
   SUBSCRIPTIONS_ADD: 'subscriptions:add',
@@ -195,6 +202,10 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'RULES_RELOAD'
   | 'ROUTING_LIST_SCENARIOS'
   | 'ROUTING_SET_ENABLED_SCENARIOS'
+  | 'PROFILES_LIST'
+  | 'PROFILES_SAVE_CURRENT'
+  | 'PROFILES_REMOVE'
+  | 'PROFILES_APPLY'
   | 'SUBSCRIPTIONS_LIST'
   | 'SUBSCRIPTIONS_ADD'
   | 'SUBSCRIPTIONS_REMOVE'

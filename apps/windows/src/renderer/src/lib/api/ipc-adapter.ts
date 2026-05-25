@@ -15,6 +15,8 @@ import type {
   SubscriptionRemovePayload,
   SubscriptionUpdatePayload,
   SubscriptionRefreshPayload,
+  ProfileCreateInput,
+  ProfileApplyPayload,
 } from '@shared/ipc/types'
 
 const IPC_TIMEOUT_MS = 15_000
@@ -208,6 +210,17 @@ export const routingApi = {
     unwrap(requireBridge().routing.setEnabledScenarios({ scenarioIds })),
 }
 
+export const profilesApi = {
+  list: () =>
+    unwrap(requireBridge().profiles.list()),
+  saveCurrent: (payload: ProfileCreateInput) =>
+    unwrap(requireBridge().profiles.saveCurrent(payload)),
+  remove: (id: string) =>
+    unwrap(requireBridge().profiles.remove({ id })),
+  apply: (payload: ProfileApplyPayload) =>
+    unwrap(requireBridge().profiles.apply(payload)),
+}
+
 export const subscriptionsApi = {
   list: () =>
     unwrap(requireBridge().subscriptions.list()),
@@ -269,4 +282,6 @@ export const events = {
     getBridge()?.events.onServerLatency(...args) ?? NOOP_UNSUB,
   onSubscriptionsChanged: (...args: Parameters<SlaveVPNBridge['events']['onSubscriptionsChanged']>) =>
     getBridge()?.events.onSubscriptionsChanged(...args) ?? NOOP_UNSUB,
+  onProfilesChanged: (...args: Parameters<SlaveVPNBridge['events']['onProfilesChanged']>) =>
+    getBridge()?.events.onProfilesChanged(...args) ?? NOOP_UNSUB,
 }

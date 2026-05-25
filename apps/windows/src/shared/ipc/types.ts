@@ -618,6 +618,46 @@ export type RulesUpdateResult = IpcResult<RuleProvider>
 export type RulesReloadResult = IpcResult<void>
 export type RulesReorderResult = IpcResult<void>
 
+// ─── Profiles (quick-switch saved combos) ────────────────────────────────────
+
+export interface AppProfileSnapshot {
+  // What this profile applies when activated. All fields optional —
+  // unset fields keep the current setting.
+  subscriptionId?: string         // null = don't change subscription
+  enabledScenarios?: string[]
+  dnsPreset?: DnsPresetName
+  dnsStrategy?: DnsStrategyName
+  selectedEngine?: SelectedEngine
+  selectedProxy?: string | null
+  vpnMode?: VPNMode
+  balancerEnabled?: boolean
+}
+
+export interface AppProfile {
+  id: string
+  name: string
+  description?: string
+  snapshot: AppProfileSnapshot
+  createdAt: number
+  lastUsedAt: number | null
+}
+
+export interface ProfileCreateInput {
+  name: string
+  description?: string
+}
+
+export interface ProfileApplyPayload {
+  id: string
+  // If true, profile applies even when VPN is connected and triggers hot reload.
+  hotReload?: boolean
+}
+
+export type ProfilesListResult = IpcResult<{ profiles: AppProfile[]; activeProfileId: string | null }>
+export type ProfilesSaveResult = IpcResult<AppProfile>
+export type ProfilesRemoveResult = IpcResult<void>
+export type ProfilesApplyResult = IpcResult<AppProfile>
+
 // ─── Subscriptions (multi-source) ─────────────────────────────────────────────
 // Replaces the single-source ConfigSourceMeta paradigm with a collection of
 // SubscriptionEntry items. Existing ConfigSourceMeta API stays for back-compat.
@@ -830,6 +870,12 @@ export interface SlaveVPNBridge {
     refreshAll: () => Promise<SubscriptionsRefreshAllResult>
     detectClipboard: () => Promise<SubscriptionsDetectClipboardResult>
   }
+  profiles: {
+    list: () => Promise<ProfilesListResult>
+    saveCurrent: (payload: ProfileCreateInput) => Promise<ProfilesSaveResult>
+    remove: (payload: { id: string }) => Promise<ProfilesRemoveResult>
+    apply: (payload: ProfileApplyPayload) => Promise<ProfilesApplyResult>
+  }
   controls: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>
@@ -851,5 +897,6 @@ export interface SlaveVPNBridge {
     onBalancerState: (callback: (state: BalancerState) => void) => () => void
     onProxyChanged: (callback: (proxyName: string) => void) => () => void
     onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) => () => void
+    onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) => () => void
   }
 }

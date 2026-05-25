@@ -24,6 +24,9 @@ import type {
   SubscriptionRefreshPayload,
   SubscriptionEntry,
   ConnectionCloseRequest,
+  ProfileCreateInput,
+  ProfileApplyPayload,
+  AppProfile,
   RemoveDevicePayload,
   AppSettings,
   UpdateAvailablePayload,
@@ -268,6 +271,20 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.ROUTING_SET_ENABLED_SCENARIOS, payload),
   },
 
+  profiles: {
+    list: () =>
+      invoke(IpcChannel.PROFILES_LIST),
+
+    saveCurrent: (payload: ProfileCreateInput) =>
+      invoke(IpcChannel.PROFILES_SAVE_CURRENT, payload),
+
+    remove: (payload: { id: string }) =>
+      invoke(IpcChannel.PROFILES_REMOVE, payload),
+
+    apply: (payload: ProfileApplyPayload) =>
+      invoke(IpcChannel.PROFILES_APPLY, payload),
+  },
+
   subscriptions: {
     list: () =>
       invoke(IpcChannel.SUBSCRIPTIONS_LIST),
@@ -350,6 +367,9 @@ const bridge: SlaveVPNBridge = {
 
     onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) =>
       on<SubscriptionEntry[]>(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, callback),
+
+    onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) =>
+      on<{ profiles: AppProfile[]; activeProfileId: string | null }>(IpcChannel.EVENT_PROFILES_CHANGED, callback),
   },
 }
 

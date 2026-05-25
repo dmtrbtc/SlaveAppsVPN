@@ -3,6 +3,7 @@ import { join } from 'path'
 import { showMainWindow, getMainWindow } from './window'
 import { getLogger } from './logger'
 import type { VPNStatus, VPNMode } from '@slave-vpn/shared'
+import type { AppProfile } from '../shared/ipc/types'
 
 export interface TrayActions {
   connect: () => Promise<void> | void
@@ -10,6 +11,7 @@ export interface TrayActions {
   setMode: (mode: VPNMode) => Promise<void> | void
   setProxy: (proxyName: string) => Promise<void> | void
   setBalancerEnabled: (enabled: boolean) => Promise<void> | void
+  applyProfile: (id: string) => Promise<void> | void
 }
 
 interface TrayProxyEntry {
@@ -23,6 +25,8 @@ interface TrayState {
   selectedProxy: string | null
   proxyList: TrayProxyEntry[]
   balancerEnabled: boolean
+  profiles: AppProfile[]
+  activeProfileId: string | null
 }
 
 const MAX_TRAY_PROXIES = 12
@@ -42,6 +46,8 @@ let state: TrayState = {
   selectedProxy: null,
   proxyList: [],
   balancerEnabled: false,
+  profiles: [],
+  activeProfileId: null,
 }
 
 function safeRun<T>(label: string, fn: () => Promise<T> | T): void {
@@ -118,6 +124,11 @@ export function updateTrayBalancer(enabled: boolean): void {
   rebuild()
 }
 
+export function updateTrayProfiles(profiles: AppProfile[], activeProfileId: string | null): void {
+  state = { ...state, profiles, activeProfileId }
+  rebuild()
+}
+
 function toggleMainWindow(): void {
   const win = getMainWindow()
   if (!win || win.isDestroyed()) {
@@ -166,6 +177,29 @@ function buildModeSubmenu(): MenuItemConstructorOptions[] {
       safeRun('setMode', () => actions!.setMode(m))
     },
   }))
+}
+
+function buildProfileSubmenu(): MenuItemConstructorOptions[] {
+  if (state.profiles.length === 0) {
+    return [{ label: 'Нет сохранённых профилей', enabled: false }]
+  }
+  const items: MenuItemConstructorOptions[] = []
+  for (const p of state.profiles.slice(0, 16)) {
+    items.push({
+      label: p.name.length > 38 ? p.name.slice(0, 35) + '…' : p.name,
+      type: 'radio',
+      checked: state.activeProfileId === p.id,
+      click: () => {
+        if (!actions) return
+        safeRun('applyProfile', () => actions!.applyProfile(p.id))
+      },
+    })
+  }
+  if (state.profiles.length > 16) {
+    items.push({ type: 'separator' })
+    items.push({ label: `... и ещё ${state.profiles.length - 16}`, enabled: false })
+  }
+  return items
 }
 
 function buildProxySubmenu(): MenuItemConstructorOptions[] {
@@ -260,6 +294,10 @@ function rebuild(): void {
     {
       label: 'Сервер',
       submenu: buildProxySubmenu(),
+    },
+    {
+      label: 'Профили',
+      submenu: buildProfileSubmenu(),
     },
     { type: 'separator' },
     {

@@ -123,6 +123,10 @@ export async function registerAllHandlers(): Promise<void> {
       registerSubscriptionsHandlers()
       log.debug('Subscriptions IPC handlers registered')
     }),
+    import('./handlers/profiles.handler').then(({ registerProfilesHandlers }) => {
+      registerProfilesHandlers()
+      log.debug('Profiles IPC handlers registered')
+    }),
   ])
 
   log.info('IPC handlers registered')

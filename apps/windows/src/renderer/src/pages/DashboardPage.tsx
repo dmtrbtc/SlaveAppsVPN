@@ -8,6 +8,7 @@ import { ConnectionTargetSelector } from '../components/connection/ConnectionTar
 import { ReconnectDisplay } from '../components/connection/ReconnectDisplay'
 import { TrafficSparkline } from '../components/traffic/TrafficSparkline'
 import { ActiveConnectionsPanel } from '../components/connections/ActiveConnectionsPanel'
+import { ProfileSwitcher } from '../components/profile/ProfileSwitcher'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { StatTile } from '../components/ui/stat-tile'
@@ -83,6 +84,9 @@ function StatusBar() {
             {PROTOCOL_LABELS[status.protocol] ?? status.protocol}
           </Badge>
         )}
+      </div>
+      <div className="ml-auto">
+        <ProfileSwitcher />
       </div>
     </div>
   )
