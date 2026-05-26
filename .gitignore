@@ -60,6 +60,8 @@ desktop.ini
 *.sqlite3
 userData/
 cache/
+!packages/**/src/cache/
+!packages/**/src/cache/**
 temp/
 tmp/
 
