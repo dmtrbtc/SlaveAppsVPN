@@ -1,0 +1,124 @@
+name: Android APK
+
+# Manual trigger + on tag push (vX.Y.Z) — uploads APK to the corresponding release
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach APK to (e.g. v0.2.0-rc1)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to upload to releases
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - name: Set up Node 20 + pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install monorepo deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared web bundle (Windows renderer used as Android UI)
+        run: pnpm --filter @slave-vpn/windows build
+
+      - name: Install Capacitor deps in apps/android
+        working-directory: apps/android
+        run: pnpm install --ignore-workspace
+
+      - name: Capacitor add android (first time)
+        working-directory: apps/android
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: Copy sample Kotlin plugin
+        working-directory: apps/android
+        run: |
+          mkdir -p android/app/src/main/java/com/slavevpn/plugin
+          cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
+
+      - name: Patch AndroidManifest with VPN permissions + service
+        working-directory: apps/android/android/app/src/main
+        run: |
+          set -e
+          if ! grep -q 'BIND_VPN_SERVICE' AndroidManifest.xml; then
+            # Insert permissions before <application>
+            sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n\n    <application|' AndroidManifest.xml
+
+            # Insert service before </application>
+            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnService"\n            android:permission="android.permission.BIND_VPN_SERVICE"\n            android:foregroundServiceType="specialUse"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.net.VpnService" />\n            </intent-filter>\n            <property\n                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\n                android:value="VPN tunnel for SLAVE VPN" />\n        </service>\n    </application>|' AndroidManifest.xml
+          fi
+
+      - name: Add Kotlin coroutines + androidx-core dependencies
+        working-directory: apps/android/android/app
+        run: |
+          if ! grep -q 'kotlinx-coroutines-android' build.gradle; then
+            sed -i "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'|" build.gradle
+          fi
+
+      - name: Capacitor sync
+        working-directory: apps/android
+        run: |
+          npx cap copy android
+          npx cap sync android
+
+      - name: Build debug APK
+        working-directory: apps/android/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: |
+          mkdir -p artifacts
+          cp apps/android/android/app/build/outputs/apk/debug/app-debug.apk \
+             artifacts/SlaveAppsVPN-Android-debug.apk
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SlaveAppsVPN-Android-debug
+          path: artifacts/SlaveAppsVPN-Android-debug.apk
+          if-no-files-found: error
+
+      - name: Attach APK to release (when triggered by tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/SlaveAppsVPN-Android-debug.apk
+
+      - name: Attach APK to existing release (manual trigger with tag)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.inputs.release_tag }}" \
+            artifacts/SlaveAppsVPN-Android-debug.apk \
+            --clobber

@@ -1,0 +1,72 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to attach installers to (e.g. v0.2.0-rc1)'
+        required: false
+        default: ''
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Download engine binaries + geo databases
+        run: pnpm download:binaries
+
+      - name: Build installer
+        working-directory: apps/windows
+        run: pnpm dist
+        env:
+          # Code signing — only when secrets are configured.
+          # See docs/CODESIGNING.md for setup.
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Collect artifacts
+        run: |
+          mkdir artifacts
+          Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe artifacts/
+          Copy-Item apps/windows/release/*/SlaveAppsVPN-Portable-*.exe artifacts/
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SlaveAppsVPN-Windows
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Attach to release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+
+      - name: Attach to existing release (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.inputs.release_tag }}" artifacts/* --clobber
+        shell: bash
