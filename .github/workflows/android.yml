@@ -50,15 +50,11 @@ jobs:
       - name: Build shared web bundle (Windows renderer used as Android UI)
         run: pnpm --filter @slave-vpn/windows build
 
-      - name: Install Capacitor deps in apps/android
-        working-directory: apps/android
-        run: pnpm install --ignore-workspace
-
       - name: Capacitor add android (first time)
         working-directory: apps/android
         run: |
           if [ ! -d "android" ]; then
-            npx cap add android
+            pnpm exec cap add android
           fi
 
       - name: Copy sample Kotlin plugin
@@ -89,8 +85,8 @@ jobs:
       - name: Capacitor sync
         working-directory: apps/android
         run: |
-          npx cap copy android
-          npx cap sync android
+          pnpm exec cap copy android
+          pnpm exec cap sync android
 
       - name: Build debug APK
         working-directory: apps/android/android
