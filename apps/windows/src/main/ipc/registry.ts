@@ -127,6 +127,10 @@ export async function registerAllHandlers(): Promise<void> {
       registerProfilesHandlers()
       log.debug('Profiles IPC handlers registered')
     }),
+    import('./handlers/geo.handler').then(({ registerGeoHandlers }) => {
+      registerGeoHandlers()
+      log.debug('Geo updater IPC handlers registered')
+    }),
   ])
 
   log.info('IPC handlers registered')

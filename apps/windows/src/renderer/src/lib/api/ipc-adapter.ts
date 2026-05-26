@@ -210,6 +210,13 @@ export const routingApi = {
     unwrap(requireBridge().routing.setEnabledScenarios({ scenarioIds })),
 }
 
+export const geoApi = {
+  getState: () => unwrap(requireBridge().geo.getState()),
+  updateAll: () => unwrap(requireBridge().geo.updateAll()),
+  updateOne: (id: string) => unwrap(requireBridge().geo.updateOne({ id })),
+  listSources: () => unwrap(requireBridge().geo.listSources()),
+}
+
 export const profilesApi = {
   list: () =>
     unwrap(requireBridge().profiles.list()),
@@ -284,4 +291,6 @@ export const events = {
     getBridge()?.events.onSubscriptionsChanged(...args) ?? NOOP_UNSUB,
   onProfilesChanged: (...args: Parameters<SlaveVPNBridge['events']['onProfilesChanged']>) =>
     getBridge()?.events.onProfilesChanged(...args) ?? NOOP_UNSUB,
+  onGeoUpdaterState: (...args: Parameters<SlaveVPNBridge['events']['onGeoUpdaterState']>) =>
+    getBridge()?.events.onGeoUpdaterState(...args) ?? NOOP_UNSUB,
 }

@@ -4,6 +4,7 @@ import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { VPN } from '@slave-vpn/shared'
 import type { EngineInitConfig, TunHooks, EngineType } from '@slave-vpn/runtime'
+import { getGeoUpdaterService } from '../services/GeoUpdaterService'
 
 // Mihomo names its WinTUN adapter 'Mihomo' (from tun.device in config).
 // We check netsh interface list for a live adapter with that name.
@@ -51,7 +52,17 @@ export function createWindowsEngineConfig(
   const resourcesPath = process.resourcesPath ?? path.dirname(process.execPath)
   const binaryPath = path.join(resourcesPath, 'bin', layout.binary)
   const binaryExists = existsSync(binaryPath)
-  const rulesDir = path.join(resourcesPath, 'rules')
+  const bundledRulesDir = path.join(resourcesPath, 'rules')
+  // Prefer overlay (user-data) directory when it has fresher auto-updated geo
+  // databases; fall back to the bundled resources directory.
+  const overlayDir = (() => {
+    try {
+      return getGeoUpdaterService().effectiveRulesDir()
+    } catch {
+      return null
+    }
+  })()
+  const rulesDir = overlayDir ?? bundledRulesDir
   const rulesExist = existsSync(rulesDir)
 
   // [DIAG] Binary path diagnostics — helps diagnose packaged runtime issues

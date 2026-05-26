@@ -111,6 +111,13 @@ export const IpcChannel = {
   ROUTING_LIST_SCENARIOS: 'routing:listScenarios',
   ROUTING_SET_ENABLED_SCENARIOS: 'routing:setEnabledScenarios',
 
+  // Geo auto-updater (J.3)
+  GEO_GET_STATE: 'geo:getState',
+  GEO_UPDATE_ALL: 'geo:updateAll',
+  GEO_UPDATE_ONE: 'geo:updateOne',
+  GEO_LIST_SOURCES: 'geo:listSources',
+  EVENT_GEO_UPDATER_STATE: 'event:geo:state',
+
   // Quick-switch profiles (H.1)
   PROFILES_LIST: 'profiles:list',
   PROFILES_SAVE_CURRENT: 'profiles:saveCurrent',
@@ -202,6 +209,10 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'RULES_RELOAD'
   | 'ROUTING_LIST_SCENARIOS'
   | 'ROUTING_SET_ENABLED_SCENARIOS'
+  | 'GEO_GET_STATE'
+  | 'GEO_UPDATE_ALL'
+  | 'GEO_UPDATE_ONE'
+  | 'GEO_LIST_SOURCES'
   | 'PROFILES_LIST'
   | 'PROFILES_SAVE_CURRENT'
   | 'PROFILES_REMOVE'

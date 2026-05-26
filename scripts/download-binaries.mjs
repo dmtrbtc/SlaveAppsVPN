@@ -102,6 +102,28 @@ const GEO_DATABASES = {
     outName: 'geosite.db',
     dir: RULES_DIR,
   },
+  // RuNet Freedom — Russia-specific blocked sites geosite
+  // Categories: youtube, discord, ru-blocked, antifilter, refilter, etc.
+  // Compatible with mihomo's GEOSITE rule type.
+  'runetfreedom-geosite': {
+    label: 'geosite-ru-only.dat (RuNet Freedom)',
+    url: 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/geosite-ru-only.dat',
+    archive: 'raw',
+    outName: 'geosite-runetfreedom.dat',
+    dir: RULES_DIR,
+  },
+}
+
+// Auto-update URLs — these are referenced at runtime by GeoUpdaterService
+// (not part of build-time download). Listed here for documentation.
+export const GEO_AUTO_UPDATE_SOURCES = {
+  'runetfreedom-geosite': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/geosite-ru-only.dat',
+  'runetfreedom-youtube': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/youtube.txt',
+  'runetfreedom-discord': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/discord.txt',
+  'runetfreedom-ru-blocked': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/ru-blocked.txt',
+  'runetfreedom-antifilter': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/antifilter-download.txt',
+  'meta-rules-geoip': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+  'meta-rules-geosite': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
 }
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────

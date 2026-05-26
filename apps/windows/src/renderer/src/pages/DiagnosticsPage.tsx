@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
@@ -11,11 +11,11 @@ import { Segmented } from '../components/ui/segmented'
 import { InfoTile } from '../components/ui/info-tile'
 import { LoadingState, ErrorState } from '../components/ui/states'
 import { cn, formatMemoryMb, formatUptime } from '../lib/utils'
-import { diagnosticsApi, dnsApi } from '../lib/api'
+import { diagnosticsApi, dnsApi, geoApi, events as ipcEvents } from '../lib/api'
 import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSourceMeta } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
-import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus } from '@shared/ipc/types'
+import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus, GeoUpdaterState } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
   error: 'text-error',
@@ -283,6 +283,109 @@ function LogCard({ className, children }: { className?: string; children: React.
   return (
     <div className={cn('rounded-lg border border-border bg-bg-primary overflow-hidden', className)}>
       {children}
+    </div>
+  )
+}
+
+// ─── Geo updater panel ───────────────────────────────────────────────────────
+
+function formatBytes2(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
+function timeAgo2(ts: number): string {
+  if (!ts) return 'никогда'
+  const diff = Date.now() - ts
+  const m = Math.floor(diff / 60_000)
+  if (m < 1) return 'только что'
+  if (m < 60) return `${m} мин назад`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} ч назад`
+  return `${Math.floor(h / 24)} д назад`
+}
+
+function GeoUpdaterPanel() {
+  const { notify } = useUIStore()
+  const [state, setState] = useState<GeoUpdaterState | null>(null)
+  const [running, setRunning] = useState(false)
+
+  useEffect(() => {
+    geoApi.getState().then(setState).catch(() => undefined)
+    const unsub = ipcEvents.onGeoUpdaterState(setState)
+    return () => unsub()
+  }, [])
+
+  const handleUpdateAll = async (): Promise<void> => {
+    if (running) return
+    setRunning(true)
+    try {
+      const results = await geoApi.updateAll()
+      const ok = results.filter(r => r.status === 'ok').length
+      const errors = results.filter(r => r.status === 'error').length
+      if (errors > 0) {
+        notify({ type: 'warning', title: 'Обновлено с ошибками', message: `${ok} ОК, ${errors} ошибок` })
+      } else {
+        notify({ type: 'success', title: 'Geo базы обновлены', message: `${ok} файлов` })
+      }
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-primary p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-[12px] font-semibold text-text-primary">Списки обхода (Geo)</p>
+          <p className="text-[11px] text-text-muted">
+            MetaCubeX + RuNet Freedom + Sing-box — auto-update каждые 24ч
+          </p>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => void handleUpdateAll()}
+          disabled={running || state?.inProgress}
+        >
+          {(running || state?.inProgress)
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <RefreshCw className="h-3.5 w-3.5" />}
+          Обновить все
+        </Button>
+      </div>
+
+      {state && (
+        <>
+          <div className="text-[11px] text-text-muted mb-2">
+            Последнее полное обновление: <span className="text-text-secondary">{state.lastFullUpdateAt ? timeAgo2(state.lastFullUpdateAt) : 'никогда'}</span>
+            {' · '}интервал: <span className="text-text-secondary">{state.intervalHours}ч</span>
+          </div>
+
+          {state.records.length === 0 ? (
+            <div className="text-center py-3 text-[11px] text-text-muted">
+              Используются bundled geo базы. Запустите обновление чтобы получить свежие данные.
+            </div>
+          ) : (
+            <div className="rounded-md border border-border bg-bg-secondary divide-y divide-border/40">
+              {state.records.map(rec => (
+                <div key={rec.id} className="flex items-center gap-2 px-3 py-1.5">
+                  <CheckCircle2 className="h-3 w-3 text-connected shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] text-text-secondary font-medium">{rec.label}</span>
+                    <div className="text-[10px] text-text-muted leading-tight font-mono break-all">
+                      {rec.filename} · {formatBytes2(rec.bytes)} · {timeAgo2(rec.updatedAt)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -593,6 +696,15 @@ export function DiagnosticsPage() {
             <StartupPhasesPanel phases={startupReport.phases} totalMs={startupReport.totalMs} />
           </motion.div>
         )}
+
+        {/* Geo updater */}
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>
+          <div className="flex items-center gap-1.5 mb-2">
+            <Database className="h-3.5 w-3.5 text-text-muted" />
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Geo базы</p>
+          </div>
+          <GeoUpdaterPanel />
+        </motion.div>
 
         {/* Self-test */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06, duration: 0.2 }}>

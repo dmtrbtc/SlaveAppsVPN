@@ -17,6 +17,7 @@ import { getSubscriptionStore } from './services/SubscriptionStore'
 import { getSubscriptionScheduler } from './services/SubscriptionScheduler'
 import { getNodeBalancerService } from './services/NodeBalancerService'
 import { getProfileStore } from './services/ProfileStore'
+import { getGeoUpdaterService } from './services/GeoUpdaterService'
 import { setTrayActions, updateTrayStatus, updateTrayMode, updateTraySelectedProxy, updateTrayProxyList, updateTrayBalancer, updateTrayProfiles } from './tray'
 import { VPN } from '@slave-vpn/shared'
 import { services } from './ipc/registry'
@@ -175,6 +176,10 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const initialList = subStore.list()
   log.info({ subscriptions: initialList.length }, 'Subscription store loaded')
   getSubscriptionScheduler().start()
+
+  // Geo updater — schedule background refresh every 24h
+  getGeoUpdaterService().init(24)
+  log.info('Geo updater initialised')
 
   // ─── Wire system tray to runtime service ──────────────────────────────────
   // After runtimeService and balancer are registered, the tray can drive them.

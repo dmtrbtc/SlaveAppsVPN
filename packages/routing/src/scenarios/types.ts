@@ -17,6 +17,7 @@ export type ScenarioId =
   | 'streaming'
   | 'ai-services'
   | 'gaming-direct'
+  | 'runetfreedom-bypass'
 
 export interface RoutingScenario {
   readonly id: ScenarioId

@@ -658,6 +658,49 @@ export type ProfilesSaveResult = IpcResult<AppProfile>
 export type ProfilesRemoveResult = IpcResult<void>
 export type ProfilesApplyResult = IpcResult<AppProfile>
 
+// ─── Geo auto-updater (J.3) ──────────────────────────────────────────────────
+
+export interface GeoUpdateRecord {
+  id: string
+  label: string
+  filename: string
+  bytes: number
+  sha256: string
+  updatedAt: number
+}
+
+export interface GeoSourceInfo {
+  id: string
+  label: string
+  url: string
+  filename: string
+  category: 'geo-db' | 'domain-list'
+}
+
+export interface GeoUpdaterState {
+  records: GeoUpdateRecord[]
+  lastFullUpdateAt: number | null
+  inProgress: boolean
+  intervalHours: number
+}
+
+export interface GeoUpdateOutcome {
+  id: string
+  status: 'ok' | 'skipped' | 'error'
+  bytes?: number
+  sha256?: string
+  error?: string
+}
+
+export interface GeoUpdateOnePayload {
+  id: string
+}
+
+export type GeoGetStateResult = IpcResult<GeoUpdaterState>
+export type GeoUpdateAllResult = IpcResult<GeoUpdateOutcome[]>
+export type GeoUpdateOneResult = IpcResult<GeoUpdateOutcome>
+export type GeoListSourcesResult = IpcResult<GeoSourceInfo[]>
+
 // ─── Subscriptions (multi-source) ─────────────────────────────────────────────
 // Replaces the single-source ConfigSourceMeta paradigm with a collection of
 // SubscriptionEntry items. Existing ConfigSourceMeta API stays for back-compat.
@@ -876,6 +919,12 @@ export interface SlaveVPNBridge {
     remove: (payload: { id: string }) => Promise<ProfilesRemoveResult>
     apply: (payload: ProfileApplyPayload) => Promise<ProfilesApplyResult>
   }
+  geo: {
+    getState: () => Promise<GeoGetStateResult>
+    updateAll: () => Promise<GeoUpdateAllResult>
+    updateOne: (payload: GeoUpdateOnePayload) => Promise<GeoUpdateOneResult>
+    listSources: () => Promise<GeoListSourcesResult>
+  }
   controls: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>
@@ -898,5 +947,6 @@ export interface SlaveVPNBridge {
     onProxyChanged: (callback: (proxyName: string) => void) => () => void
     onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) => () => void
     onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) => () => void
+    onGeoUpdaterState: (callback: (state: GeoUpdaterState) => void) => () => void
   }
 }

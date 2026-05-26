@@ -27,6 +27,8 @@ import type {
   ProfileCreateInput,
   ProfileApplyPayload,
   AppProfile,
+  GeoUpdaterState,
+  GeoUpdateOnePayload,
   RemoveDevicePayload,
   AppSettings,
   UpdateAvailablePayload,
@@ -271,6 +273,13 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.ROUTING_SET_ENABLED_SCENARIOS, payload),
   },
 
+  geo: {
+    getState: () => invoke(IpcChannel.GEO_GET_STATE),
+    updateAll: () => invoke(IpcChannel.GEO_UPDATE_ALL),
+    updateOne: (payload: GeoUpdateOnePayload) => invoke(IpcChannel.GEO_UPDATE_ONE, payload),
+    listSources: () => invoke(IpcChannel.GEO_LIST_SOURCES),
+  },
+
   profiles: {
     list: () =>
       invoke(IpcChannel.PROFILES_LIST),
@@ -370,6 +379,9 @@ const bridge: SlaveVPNBridge = {
 
     onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) =>
       on<{ profiles: AppProfile[]; activeProfileId: string | null }>(IpcChannel.EVENT_PROFILES_CHANGED, callback),
+
+    onGeoUpdaterState: (callback: (state: GeoUpdaterState) => void) =>
+      on<GeoUpdaterState>(IpcChannel.EVENT_GEO_UPDATER_STATE, callback),
   },
 }
 
