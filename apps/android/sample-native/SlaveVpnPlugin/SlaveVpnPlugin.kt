@@ -79,8 +79,17 @@ class SlaveVpnPlugin : Plugin() {
         }
     }
 
+    private var pendingConfig: String? = null
+
     @PluginMethod
     fun connect(call: PluginCall) {
+        val config = call.getString("config")
+        if (config.isNullOrBlank()) {
+            call.reject("connect requires 'config' (sing-box JSON)")
+            return
+        }
+        pendingConfig = config
+
         val intent = VpnService.prepare(context)
         if (intent != null) {
             // Need consent first — request, then resume connect on success
@@ -93,8 +102,15 @@ class SlaveVpnPlugin : Plugin() {
     }
 
     private fun startVpnService(call: PluginCall) {
+        val config = pendingConfig
+        pendingConfig = null
+        if (config.isNullOrBlank()) {
+            call.reject("Missing config when starting VPN")
+            return
+        }
         val serviceIntent = Intent(context, SlaveVpnService::class.java).apply {
             action = SlaveVpnService.ACTION_START
+            putExtra(SlaveVpnService.EXTRA_CONFIG, config)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)

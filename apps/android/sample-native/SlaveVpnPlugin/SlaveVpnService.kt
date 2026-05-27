@@ -1,12 +1,14 @@
 /*
- * SAMPLE — basic VpnService that establishes a TUN device.
+ * SlaveVpnService — Android VpnService that hands TUN fd to libbox
+ * (sing-box mobile). Phase K.5 — real engine integration.
  *
- * For Phase I-C: opens a TUN with default routing. Doesn't actually route
- * any traffic to a proxy yet — the TUN fd is simply read+discarded in a
- * loop. This proves the permission flow + VpnService lifecycle works.
+ * Lifecycle:
+ *   onStartCommand(ACTION_START, config) → establish TUN → SingboxBridge.start()
+ *   onStartCommand(ACTION_STOP)          → SingboxBridge.stop() → close TUN
  *
- * For Phase I-D: pass the tunFd integer to MihomoEngineBridge.start() /
- * SingboxEngineBridge.start() instead of discarding.
+ * Config JSON is passed via Intent extra "config". The Capacitor plugin
+ * generates it from the user's subscription + scenarios using shared
+ * @slave-vpn/config code (renderer side, via SingboxConfigCompiler).
  */
 
 package com.slavevpn.plugin
@@ -26,19 +28,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.FileInputStream
-import java.nio.ByteBuffer
 
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tunInterface: ParcelFileDescriptor? = null
-    private var packetJob: Job? = null
+    private var libboxJob: Job? = null
+    var tunFd: Int = -1
+        private set
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
         const val ACTION_STOP  = "com.slavevpn.STOP"
+        const val EXTRA_CONFIG = "config"
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
 
@@ -46,21 +48,44 @@ class SlaveVpnService : VpnService() {
             private set
 
         private var currentMode: String = "bypass"
-        private var currentEngine: String = "mihomo"
+        private var currentEngine: String = "singbox"
 
         @JvmStatic fun setMode(mode: String) { currentMode = mode }
         @JvmStatic fun setEngine(engine: String) { currentEngine = engine }
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        // Initialise libbox once per process; safe to call multiple times
+        try {
+            SingboxBridge.setup(
+                basePath = filesDir.absolutePath,
+                workingPath = filesDir.absolutePath,
+                tempPath = cacheDir.absolutePath,
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("SlaveVpnService", "libbox setup failed", e)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startVpn()
-            ACTION_STOP  -> stopVpn()
+            ACTION_START -> {
+                val config = intent.getStringExtra(EXTRA_CONFIG)
+                if (config.isNullOrBlank()) {
+                    android.util.Log.e("SlaveVpnService", "ACTION_START without config extra")
+                    currentState = "error"
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                startVpn(config)
+            }
+            ACTION_STOP -> stopVpn()
         }
         return START_STICKY
     }
 
-    private fun startVpn() {
+    private fun startVpn(configJson: String) {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
 
@@ -70,64 +95,87 @@ class SlaveVpnService : VpnService() {
             val builder = Builder()
                 .setSession("SLAVE VPN")
                 .addAddress("172.19.0.1", 30)
+                .addAddress("fdfe:dcba:9876::1", 126)
                 .addRoute("0.0.0.0", 0)
+                .addRoute("::", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
                 .setMtu(9000)
                 .setBlocking(true)
 
-            // TODO Phase I-D: add per-app routing based on currentMode == "split"
-            // builder.addDisallowedApplication("com.example.directly")
+            // TODO: per-app routing for currentMode == "split"
+            //   builder.addDisallowedApplication(...)
 
             val pfd = builder.establish()
-            if (pfd == null) {
-                currentState = "error"
-                stopSelf()
-                return
-            }
+                ?: throw RuntimeException("VpnService.Builder.establish() returned null")
             tunInterface = pfd
-            currentState = "connected"
-            notify("Подключено · ${currentEngine}")
+            tunFd = pfd.fd
+            android.util.Log.i("SlaveVpnService", "TUN established, fd=$tunFd")
 
-            // TODO Phase I-D: hand pfd.detachFd() to the engine .so:
-            //   MihomoEngineBridge.start(pfd.detachFd(), configPath)
-            // For now — just drain packets so the OS doesn't backpressure
-            packetJob = scope.launch {
-                val input = FileInputStream(pfd.fileDescriptor)
-                val buffer = ByteBuffer.allocate(32 * 1024)
-                while (isActive) {
-                    val n = try { input.read(buffer.array()) } catch (e: Exception) { -1 }
-                    if (n < 0) break
-                    // Drop packets — placeholder until engine integration
+            // Hand TUN fd + config to libbox on a worker coroutine
+            libboxJob = scope.launch {
+                try {
+                    val platform = SlavePlatformInterface(this@SlaveVpnService)
+                    SingboxBridge.start(configJson, platform)
+                    currentState = "connected"
+                    notify("Подключено · sing-box ${SingboxBridge.version()}")
+                } catch (e: Exception) {
+                    android.util.Log.e("SlaveVpnService", "libbox start failed", e)
+                    currentState = "error"
+                    notify("Ошибка: ${e.message}")
+                    cleanupTun()
+                    stopSelf()
                 }
             }
         } catch (e: Exception) {
+            android.util.Log.e("SlaveVpnService", "VPN setup failed", e)
             currentState = "error"
             notify("Ошибка: ${e.message}")
+            cleanupTun()
             stopSelf()
         }
     }
 
     private fun stopVpn() {
-        packetJob?.cancel()
-        packetJob = null
-        tunInterface?.close()
-        tunInterface = null
+        scope.launch {
+            try { SingboxBridge.stop() } catch (_: Exception) { }
+        }
+        libboxJob?.cancel()
+        libboxJob = null
+        cleanupTun()
         currentState = "disconnected"
         notify("Отключено")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
+    /**
+     * libbox takes ownership of the TUN fd after openTun() — we set
+     * tunInterface to null so we don't double-close on stop().
+     */
+    fun releaseTunOwnership() {
+        // Keep the ParcelFileDescriptor reference alive but don't close it ourselves.
+        // We do NOT detachFd() here because libbox dup()s it internally.
+    }
+
+    private fun cleanupTun() {
+        try { tunInterface?.close() } catch (_: Exception) { }
+        tunInterface = null
+        tunFd = -1
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
-        stopVpn()
+        try { SingboxBridge.stop() } catch (_: Exception) { }
+        cleanupTun()
     }
 
     override fun onRevoke() {
-        // System or user revoked VPN permission
-        stopVpn()
+        // System or user revoked VPN — sing-box must stop cleanly
+        try { SingboxBridge.stop() } catch (_: Exception) { }
+        cleanupTun()
+        stopSelf()
         super.onRevoke()
     }
 
@@ -146,7 +194,7 @@ class SlaveVpnService : VpnService() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("SLAVE VPN")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)  // TODO: app icon
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pi)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -164,9 +212,7 @@ class SlaveVpnService : VpnService() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         if (nm.getNotificationChannel(CHANNEL_ID) != null) return
         val channel = NotificationChannel(
-            CHANNEL_ID,
-            "SLAVE VPN",
-            NotificationManager.IMPORTANCE_LOW,
+            CHANNEL_ID, "SLAVE VPN", NotificationManager.IMPORTANCE_LOW,
         ).apply {
             description = "Active VPN connection"
             setShowBadge(false)

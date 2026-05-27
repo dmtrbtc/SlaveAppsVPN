@@ -63,6 +63,17 @@ jobs:
           mkdir -p android/app/src/main/java/com/slavevpn/plugin
           cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
 
+      - name: Copy libbox.aar (sing-box mobile engine)
+        working-directory: apps/android
+        run: |
+          mkdir -p android/app/libs
+          if [ -f libs/libbox.aar ]; then
+            cp libs/libbox.aar android/app/libs/
+            echo "libbox.aar copied ($(du -h libs/libbox.aar | cut -f1))"
+          else
+            echo "WARNING: apps/android/libs/libbox.aar missing — APK will lack VPN engine"
+          fi
+
       - name: Patch AndroidManifest with VPN permissions + service
         working-directory: apps/android/android/app/src/main
         run: |
@@ -75,11 +86,16 @@ jobs:
             sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnService"\n            android:permission="android.permission.BIND_VPN_SERVICE"\n            android:foregroundServiceType="specialUse"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.net.VpnService" />\n            </intent-filter>\n            <property\n                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\n                android:value="VPN tunnel for SLAVE VPN" />\n        </service>\n    </application>|' AndroidManifest.xml
           fi
 
-      - name: Add Kotlin coroutines + androidx-core dependencies
+      - name: Add Kotlin coroutines + androidx-core + libbox dependencies
         working-directory: apps/android/android/app
         run: |
           if ! grep -q 'kotlinx-coroutines-android' build.gradle; then
-            sed -i "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'|" build.gradle
+            sed -i "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'\n    implementation fileTree(dir: 'libs', include: ['*.aar'])|" build.gradle
+          fi
+          # libbox needs minSdk 21 (already default in Capacitor projects)
+          # Disable strict packaging — libbox.aar may have duplicate META-INF entries
+          if ! grep -q 'jniLibs.useLegacyPackaging' build.gradle; then
+            sed -i 's|android {|android {\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging = false\n            pickFirsts += ["**/libc++_shared.so"]\n        }\n        resources {\n            excludes += ["META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt"]\n        }\n    }|' build.gradle
           fi
 
       - name: Capacitor sync

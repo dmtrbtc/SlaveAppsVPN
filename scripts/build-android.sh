@@ -60,14 +60,19 @@ fi
 
 # ─── 3. Copy sample Kotlin plugin ─────────────────────────────────────────────
 
-if [ ! -f "$NATIVE_PLUGIN_DIR/SlaveVpnPlugin.kt" ]; then
-  log "Copying sample Kotlin plugin..."
-  mkdir -p "$NATIVE_PLUGIN_DIR"
-  cp "$SAMPLE_PLUGIN/SlaveVpnPlugin.kt"  "$NATIVE_PLUGIN_DIR/"
-  cp "$SAMPLE_PLUGIN/SlaveVpnService.kt" "$NATIVE_PLUGIN_DIR/"
-  log "  → $NATIVE_PLUGIN_DIR/"
+log "Copying Kotlin plugin sources..."
+mkdir -p "$NATIVE_PLUGIN_DIR"
+cp "$SAMPLE_PLUGIN"/*.kt "$NATIVE_PLUGIN_DIR/"
+log "  → $NATIVE_PLUGIN_DIR/"
+
+# Copy libbox.aar (sing-box mobile engine)
+LIBBOX="$ANDROID_APP/libs/libbox.aar"
+if [ -f "$LIBBOX" ]; then
+  mkdir -p "$NATIVE_PROJECT/app/libs"
+  cp "$LIBBOX" "$NATIVE_PROJECT/app/libs/"
+  log "libbox.aar copied ($(du -h "$LIBBOX" | cut -f1))"
 else
-  log "Kotlin plugin already in place"
+  log "WARNING: $LIBBOX missing — APK will lack VPN engine"
 fi
 
 # Register plugin in MainActivity (Capacitor 5+ auto-discovers via @CapacitorPlugin
@@ -97,14 +102,16 @@ if [ -f "$MANIFEST" ]; then
   fi
 fi
 
-# Patch app/build.gradle to add kotlinx-coroutines dependency
+# Patch app/build.gradle to add kotlinx-coroutines + libbox.aar dependency
 APP_GRADLE="$NATIVE_PROJECT/app/build.gradle"
 if [ -f "$APP_GRADLE" ]; then
   if ! grep -q "kotlinx-coroutines-android" "$APP_GRADLE"; then
-    log "Adding kotlinx-coroutines + androidx.core dep to app/build.gradle..."
-    sed -i.bak "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'|" "$APP_GRADLE"
-  else
-    log "Dependencies already in app/build.gradle"
+    log "Adding kotlinx-coroutines + androidx.core + libbox to app/build.gradle..."
+    sed -i.bak "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'\n    implementation fileTree(dir: 'libs', include: ['*.aar'])|" "$APP_GRADLE"
+  fi
+  if ! grep -q "jniLibs.useLegacyPackaging" "$APP_GRADLE"; then
+    log "Adding packagingOptions for libbox..."
+    sed -i.bak "s|android {|android {\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging = false\n            pickFirsts += ['**/libc++_shared.so']\n        }\n        resources {\n            excludes += ['META-INF/LICENSE', 'META-INF/LICENSE.txt', 'META-INF/NOTICE', 'META-INF/NOTICE.txt']\n        }\n    }|" "$APP_GRADLE"
   fi
 fi
 
