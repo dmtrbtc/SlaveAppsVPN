@@ -24,7 +24,12 @@ const NOOP_UNSUB = (): void => {}
 
 function requireBridge(): SlaveVPNBridge {
   if (!window.slaveVPN) {
-    throw new Error('[IPC] Bridge not available — preload not initialized')
+    const w = window as unknown as { Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean } }
+    const cap = w.Capacitor
+    const hint = cap
+      ? `Capacitor detected (platform=${cap.getPlatform?.() ?? '?'} native=${cap.isNativePlatform?.() ?? '?'}) but bridge didn't install — check console for [android-bridge] errors`
+      : 'no preload bridge and no Capacitor global — this build is likely loaded in an unsupported shell'
+    throw new Error(`[IPC] Bridge not available — ${hint}`)
   }
   return window.slaveVPN
 }
