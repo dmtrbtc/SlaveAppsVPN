@@ -7,7 +7,10 @@ import type { VPNStatus, VPNMode, TrafficStats } from '@slave-vpn/shared'
 // ─── VPN control ──────────────────────────────────────────────────────────────
 
 export interface SlaveVpnConnectOptions {
-  // If null/undefined, the plugin uses the current settings snapshot.
+  // sing-box JSON compiled by the renderer. Required — the native plugin
+  // rejects with NO_CONFIG when missing.
+  config: string
+  // Optional metadata (kept for future use / logs)
   subscriptionId?: string
   selectedProxy?: string
   vpnMode?: VPNMode

@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { installAndroidBridgeIfNeeded } from './android'
 import './index.css'
 
 console.log('[renderer] bootstrap start', { bridge: typeof window.slaveVPN, time: Date.now() })
@@ -19,10 +20,17 @@ if (!rootEl) {
   throw new Error('Root element not found')
 }
 
-console.log('[renderer] React render start')
-createRoot(rootEl).render(
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>
-)
-console.log('[renderer] React render scheduled')
+// Activate the Android bridge before rendering so window.slaveVPN exists
+// by the time the first hook reads it. On Windows this resolves immediately
+// as a no-op (the bridge chunk is only imported when running on Capacitor).
+installAndroidBridgeIfNeeded()
+  .catch((err) => console.error('[renderer] Android bridge install failed', err))
+  .finally(() => {
+    console.log('[renderer] React render start', { bridge: typeof window.slaveVPN })
+    createRoot(rootEl).render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    )
+    console.log('[renderer] React render scheduled')
+  })

@@ -87,6 +87,12 @@ importers:
 
   apps/windows:
     dependencies:
+      '@capacitor/core':
+        specifier: ^7.0.0
+        version: 7.6.5
+      '@capacitor/preferences':
+        specifier: ^7.0.0
+        version: 7.0.4(@capacitor/core@7.6.5)
       '@electron-toolkit/utils':
         specifier: ^3.0.0
         version: 3.0.0(electron@33.4.11)

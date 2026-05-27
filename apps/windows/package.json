@@ -29,6 +29,8 @@
     "@slave-vpn/runtime": "workspace:*",
     "@slave-vpn/shared": "workspace:*",
     "@slave-vpn/state-sync": "workspace:*",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/preferences": "^7.0.0",
     "electron-updater": "^6.3.9",
     "@electron-toolkit/utils": "^3.0.0",
     "pino": "^9.6.0",
