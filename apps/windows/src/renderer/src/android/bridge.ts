@@ -198,6 +198,99 @@ export function installAndroidBridge(): void {
       onProxyChanged: () => () => undefined,
       onSubscriptionsChanged: () => () => undefined,
       onProfilesChanged: () => () => undefined,
+      onGeoUpdaterState: () => () => undefined,
+    },
+
+    // ─── configSource — validate is real, rest are no-ops ─────────────────────
+    // SettingsPage / Onboarding call validate({type, input}) to preview a URL
+    // before saving. We fetch, normalize, and count proxies.
+    configSource: {
+      getMeta: async () => ok(null),
+      set: async () => ok({ type: 'subscription-url' as const, summary: 'Android: managed via Подписки tab' }),
+      validate: (payload: { type: AndroidSubscriptionType; input: string }) => wrap(async () => {
+        const { input } = payload
+        if (!input || !input.trim()) {
+          return { valid: false, error: 'Empty input' }
+        }
+        if (payload.type === 'subscription-url') {
+          try {
+            const { fetchSubscriptionPreview } = await import('./validate')
+            return await fetchSubscriptionPreview(input.trim())
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            return { valid: false, error: message }
+          }
+        }
+        // Other types accepted as-is on Android (single-proxy parses via add())
+        return { valid: true, displayName: payload.type }
+      }),
+      clear: async () => ok(undefined),
+    },
+
+    settings: {
+      get: async () => ok({ vpnMode: currentMode } as never),
+      set: async () => ok(undefined),
+    },
+    provider: {
+      getManifest: notImplemented('provider.getManifest'),
+      getCapabilities: notImplemented('provider.getCapabilities'),
+    },
+    servers: {
+      list: async () => ok([] as never[]),
+      probe: async () => ok(undefined),
+    },
+    safeMode: {
+      getStatus: async () => ok({ inSafeMode: false } as never),
+      reset: async () => ok(undefined),
+    },
+    update: {
+      check: async () => ok({ available: false } as never),
+      download: notImplemented('update.download'),
+      install: notImplemented('update.install'),
+      getStatus: async () => ok({ state: 'idle' } as never),
+      setChannel: notImplemented('update.setChannel'),
+    },
+    runtime: {
+      restart: notImplemented('runtime.restart'),
+    },
+    cache: {
+      clear: async () => ok(undefined),
+    },
+    dns: {
+      getProfile: async () => ok(null as never),
+      setProfile: notImplemented('dns.setProfile'),
+      getPresets: async () => ok([] as never[]),
+      getStrategies: async () => ok([] as never[]),
+      leakTest: notImplemented('dns.leakTest'),
+    },
+    rules: {
+      list: async () => ok([] as never[]),
+      add: notImplemented('rules.add'),
+      remove: notImplemented('rules.remove'),
+      update: notImplemented('rules.update'),
+      reorder: notImplemented('rules.reorder'),
+      reload: async () => ok(undefined),
+    },
+    split: {
+      getProcesses: async () => ok([] as never[]),
+      getProcessList: async () => ok([] as never[]),
+      setProcessList: async () => ok(undefined),
+    },
+    routing: {
+      listScenarios: async () => ok({ available: [], enabled: [] } as never),
+      setEnabledScenarios: async () => ok(undefined),
+    },
+    profiles: {
+      list: async () => ok({ profiles: [], activeProfileId: null } as never),
+      saveCurrent: notImplemented('profiles.saveCurrent'),
+      remove: notImplemented('profiles.remove'),
+      apply: notImplemented('profiles.apply'),
+    },
+    geo: {
+      getState: async () => ok({ assets: [], lastUpdateAt: 0 } as never),
+      updateAll: notImplemented('geo.updateAll'),
+      updateOne: notImplemented('geo.updateOne'),
+      listSources: async () => ok([] as never[]),
     },
 
     auth: {

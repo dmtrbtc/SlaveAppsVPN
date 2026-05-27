@@ -53,6 +53,55 @@ export function installStubBridge(reason: string): void {
       getStartup: async () => ok({ phases: [], totalMs: 0, appStartedAt: Date.now(), completedAt: Date.now() }),
       selfTest: allError,
     },
+    configSource: {
+      getMeta: async () => ok(null),
+      set: allErrorWithName('configSource.set'),
+      validate: allErrorWithName('configSource.validate'),
+      clear: async () => ok(undefined),
+    },
+    settings: { get: async () => ok({}), set: async () => ok(undefined) },
+    provider: { getManifest: allError, getCapabilities: allError },
+    servers: { list: async () => ok([] as never[]), probe: async () => ok(undefined) },
+    safeMode: { getStatus: async () => ok({ inSafeMode: false }), reset: async () => ok(undefined) },
+    update: {
+      check: async () => ok({ available: false }),
+      download: allError,
+      install: allError,
+      getStatus: async () => ok({ state: 'idle' }),
+      setChannel: allError,
+    },
+    runtime: { restart: allError },
+    cache: { clear: async () => ok(undefined) },
+    dns: {
+      getProfile: async () => ok(null),
+      setProfile: allError,
+      getPresets: async () => ok([] as never[]),
+      getStrategies: async () => ok([] as never[]),
+      leakTest: allError,
+    },
+    rules: {
+      list: async () => ok([] as never[]),
+      add: allError, remove: allError, update: allError, reorder: allError,
+      reload: async () => ok(undefined),
+    },
+    split: {
+      getProcesses: async () => ok([] as never[]),
+      getProcessList: async () => ok([] as never[]),
+      setProcessList: async () => ok(undefined),
+    },
+    routing: {
+      listScenarios: async () => ok({ available: [], enabled: [] }),
+      setEnabledScenarios: async () => ok(undefined),
+    },
+    profiles: {
+      list: async () => ok({ profiles: [], activeProfileId: null }),
+      saveCurrent: allError, remove: allError, apply: allError,
+    },
+    geo: {
+      getState: async () => ok({ assets: [], lastUpdateAt: 0 }),
+      updateAll: allError, updateOne: allError,
+      listSources: async () => ok([] as never[]),
+    },
     events: {
       onVpnStatus: () => () => undefined,
       onVpnTraffic: () => () => undefined,
@@ -70,6 +119,7 @@ export function installStubBridge(reason: string): void {
       onProxyChanged: () => () => undefined,
       onSubscriptionsChanged: () => () => undefined,
       onProfilesChanged: () => () => undefined,
+      onGeoUpdaterState: () => () => undefined,
     },
     auth: {
       loginEmail: allError,
