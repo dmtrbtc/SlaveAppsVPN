@@ -21,16 +21,17 @@ if (!rootEl) {
 }
 
 // Activate the Android bridge before rendering so window.slaveVPN exists
-// by the time the first hook reads it. On Windows this resolves immediately
-// as a no-op (the bridge chunk is only imported when running on Capacitor).
-installAndroidBridgeIfNeeded()
-  .catch((err) => console.error('[renderer] Android bridge install failed', err))
-  .finally(() => {
-    console.log('[renderer] React render start', { bridge: typeof window.slaveVPN })
-    createRoot(rootEl).render(
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    )
-    console.log('[renderer] React render scheduled')
-  })
+// by the time the first hook reads it. On Windows this is a no-op (the
+// Electron preload already populated window.slaveVPN).
+try {
+  installAndroidBridgeIfNeeded()
+} catch (err) {
+  console.error('[renderer] Android bridge install failed', err)
+}
+console.log('[renderer] React render start', { bridge: typeof window.slaveVPN })
+createRoot(rootEl).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+)
+console.log('[renderer] React render scheduled')
