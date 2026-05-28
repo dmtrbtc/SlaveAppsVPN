@@ -8,7 +8,8 @@ const config: CapacitorConfig = {
   // Run `pnpm build:web` then `pnpm cap copy android` to refresh.
   webDir: '../windows/out/renderer',
 
-  bundledWebRuntime: false,
+  // Note: bundledWebRuntime removed in Capacitor 7 (was Capacitor-5 field;
+  // global runtime is now always native-injected, no config needed).
 
   server: {
     // Allow loading from `http://localhost` during dev; not used in release.

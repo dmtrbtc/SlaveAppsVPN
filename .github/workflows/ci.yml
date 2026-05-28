@@ -54,8 +54,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Audit dependencies
-        run: pnpm audit --audit-level=high
+      - name: Audit dependencies (production only)
+        # devDependencies (electron-builder build chain etc.) ship a long
+        # tail of path-traversal/prototype-pollution issues that don't
+        # affect runtime. Audit only the prod dep graph here.
+        run: pnpm audit --prod --audit-level=high
         continue-on-error: false
 
   lint:

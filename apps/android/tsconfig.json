@@ -2,7 +2,7 @@
   "extends": "@slave-vpn/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "moduleResolution": "bundler",
     "module": "ESNext",
     "target": "ES2022",
