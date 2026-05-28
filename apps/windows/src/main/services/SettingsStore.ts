@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   splitProcessList: [],
   ruleProviders: [],
   enabledScenarios: getDefaultEnabledScenarios() as string[],
+  utlsFingerprint: 'randomized',
 }
 
 class SettingsStore {

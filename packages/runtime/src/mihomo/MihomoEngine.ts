@@ -243,6 +243,7 @@ export class MihomoEngine implements VPNEngine {
       ...(profile.dnsProfile !== undefined ? { dnsProfile: profile.dnsProfile } : {}),
       ...(profile.routingPolicy !== undefined ? { routingPolicy: profile.routingPolicy } : {}),
       ...(this.initConfig!.rulesDir ? { rulesDir: this.initConfig!.rulesDir } : {}),
+      ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
     })
     await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
     await fs.writeFile(this.configPath(), yaml, 'utf-8')

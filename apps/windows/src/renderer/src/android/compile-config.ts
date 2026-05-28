@@ -41,6 +41,7 @@ function defaultDns(): DnsProfile {
 export interface CompileSingboxConfigOptions {
   vpnMode: VPNMode
   selectedProxy?: string
+  utlsFingerprint?: string
 }
 
 export interface CompiledAndroidConfig {
@@ -72,6 +73,7 @@ export async function compileSingboxConfigForAndroid(
     vpnMode: options.vpnMode,
     ...(options.selectedProxy ? { selectedProxy: options.selectedProxy } : {}),
     settings: generatorSettings,
+    utlsFingerprint: options.utlsFingerprint ?? 'randomized',
     apiPort: 9090,
     apiSecret: randomSecret(),
     dnsProfile: defaultDns(),

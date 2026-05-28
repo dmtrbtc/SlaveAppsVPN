@@ -28,6 +28,13 @@ export interface ConnectionProfile {
   generatorSettings: GeneratorSettings
   dnsProfile?: DnsProfile
   routingPolicy?: NormalizedPolicy
+  /**
+   * uTLS fingerprint to apply to every TLS-enabled outbound. Default
+   * `'randomized'` — rotates Client Hello each handshake so behavioural
+   * DPI cannot match a stable signature. Engines forward this to their
+   * ConfigGenerator/Compiler.
+   */
+  utlsFingerprint?: string
 }
 
 export interface TunHooks {

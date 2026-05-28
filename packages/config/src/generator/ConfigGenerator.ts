@@ -6,6 +6,7 @@ import type { DnsProfile } from '@slave-vpn/dns'
 import { MihomoDnsCompiler } from '@slave-vpn/dns'
 import { SubscriptionParser } from '../parser/SubscriptionParser'
 import type { ParsedProxy, ParsedProxyGroup } from '../parser/ParsedProfile'
+import { applyUtlsRotation, type UtlsFingerprint } from '../utls/applyUtlsRotation'
 
 export interface GeneratorSettings {
   tunEnabled: boolean
@@ -30,6 +31,11 @@ export interface ConfigGenerationContext {
   // geoip.db/geosite.db for sing-box). When unset, engines fall back to
   // working dir + may attempt auto-download.
   rulesDir?: string
+  // uTLS fingerprint to apply to every TLS-enabled outbound. When unset,
+  // generators default to "randomized" (and only override the static "chrome"
+  // default — leaving provider-set explicit fingerprints alone). When set
+  // explicitly, the value is forced onto every proxy.
+  utlsFingerprint?: string
 }
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
@@ -43,6 +49,15 @@ const ruleCompiler = new MihomoRuleCompiler()
 export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const parser = new SubscriptionParser()
   const profile = parser.parse(ctx.subscriptionYaml)
+
+  // uTLS rotation — same logic as the sing-box compiler. Mihomo passes the
+  // proxies through to its YAML output untouched, so we rewrite the
+  // client-fingerprint field on each parsed proxy before emit.
+  const rotatedProxies = applyUtlsRotation(profile.proxies, {
+    fingerprint: (ctx.utlsFingerprint as UtlsFingerprint | undefined) ?? 'randomized',
+    override: ctx.utlsFingerprint ? 'always' : 'when-missing-or-chrome',
+  })
+  profile.proxies = rotatedProxies
 
   const proxyNames = profile.proxies.map((p) => p.name)
 

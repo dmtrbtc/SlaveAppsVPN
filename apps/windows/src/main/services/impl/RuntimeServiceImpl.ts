@@ -461,6 +461,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         },
         dnsProfile,
         ...(routingPolicy ? { routingPolicy } : {}),
+        utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
       })
     } finally {
       this.connectLock = false
@@ -511,6 +512,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         },
         dnsProfile,
         ...(routingPolicy ? { routingPolicy } : {}),
+        utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
       })
     }
   }
@@ -619,6 +621,7 @@ export class RuntimeServiceImpl implements RuntimeService {
       },
       dnsProfile,
       ...(routingPolicy ? { routingPolicy } : {}),
+      utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
     })
     this.activeProxy = proxyName
     sendToRenderer(IpcChannel.EVENT_VPN_STATUS, this.getStatus())
@@ -652,6 +655,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         },
         dnsProfile,
         ...(routingPolicy ? { routingPolicy } : {}),
+        utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
       })
       log.info({ proxyCount, source }, 'Subscription hot-reload applied')
     } catch (err) {

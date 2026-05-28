@@ -4,8 +4,16 @@ import { Preferences } from '@capacitor/preferences'
  * Renderer-side subscription store for Android. Persisted via Capacitor
  * Preferences (Android EncryptedSharedPreferences under the hood).
  *
- * Mirrors the shape of SubscriptionEntry in apps/windows/src/shared/ipc/types.ts
- * — keeps the renderer code path identical to Windows.
+ * Capacitor Preferences ships as a native plugin that needs `cap sync` to
+ * register it in MainActivity. pnpm-workspace symlinks sometimes break
+ * that auto-discovery, in which case Preferences.set() throws "Plugin
+ * not implemented" and the whole add-subscription flow dies.
+ *
+ * To make the store resilient we fall back to localStorage when the
+ * native Preferences plugin isn't available. localStorage works in any
+ * WebView (no native registration needed). The downside is slightly
+ * weaker durability — survives app restarts, may be cleared if the user
+ * wipes WebView storage from system settings. Good enough for v1.
  */
 
 const INDEX_KEY = 'slave.subscriptions.index.v1'
@@ -31,13 +39,60 @@ export interface AndroidSubscriptionEntry {
   proxyProtocol?: string
 }
 
+// ─── Storage backend with localStorage fallback ───────────────────────────────
+
+let useFallback = false
+
+async function storageGet(key: string): Promise<string | null> {
+  if (!useFallback) {
+    try {
+      const { value } = await Preferences.get({ key })
+      return value ?? null
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[subscription-store] Preferences.get failed, falling back to localStorage', err)
+      useFallback = true
+    }
+  }
+  try { return window.localStorage.getItem(key) } catch { return null }
+}
+
+async function storageSet(key: string, value: string): Promise<void> {
+  if (!useFallback) {
+    try {
+      await Preferences.set({ key, value })
+      return
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[subscription-store] Preferences.set failed, falling back to localStorage', err)
+      useFallback = true
+    }
+  }
+  try { window.localStorage.setItem(key, value) } catch (err) {
+    throw new Error(`Both Preferences and localStorage failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function storageRemove(key: string): Promise<void> {
+  if (!useFallback) {
+    try {
+      await Preferences.remove({ key })
+      return
+    } catch {
+      useFallback = true
+    }
+  }
+  try { window.localStorage.removeItem(key) } catch { /* swallow */ }
+}
+
+// ─── Public store API ─────────────────────────────────────────────────────────
+
 function randomId(): string {
-  // Sufficiently unique for one device — not a security boundary
   return `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
 async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
-  const { value } = await Preferences.get({ key: INDEX_KEY })
+  const value = await storageGet(INDEX_KEY)
   if (!value) return []
   try {
     const parsed = JSON.parse(value)
@@ -49,7 +104,7 @@ async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
 }
 
 async function writeIndex(entries: AndroidSubscriptionEntry[]): Promise<void> {
-  await Preferences.set({ key: INDEX_KEY, value: JSON.stringify(entries) })
+  await storageSet(INDEX_KEY, JSON.stringify(entries))
 }
 
 function safeUrlDomain(input: string): string | undefined {
@@ -61,8 +116,7 @@ export async function listSubscriptions(): Promise<AndroidSubscriptionEntry[]> {
 }
 
 export async function getSubscriptionInput(id: string): Promise<string | null> {
-  const { value } = await Preferences.get({ key: INPUT_KEY(id) })
-  return value ?? null
+  return storageGet(INPUT_KEY(id))
 }
 
 export interface AddSubscriptionOptions {
@@ -88,17 +142,18 @@ export async function addSubscription(options: AddSubscriptionOptions): Promise<
       ? { urlDomain: safeUrlDomain(options.input) ?? '' }
       : {}),
   }
+  // Persist input FIRST so a partial failure leaves no dangling index entry.
+  await storageSet(INPUT_KEY(id), options.input)
   const entries = await readIndex()
   entries.push(entry)
   await writeIndex(entries)
-  await Preferences.set({ key: INPUT_KEY(id), value: options.input })
   return entry
 }
 
 export async function removeSubscription(id: string): Promise<void> {
   const entries = await readIndex()
   await writeIndex(entries.filter(e => e.id !== id))
-  await Preferences.remove({ key: INPUT_KEY(id) })
+  await storageRemove(INPUT_KEY(id))
 }
 
 export async function updateSubscriptionMeta(

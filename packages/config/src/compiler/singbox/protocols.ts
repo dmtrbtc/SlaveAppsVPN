@@ -49,8 +49,9 @@ function buildTls(proxy: ParsedProxy): SingboxTlsConfig | undefined {
     const sid = asString(realityOpts['short-id'])
     if (pbk) {
       tls.reality = { enabled: true, public_key: pbk, ...(sid ? { short_id: sid } : {}) }
-      // Reality requires utls — default to chrome if no explicit fingerprint
-      if (!tls.utls) tls.utls = { enabled: true, fingerprint: 'chrome' }
+      // Reality requires uTLS — default to randomized so behavioural-DPI cannot
+      // match a stable Client Hello fingerprint. Anti-DPI v2 (ТСПУ 2026).
+      if (!tls.utls) tls.utls = { enabled: true, fingerprint: 'randomized' }
     }
   }
 

@@ -1,3 +1,6 @@
+export { applyUtlsRotation } from './utls/applyUtlsRotation'
+export type { UtlsFingerprint, ApplyUtlsRotationOptions } from './utls/applyUtlsRotation'
+
 export type { ConfigCompiler, CompileInput, CompilerEngineType } from './compiler'
 export {
   MihomoConfigCompiler,

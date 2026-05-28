@@ -23,7 +23,7 @@ import {
   useUpdateChannel, useUpdateProgress, useUpdateEvents,
 } from '../hooks/useUpdate'
 import { configSourceApi, cacheApi } from '../lib/api'
-import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine, BalancerMode } from '@shared/ipc/types'
+import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine, BalancerMode, UtlsFingerprintName } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
 
 const SUB_STATUS_CONFIG: Record<SubscriptionStatus, { label: string; tone: 'ok' | 'neutral' | 'warn' }> = {
@@ -661,6 +661,47 @@ export function SettingsPage() {
                 onChange={v => handleToggle('killSwitch', v)}
                 loading={isKeyPending('killSwitch')}
               />
+            </CardRow>
+          ) : null}
+        </Section>
+
+        {/* uTLS Fingerprint — anti-DPI (ТСПУ behavioural filter) */}
+        <Section label="uTLS отпечаток" icon={<Shield className="h-3.5 w-3.5" />}>
+          {settings ? (
+            <CardRow>
+              <div className="p-4 flex flex-col gap-3">
+                <select
+                  className="w-full bg-bg-secondary border border-border rounded-md px-3 py-2 text-sm"
+                  value={(settings as AppSettings & { utlsFingerprint?: UtlsFingerprintName }).utlsFingerprint ?? 'randomized'}
+                  onChange={(e) => {
+                    const v = e.target.value as UtlsFingerprintName
+                    updateSetting({ utlsFingerprint: v } as Partial<AppSettings>, {
+                      onSuccess: () => notify({ type: 'info', title: 'Отпечаток обновлён', message: `Применится при следующем подключении: ${v}` }),
+                      onError: () => notify({ type: 'error', title: 'Ошибка сохранения', message: 'Настройка не сохранена' }),
+                    })
+                  }}
+                  disabled={isKeyPending('utlsFingerprint')}
+                >
+                  <option value="randomized">randomized — рекомендуется (рандомизация Client Hello каждое соединение)</option>
+                  <option value="random">random</option>
+                  <option value="chrome">chrome</option>
+                  <option value="firefox">firefox</option>
+                  <option value="safari">safari</option>
+                  <option value="edge">edge</option>
+                  <option value="ios">iOS</option>
+                  <option value="android">android</option>
+                  <option value="360">360</option>
+                  <option value="qq">qq</option>
+                </select>
+                <p className="text-[11px] text-text-muted">
+                  Отпечаток TLS-клиента, под который подделывается uTLS. <b>randomized</b> ротирует Client Hello
+                  на каждом хендшейке — баseline против behavioural-DPI ТСПУ (2026). Меняй на конкретный
+                  fingerprint только если канал ругается.
+                </p>
+                {isKeyPending('utlsFingerprint') && (
+                  <p className="text-[11px] text-text-muted">Сохранение...</p>
+                )}
+              </div>
             </CardRow>
           ) : null}
         </Section>

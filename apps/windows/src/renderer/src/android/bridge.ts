@@ -12,6 +12,7 @@ import {
 } from './subscription-store'
 import { buildAggregatedYaml } from './aggregator'
 import { compileSingboxConfigForAndroid } from './compile-config'
+import { detectClipboardLink } from './clipboard-detect'
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
 
@@ -71,6 +72,20 @@ function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
 
 let currentMode: VPNMode = 'bypass'
 let currentSelectedProxy: string | undefined
+let currentUtlsFingerprint: string = 'randomized'
+
+const UTLS_LS_KEY = 'slave.settings.utlsFingerprint.v1'
+
+function loadUtlsFromLocalStorage(): void {
+  try {
+    const v = window.localStorage.getItem(UTLS_LS_KEY)
+    if (v) currentUtlsFingerprint = v
+  } catch { /* swallow */ }
+}
+
+function saveUtlsToLocalStorage(value: string): void {
+  try { window.localStorage.setItem(UTLS_LS_KEY, value) } catch { /* swallow */ }
+}
 
 // ─── Install ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +108,7 @@ export function installAndroidBridge(): void {
         const compiled = await compileSingboxConfigForAndroid({
           vpnMode: currentMode,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+          utlsFingerprint: currentUtlsFingerprint,
         })
         await SlaveVpn.connect({
           config: compiled.json,
@@ -157,7 +173,7 @@ export function installAndroidBridge(): void {
         await buildAggregatedYaml().catch(() => undefined)
         return (await listSubscriptions()).map(toIpcEntry)
       }),
-      detectClipboard: async () => ok({ found: false }),
+      detectClipboard: () => wrap(() => detectClipboardLink()),
     },
 
     diagnostics: {
@@ -228,8 +244,22 @@ export function installAndroidBridge(): void {
     },
 
     settings: {
-      get: async () => ok({ vpnMode: currentMode } as never),
-      set: async () => ok(undefined),
+      get: async () => ok({
+        vpnMode: currentMode,
+        utlsFingerprint: currentUtlsFingerprint,
+      } as never),
+      set: (payload: Record<string, unknown>) => wrap(async () => {
+        if (typeof payload['vpnMode'] === 'string') {
+          const m = payload['vpnMode'] as VPNMode
+          if (m === 'full' || m === 'bypass' || m === 'split' || m === 'custom') {
+            currentMode = m
+          }
+        }
+        if (typeof payload['utlsFingerprint'] === 'string') {
+          currentUtlsFingerprint = payload['utlsFingerprint'] as string
+          saveUtlsToLocalStorage(currentUtlsFingerprint)
+        }
+      }),
     },
     provider: {
       getManifest: notImplemented('provider.getManifest'),
@@ -310,6 +340,9 @@ export function installAndroidBridge(): void {
   // Match Windows bridge shape at runtime (types differ deliberately —
   // Android subset; renderer hides unsupported screens via feature detection).
   ;(window as unknown as { slaveVPN: typeof bridge }).slaveVPN = bridge
+
+  // Restore persisted uTLS fingerprint preference.
+  loadUtlsFromLocalStorage()
 
   // Best-effort initial traffic ping so the sparkline doesn't NaN.
   void SlaveVpn.getTraffic().catch(() => ({ traffic: EMPTY_TRAFFIC_STATS }))

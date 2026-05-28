@@ -1,5 +1,6 @@
 import type { ConfigGenerationContext } from '../../generator/ConfigGenerator'
 import { SubscriptionParser } from '../../parser/SubscriptionParser'
+import { applyUtlsRotation, type UtlsFingerprint } from '../../utls/applyUtlsRotation'
 import { compileOutbound } from './protocols'
 import { compileRoutingRules, PRIVATE_DIRECT_RULES } from './routing'
 import { compileDns } from './dns'
@@ -80,10 +81,18 @@ export function generateSingboxConfig(ctx: ConfigGenerationContext): string {
   const parser = new SubscriptionParser()
   const profile = parser.parse(ctx.subscriptionYaml)
 
+  // uTLS rotation — overwrite static "chrome" defaults with the requested
+  // fingerprint (randomized by default) so behavioural-DPI can't fingerprint
+  // a stable Client Hello pattern.
+  const rotatedProxies = applyUtlsRotation(profile.proxies, {
+    fingerprint: (ctx.utlsFingerprint as UtlsFingerprint | undefined) ?? 'randomized',
+    override: ctx.utlsFingerprint ? 'always' : 'when-missing-or-chrome',
+  })
+
   const protocolOutbounds: SingboxOutbound[] = []
   const skipped: string[] = []
 
-  for (const proxy of profile.proxies) {
+  for (const proxy of rotatedProxies) {
     const out = compileOutbound(proxy)
     if (out) protocolOutbounds.push(out)
     else skipped.push(`${proxy.name} (${proxy.type})`)
