@@ -1,10 +1,4 @@
-import * as Config from '@slave-vpn/config'
-
-interface ParsedAny {
-  name: string
-  type: string
-  extra: Record<string, unknown>
-}
+import { parseProxyUriSafe } from '@slave-vpn/config'
 
 /**
  * Browser-side clipboard detector. Returns the same shape as Windows IPC's
@@ -48,7 +42,7 @@ export async function detectClipboardLink(): Promise<ClipboardDetectResult> {
     const uri = uriMatch[0]
     const scheme = (uriMatch[1] ?? '').toLowerCase()
     try {
-      const parsed = (Config as { parseProxyUriSafe: (uri: string) => ParsedAny | null }).parseProxyUriSafe(uri)
+      const parsed = parseProxyUriSafe(uri)
       if (parsed) {
         const extra = parsed.extra as Record<string, unknown>
         const transport = typeof extra['network'] === 'string' ? (extra['network'] as string) : 'tcp'

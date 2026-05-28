@@ -1,6 +1,7 @@
-import * as Config from '@slave-vpn/config'
-
-const { normalizeSubscriptionContent, parseProxiesFromYaml } = Config
+import {
+  normalizeSubscriptionContent,
+  parseProxiesFromYaml,
+} from '@slave-vpn/config'
 
 const FETCH_TIMEOUT_MS = 30_000
 

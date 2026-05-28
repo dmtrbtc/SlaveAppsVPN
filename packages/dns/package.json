@@ -2,19 +2,22 @@
   "name": "@slave-vpn/dns",
   "version": "0.0.0",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js",
       "default": "./dist/index.js"
     }
   },
-  "main": "./dist/index.js",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.cjs",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rimraf dist *.tsbuildinfo"

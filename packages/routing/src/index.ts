@@ -17,11 +17,12 @@ export { MihomoRuleCompiler } from './compiler/MihomoRuleCompiler'
 export type { MihomoCompilerOptions } from './compiler/MihomoRuleCompiler'
 
 export type { RuleProvider, RuleProviderMetadata, RuleProviderType } from './providers/RuleProvider'
-export { BundledRuleProvider } from './providers/BundledRuleProvider'
-export { CacheRuleProvider } from './providers/CacheRuleProvider'
-export { RemoteRuleProvider } from './providers/RemoteRuleProvider'
+// Cache/Remote rule providers import Node built-ins (fs/path/https/crypto)
+// and are server-only. They are NOT re-exported from the public surface so
+// the renderer's vite bundle doesn't pull them via tree-shake. Import them
+// directly via `@slave-vpn/routing/providers/CacheRuleProvider` etc. in the
+// main process when needed.
 export type { RemoteRuleProviderConfig } from './providers/RemoteRuleProvider'
-export { RuleProviderRegistry } from './providers/RuleProviderRegistry'
 
 export { RUSSIA_BYPASS_RULES, RUSSIA_BYPASS_PRIVATE_DIRECT } from './data/bypass-rules'
 
@@ -31,7 +32,8 @@ export { createSplitPolicy } from './policies/SplitPolicy'
 export { createCustomPolicy } from './policies/CustomPolicy'
 export type { CustomPolicyConfig } from './policies/CustomPolicy'
 
-export { RoutingManager } from './manager/RoutingManager'
+// RoutingManager + providers/registry pull Node-only deps and are
+// server-only. Import directly from the subpath in main process if needed.
 export type { RoutingManagerConfig } from './manager/RoutingManager'
 
 // Engine-neutral routing scenarios (Karing-style ready-to-use recipes)

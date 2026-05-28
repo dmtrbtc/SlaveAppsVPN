@@ -2,15 +2,16 @@
   "extends": "@slave-vpn/tsconfig/base.json",
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
+    "module": "CommonJS",
     "moduleResolution": "node",
     "verbatimModuleSyntax": false,
     "lib": ["ES2022", "DOM"],
-    "outDir": "dist",
+    "outDir": "dist/cjs",
     "rootDir": "src",
-    "composite": true,
-    "tsBuildInfoFile": "dist/.tsbuildinfo"
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src"]
 }

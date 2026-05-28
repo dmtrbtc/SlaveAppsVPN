@@ -1,10 +1,9 @@
-import * as Config from '@slave-vpn/config'
-import type { ConfigGenerationContext, GeneratorSettings } from '@slave-vpn/config'
-import * as Dns from '@slave-vpn/dns'
-import type { DnsProfile } from '@slave-vpn/dns'
-
-const { generateSingboxConfig } = Config
-const { DnsProfilePresets } = Dns
+import {
+  generateSingboxConfig,
+  type ConfigGenerationContext,
+  type GeneratorSettings,
+} from '@slave-vpn/config'
+import { DnsProfilePresets, type DnsProfile } from '@slave-vpn/dns'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedYaml } from './aggregator'
 

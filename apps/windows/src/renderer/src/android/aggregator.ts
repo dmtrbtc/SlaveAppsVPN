@@ -1,7 +1,9 @@
-import * as Config from '@slave-vpn/config'
-import type { ProxyEntry } from '@slave-vpn/config'
-
-const { normalizeSubscriptionContent, buildClashYaml, parseProxiesFromYaml } = Config
+import {
+  normalizeSubscriptionContent,
+  buildClashYaml,
+  parseProxiesFromYaml,
+  type ProxyEntry,
+} from '@slave-vpn/config'
 import {
   listSubscriptions,
   getSubscriptionInput,
