@@ -75,13 +75,27 @@ else
   log "WARNING: $LIBBOX missing — APK will lack VPN engine"
 fi
 
-# Register plugin in MainActivity (Capacitor 5+ auto-discovers via @CapacitorPlugin
-# annotation if it's in classpath; no manual registration needed).
-# But we add the package import in MainActivity comment for clarity:
-MAIN_ACTIVITY="$NATIVE_PROJECT/app/src/main/java/com/slavevpn/app/MainActivity.kt"
-if [ -f "$MAIN_ACTIVITY" ]; then
-  log "MainActivity at $MAIN_ACTIVITY (auto-discovery active)"
-fi
+# Register SlaveVpnPlugin in MainActivity.
+# Capacitor 7 does NOT auto-discover plugins from the local project tree —
+# only npm-packaged plugins are auto-registered. For our in-project Kotlin
+# plugin we must explicitly call registerPlugin() in MainActivity.onCreate.
+MAIN_ACTIVITY="$NATIVE_PROJECT/app/src/main/java/com/slavevpn/MainActivity.kt"
+mkdir -p "$(dirname "$MAIN_ACTIVITY")"
+cat > "$MAIN_ACTIVITY" <<'EOF'
+package com.slavevpn
+
+import android.os.Bundle
+import com.getcapacitor.BridgeActivity
+import com.slavevpn.plugin.SlaveVpnPlugin
+
+class MainActivity : BridgeActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        registerPlugin(SlaveVpnPlugin::class.java)
+        super.onCreate(savedInstanceState)
+    }
+}
+EOF
+log "MainActivity.kt wired with SlaveVpnPlugin registration"
 
 # ─── 4. Patch AndroidManifest with VPN permissions + service ──────────────────
 

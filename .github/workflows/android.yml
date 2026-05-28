@@ -63,6 +63,29 @@ jobs:
           mkdir -p android/app/src/main/java/com/slavevpn/plugin
           cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
 
+      - name: Register SlaveVpnPlugin in MainActivity
+        working-directory: apps/android
+        run: |
+          set -e
+          MAIN=android/app/src/main/java/com/slavevpn/MainActivity.kt
+          mkdir -p "$(dirname "$MAIN")"
+          cat > "$MAIN" <<'EOF'
+          package com.slavevpn
+
+          import android.os.Bundle
+          import com.getcapacitor.BridgeActivity
+          import com.slavevpn.plugin.SlaveVpnPlugin
+
+          class MainActivity : BridgeActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  registerPlugin(SlaveVpnPlugin::class.java)
+                  super.onCreate(savedInstanceState)
+              }
+          }
+          EOF
+          echo "MainActivity.kt wired with SlaveVpnPlugin registration:"
+          cat "$MAIN"
+
       - name: Copy libbox.aar (sing-box mobile engine)
         working-directory: apps/android
         run: |
