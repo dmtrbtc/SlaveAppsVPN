@@ -29,6 +29,28 @@ const GEO_SOURCES: readonly GeoSource[] = [
     minBytes: 1_000_000,
     category: 'geo-db',
   },
+  // RoscomVPN — curated RU/BY routing (hydraponique/roscomvpn-geosite + geoip).
+  // Smaller, smarter category lists than V2Ray defaults:
+  //   • category-ru with RU/BY domains minus RKN-blocked lists
+  //   • dedicated "whitelist" for kazenniye RU services (VK/OK/Mail.ru/Yandex)
+  //   • win-spy / twitch-ads / faceit / escapefromtarkov categories that V2Ray
+  //     geosite lacks. Downloaded for the RoscomVPN Default scenario.
+  {
+    id: 'roscomvpn-geosite',
+    label: 'RoscomVPN geosite (hydraponique)',
+    url: 'https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat',
+    filename: 'geosite-roscomvpn.dat',
+    minBytes: 200_000,
+    category: 'geo-db',
+  },
+  {
+    id: 'roscomvpn-geoip',
+    label: 'RoscomVPN geoip (hydraponique)',
+    url: 'https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat',
+    filename: 'geoip-roscomvpn.dat',
+    minBytes: 100_000,
+    category: 'geo-db',
+  },
   // Mihomo geoip + geosite (the canonical ones already present at build time;
   // auto-update keeps them current between releases)
   {

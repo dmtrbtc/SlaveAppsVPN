@@ -18,6 +18,7 @@ export type ScenarioId =
   | 'ai-services'
   | 'gaming-direct'
   | 'runetfreedom-bypass'
+  | 'roscomvpn-default'
 
 export interface RoutingScenario {
   readonly id: ScenarioId

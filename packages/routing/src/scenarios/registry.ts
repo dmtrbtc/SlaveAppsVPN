@@ -6,6 +6,7 @@ import { createStreamingScenario } from './Streaming'
 import { createAIServicesScenario } from './AIServices'
 import { createGamingScenario } from './Gaming'
 import { createRunetFreedomBypassScenario } from './RunetFreedomBypass'
+import { createRoscomVPNDefaultScenario } from './RoscomVPNDefault'
 
 // Cached so repeated calls don't rebuild rule arrays.
 let _cache: readonly RoutingScenario[] | null = null
@@ -14,6 +15,7 @@ function build(): readonly RoutingScenario[] {
   return [
     createSmartRussiaBypassScenario(),
     createRunetFreedomBypassScenario(),
+    createRoscomVPNDefaultScenario(),
     createSmartGlobalScenario(),
     createAdBlockScenario(),
     createStreamingScenario(),

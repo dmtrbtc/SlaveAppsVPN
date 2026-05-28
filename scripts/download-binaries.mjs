@@ -112,6 +112,24 @@ const GEO_DATABASES = {
     outName: 'geosite-runetfreedom.dat',
     dir: RULES_DIR,
   },
+  // RoscomVPN — curated RU/BY geosite & geoip from hydraponique.
+  // Smaller, dedicated categories: category-ru, whitelist (kazenniye RU),
+  // win-spy, twitch-ads, faceit, escapefromtarkov. Used by the
+  // "RoscomVPN Default" routing scenario.
+  'roscomvpn-geosite': {
+    label: 'geosite.dat (RoscomVPN)',
+    url: 'https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat',
+    archive: 'raw',
+    outName: 'geosite-roscomvpn.dat',
+    dir: RULES_DIR,
+  },
+  'roscomvpn-geoip': {
+    label: 'geoip.dat (RoscomVPN)',
+    url: 'https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat',
+    archive: 'raw',
+    outName: 'geoip-roscomvpn.dat',
+    dir: RULES_DIR,
+  },
 }
 
 // Auto-update URLs — these are referenced at runtime by GeoUpdaterService
@@ -124,6 +142,8 @@ export const GEO_AUTO_UPDATE_SOURCES = {
   'runetfreedom-antifilter': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/antifilter-download.txt',
   'meta-rules-geoip': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
   'meta-rules-geosite': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+  'roscomvpn-geosite': 'https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat',
+  'roscomvpn-geoip': 'https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat',
 }
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
