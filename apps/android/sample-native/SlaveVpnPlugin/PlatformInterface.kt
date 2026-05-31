@@ -47,7 +47,7 @@ class SlavePlatformInterface(
         android.util.Log.d("libbox", message ?: "")
     }
 
-    override fun useProcFs(): Boolean = false  // restricted on Android 11+
+    override fun useProcFS(): Boolean = false  // restricted on Android 11+
 
     override fun findConnectionOwner(
         ipProto: Int, sourceAddress: String?, sourcePort: Int,
@@ -69,11 +69,14 @@ class SlavePlatformInterface(
     // could wire ConnectivityManager.NetworkCallback here but for v1 this is
     // optional — libbox will fall back to passive detection.
 
-    override fun usePlatformDefaultInterfaceMonitor(): Boolean = false
+    // Note: this libbox build (sing-box v1.11.15) has NO usePlatform*Monitor /
+    // usePlatformInterfaceGetter toggle methods — the monitor/getter callbacks
+    // are always present on the interface, libbox just won't call them while
+    // we run a plain VpnService TUN. Adding @Override for the removed toggles
+    // would fail to compile ("overrides nothing").
     override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) { /* no-op */ }
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener?) { /* no-op */ }
 
-    override fun usePlatformInterfaceGetter(): Boolean = false
     override fun getInterfaces(): NetworkInterfaceIterator? = null
 
     override fun underNetworkExtension(): Boolean = false
@@ -82,6 +85,11 @@ class SlavePlatformInterface(
     override fun readWIFIState(): io.nekohasekai.libbox.WIFIState? = null
 
     override fun clearDNSCache() { /* no-op */ }
+
+    // Required by PlatformInterface in this libbox version. sing-box may emit
+    // platform notifications (e.g. for the URL-test/network changes); we don't
+    // surface them as Android notifications, so this is a no-op.
+    override fun sendNotification(notification: io.nekohasekai.libbox.Notification?) { /* no-op */ }
 
     @Suppress("unused")
     private fun isVpnOnly(context: Context): Boolean = false

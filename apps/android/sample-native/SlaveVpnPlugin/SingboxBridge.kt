@@ -82,8 +82,9 @@ object SingboxBridge {
 
     fun isRunning(): Boolean = service != null
 
-    /** Sleep notify — call when device sleeps so libbox can pause keepalives */
-    fun sleep() { service?.sleep() }
+    /** Sleep notify — call when device sleeps so libbox can pause keepalives.
+     *  libbox exposes this as pause()/wake() (there is no sleep()). */
+    fun sleep() { service?.pause() }
     fun wake() { service?.wake() }
 
     /** Returns libbox version (for diagnostics) */
