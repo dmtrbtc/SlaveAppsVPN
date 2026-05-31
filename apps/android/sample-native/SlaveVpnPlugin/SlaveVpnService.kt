@@ -47,11 +47,39 @@ class SlaveVpnService : VpnService() {
         @JvmStatic var currentState: String = "disconnected"
             private set
 
+        // Last specific failure reason — surfaced to the renderer via getStatus
+        // so the UI can show WHY a connection failed instead of a generic
+        // "Connection failed". Cleared when a fresh connect attempt begins.
+        @JvmStatic @Volatile var currentError: String? = null
+            private set
+
         private var currentMode: String = "bypass"
         private var currentEngine: String = "singbox"
 
         @JvmStatic fun setMode(mode: String) { currentMode = mode }
         @JvmStatic fun setEngine(engine: String) { currentEngine = engine }
+
+        // ─── In-memory log ring buffer ──────────────────────────────────────
+        // libbox writeLog() + our own lifecycle lines land here so the in-app
+        // Logs panel (diagnostics.getLogs) shows REAL engine output, not an
+        // empty TODO stub. Capped to avoid unbounded growth.
+        private const val LOG_CAP = 600
+        private val logRing = ArrayDeque<String>(LOG_CAP)
+
+        @JvmStatic fun appendLog(line: String) {
+            if (line.isBlank()) return
+            synchronized(logRing) {
+                if (logRing.size >= LOG_CAP) logRing.removeFirst()
+                logRing.addLast(line)
+            }
+        }
+
+        @JvmStatic fun recentLogs(tail: Int): List<String> {
+            synchronized(logRing) {
+                if (tail <= 0 || tail >= logRing.size) return logRing.toList()
+                return logRing.toList().takeLast(tail)
+            }
+        }
     }
 
     override fun onCreate() {
@@ -73,8 +101,11 @@ class SlaveVpnService : VpnService() {
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG)
                 if (config.isNullOrBlank()) {
-                    android.util.Log.e("SlaveVpnService", "ACTION_START without config extra")
+                    val msg = "ACTION_START without config extra"
+                    android.util.Log.e("SlaveVpnService", msg)
                     currentState = "error"
+                    currentError = msg
+                    appendLog("[service] $msg")
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -88,6 +119,8 @@ class SlaveVpnService : VpnService() {
     private fun startVpn(configJson: String) {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
+        currentError = null  // fresh attempt — clear any prior failure reason
+        appendLog("[service] starting VPN")
 
         startForeground(NOTIF_ID, buildNotification("Подключение..."))
 
@@ -111,6 +144,7 @@ class SlaveVpnService : VpnService() {
             tunInterface = pfd
             tunFd = pfd.fd
             android.util.Log.i("SlaveVpnService", "TUN established, fd=$tunFd")
+            appendLog("[service] TUN established, fd=$tunFd")
 
             // Hand TUN fd + config to libbox on a worker coroutine
             libboxJob = scope.launch {
@@ -118,19 +152,27 @@ class SlaveVpnService : VpnService() {
                     val platform = SlavePlatformInterface(this@SlaveVpnService)
                     SingboxBridge.start(configJson, platform)
                     currentState = "connected"
+                    currentError = null
+                    appendLog("[service] connected · sing-box ${SingboxBridge.version()}")
                     notify("Подключено · sing-box ${SingboxBridge.version()}")
                 } catch (e: Exception) {
+                    val msg = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("SlaveVpnService", "libbox start failed", e)
                     currentState = "error"
-                    notify("Ошибка: ${e.message}")
+                    currentError = "libbox: $msg"
+                    appendLog("[service] libbox start failed: $msg")
+                    notify("Ошибка: $msg")
                     cleanupTun()
                     stopSelf()
                 }
             }
         } catch (e: Exception) {
+            val msg = e.message ?: e.javaClass.simpleName
             android.util.Log.e("SlaveVpnService", "VPN setup failed", e)
             currentState = "error"
-            notify("Ошибка: ${e.message}")
+            currentError = "tun: $msg"
+            appendLog("[service] VPN setup failed: $msg")
+            notify("Ошибка: $msg")
             cleanupTun()
             stopSelf()
         }

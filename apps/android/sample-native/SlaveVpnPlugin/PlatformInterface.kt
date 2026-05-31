@@ -43,8 +43,12 @@ class SlavePlatformInterface(
     }
 
     override fun writeLog(message: String?) {
-        // sing-box log → Android logcat
-        android.util.Log.d("libbox", message ?: "")
+        // sing-box log → Android logcat AND the in-app log ring buffer so
+        // diagnostics.getLogs surfaces real engine output (incl. the reason a
+        // connection failed) instead of an empty stub.
+        val msg = message ?: ""
+        android.util.Log.d("libbox", msg)
+        SlaveVpnService.appendLog(msg)
     }
 
     override fun useProcFS(): Boolean = false  // restricted on Android 11+

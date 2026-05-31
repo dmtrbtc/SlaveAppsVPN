@@ -145,6 +145,9 @@ class SlaveVpnPlugin : Plugin() {
             .put("state", state)
             .put("mode", "bypass")
             .put("protocol", "")
+            // Specific failure reason (null when none) so the UI can show WHY
+            // a connection failed instead of a generic "Connection failed".
+            .put("lastError", SlaveVpnService.currentError ?: JSObject.NULL)
         call.resolve(JSObject().put("status", status))
     }
 
@@ -203,7 +206,11 @@ class SlaveVpnPlugin : Plugin() {
 
     @PluginMethod
     fun getLogs(call: PluginCall) {
-        // TODO: tail logcat for our service
-        call.resolve(JSObject().put("lines", org.json.JSONArray()))
+        // Real engine + lifecycle logs from the in-memory ring buffer that
+        // libbox writeLog() and SlaveVpnService feed. No longer a stub.
+        val tail = call.getInt("tail") ?: 500
+        val lines = org.json.JSONArray()
+        for (line in SlaveVpnService.recentLogs(tail)) lines.put(line)
+        call.resolve(JSObject().put("lines", lines))
     }
 }

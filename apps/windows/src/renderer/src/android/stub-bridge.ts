@@ -90,15 +90,17 @@ export function installStubBridge(reason: string): void {
       setProcessList: async () => ok(undefined),
     },
     routing: {
-      listScenarios: async () => ok({ available: [], enabled: [] }),
-      setEnabledScenarios: async () => ok(undefined),
+      // RoutingScenarioInfo[] — must be an ARRAY (object → RoutingPage crash).
+      listScenarios: async () => ok([] as never[]),
+      setEnabledScenarios: async () => ok([] as never[]),
     },
     profiles: {
       list: async () => ok({ profiles: [], activeProfileId: null }),
       saveCurrent: allError, remove: allError, apply: allError,
     },
     geo: {
-      getState: async () => ok({ assets: [], lastUpdateAt: 0 }),
+      // GeoUpdaterState — needs records[] or DiagnosticsPage crashes.
+      getState: async () => ok({ records: [], lastFullUpdateAt: null, inProgress: false, intervalHours: 24 }),
       updateAll: allError, updateOne: allError,
       listSources: async () => ok([] as never[]),
     },

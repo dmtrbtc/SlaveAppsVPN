@@ -15,6 +15,7 @@ import { diagnosticsApi, dnsApi, geoApi, events as ipcEvents } from '../lib/api'
 import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSourceMeta } from '../hooks/useDiagnostics'
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
+import { IS_MOBILE } from '../lib/platform'
 import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus, GeoUpdaterState } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
@@ -655,17 +656,24 @@ export function DiagnosticsPage() {
             <Button variant="ghost" size="icon-sm" onClick={handleRefresh} disabled={isFetching}>
               <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => void handleExport()} disabled={isExporting || logs.length === 0}>
-              <Download className="h-3.5 w-3.5" />
-              Экспорт
-            </Button>
+            {/* Экспорт логов пишет файл через main-процесс — на Android его нет
+                (diagnostics.exportLogs не реализован), поэтому кнопку прячем. */}
+            {!IS_MOBILE && (
+              <Button variant="secondary" size="sm" onClick={() => void handleExport()} disabled={isExporting || logs.length === 0}>
+                <Download className="h-3.5 w-3.5" />
+                Экспорт
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
       <div className="flex flex-col gap-4 px-6 py-5">
 
-        {/* Connectivity panel */}
+        {/* Connectivity panel — vpn.getConnectivity не реализован на Android
+            (libbox не отдаёт детальную health-сводку), панель показывала бы
+            всегда "VPN не запущен". Прячем на мобильном. */}
+        {!IS_MOBILE && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
           <div className="flex items-center gap-1.5 mb-3">
             {connectivity
@@ -685,9 +693,10 @@ export function DiagnosticsPage() {
             )
           }
         </motion.div>
+        )}
 
-        {/* Startup phases */}
-        {startupReport && (
+        {/* Startup phases — getStartup на Android — пустая заглушка */}
+        {!IS_MOBILE && startupReport && (
           <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.04, duration: 0.2 }}>
             <div className="flex items-center gap-1.5 mb-2">
               <Zap className="h-3.5 w-3.5 text-text-muted" />
@@ -697,7 +706,9 @@ export function DiagnosticsPage() {
           </motion.div>
         )}
 
-        {/* Geo updater */}
+        {/* Geo updater — geo.updateAll/updateOne не реализованы на Android
+            (Android берёт geo из bundled libbox-конфига, без main-процесса). */}
+        {!IS_MOBILE && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>
           <div className="flex items-center gap-1.5 mb-2">
             <Database className="h-3.5 w-3.5 text-text-muted" />
@@ -705,8 +716,11 @@ export function DiagnosticsPage() {
           </div>
           <GeoUpdaterPanel />
         </motion.div>
+        )}
 
-        {/* Self-test */}
+        {/* Self-test — diagnostics.selfTest проверяет desktop binaries/порты/права,
+            не реализован на Android. */}
+        {!IS_MOBILE && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.06, duration: 0.2 }}>
           <div className="flex items-center gap-1.5 mb-2">
             <Stethoscope className="h-3.5 w-3.5 text-text-muted" />
@@ -714,8 +728,10 @@ export function DiagnosticsPage() {
           </div>
           <SelfTestPanel />
         </motion.div>
+        )}
 
-        {/* DNS leak test */}
+        {/* DNS leak test — dns.leakTest не реализован на Android. */}
+        {!IS_MOBILE && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.2 }}>
           <div className="flex items-center gap-1.5 mb-2">
             <Search className="h-3.5 w-3.5 text-text-muted" />
@@ -723,8 +739,10 @@ export function DiagnosticsPage() {
           </div>
           <DnsLeakPanel />
         </motion.div>
+        )}
 
-        {/* System info grid */}
+        {/* System info grid — diagnostics.collect не реализован на Android. */}
+        {!IS_MOBILE && (
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>
           <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-3">Система</p>
           {sysLoading ? (
@@ -757,6 +775,7 @@ export function DiagnosticsPage() {
             </div>
           ) : null}
         </motion.div>
+        )}
 
         {/* Last classified error */}
         {lastError && (

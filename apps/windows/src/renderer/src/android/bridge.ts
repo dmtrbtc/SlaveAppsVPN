@@ -22,7 +22,7 @@ interface NativeSlaveVpn {
   requestPermission(): Promise<{ granted: boolean }>
   connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode }): Promise<void>
   disconnect(): Promise<void>
-  getStatus(): Promise<{ status: VPNStatus }>
+  getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
   setMode(options: { mode: VPNMode }): Promise<void>
   getLogs(options?: { tail?: number }): Promise<{ lines: string[] }>
@@ -45,6 +45,16 @@ const SlaveVpn = registerPlugin<NativeSlaveVpn>('SlaveVpn')
 type IpcOk<T> = { ok: true; data: T }
 type IpcErr = { ok: false; error: { code: string; message: string } }
 type IpcResult<T> = IpcOk<T> | IpcErr
+
+// Mirror of @shared/ipc/types ConfigSourceMeta (the renderer unwrap() expects
+// this exact shape; declared locally to keep the bridge dependency-light).
+type ConfigSourceMetaShape = {
+  type: AndroidSubscriptionType
+  displayName: string
+  urlDomain?: string
+  proxyProtocol?: string
+  addedAt: number
+}
 
 function ok<T>(data: T): IpcOk<T> { return { ok: true, data } }
 function err(code: string, message: string): IpcErr { return { ok: false, error: { code, message } } }
@@ -74,6 +84,34 @@ function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
 let currentMode: VPNMode = 'bypass'
 let currentSelectedProxy: string | undefined
 let currentUtlsFingerprint: string = 'randomized'
+// Timestamp of the most recent transition into "connected", so getStatus can
+// report stable uptime instead of resetting connectedAt on every poll.
+let connectedSince: number | null = null
+
+// Reads the native partial status and normalizes it into a full VPNStatus.
+// Native returns only { state, mode, protocol, lastError }; the renderer needs
+// every VPNStatus field present and a stable connectedAt.
+async function readNativeStatus(): Promise<VPNStatus> {
+  try {
+    const { status } = await SlaveVpn.getStatus()
+    const state = (status?.state ?? 'disconnected') as VPNStatus['state']
+    if (state === 'connected') {
+      if (connectedSince === null) connectedSince = Date.now()
+    } else {
+      connectedSince = null
+    }
+    return {
+      ...INITIAL_VPN_STATUS,
+      state,
+      mode: currentMode,
+      protocol: null,
+      connectedAt: connectedSince,
+      lastError: status?.lastError ?? null,
+    }
+  } catch {
+    return INITIAL_VPN_STATUS
+  }
+}
 
 const UTLS_LS_KEY = 'slave.settings.utlsFingerprint.v1'
 
@@ -118,14 +156,7 @@ export function installAndroidBridge(): void {
         })
       }),
       disconnect: () => wrap(() => SlaveVpn.disconnect()),
-      getStatus: () => wrap(async () => {
-        try {
-          const { status } = await SlaveVpn.getStatus()
-          return status
-        } catch {
-          return INITIAL_VPN_STATUS
-        }
-      }),
+      getStatus: () => wrap(() => readNativeStatus()),
       setMode: (payload: { mode: VPNMode }) => wrap(async () => {
         currentMode = payload.mode
         await SlaveVpn.setMode(payload).catch(() => undefined)
@@ -203,12 +234,27 @@ export function installAndroidBridge(): void {
 
     events: {
       onVpnStatus: (cb: (s: VPNStatus) => void) => {
-        // Attach .catch() immediately so a rejected addListener (e.g. plugin
-        // not yet registered) never surfaces as an unhandled rejection in the
-        // global handler / error overlay. Cleanup re-uses the same promise.
-        const promise = SlaveVpn.addListener('statusChanged', cb)
-        promise.catch(() => undefined)
-        return () => { void promise.then(h => h.remove()).catch(() => undefined) }
+        // The native SlaveVpnService does NOT emit 'statusChanged' events, so a
+        // native addListener would never fire and the UI would stay stuck on
+        // "connecting" — never observing the error state / lastError after a
+        // failed libbox start. Instead we POLL getStatus and push to the store
+        // only when the state or error actually changes (avoids redundant sets).
+        let lastState: string | null = null
+        let lastError: string | null = null
+        let stopped = false
+        const tick = async (): Promise<void> => {
+          if (stopped) return
+          const status = await readNativeStatus()
+          if (status.state !== lastState || status.lastError !== lastError) {
+            lastState = status.state
+            lastError = status.lastError
+            cb(status)
+          }
+        }
+        // Fire immediately, then on a 2s interval while mounted.
+        void tick()
+        const timer = setInterval(() => { void tick() }, 2000)
+        return () => { stopped = true; clearInterval(timer) }
       },
       onVpnTraffic: (cb: (s: TrafficStats) => void) => {
         const promise = SlaveVpn.addListener('trafficUpdate', cb)
@@ -232,12 +278,43 @@ export function installAndroidBridge(): void {
       onGeoUpdaterState: () => () => undefined,
     },
 
-    // ─── configSource — validate is real, rest are no-ops ─────────────────────
-    // SettingsPage / Onboarding call validate({type, input}) to preview a URL
-    // before saving. We fetch, normalize, and count proxies.
+    // ─── configSource — wired to the subscription store ──────────────────────
+    // The OnboardingPage and SettingsPage save a single source via
+    // configSource.set(). On Windows that writes a ConfigSourceMeta; on Android
+    // there is no main process, so we MUST persist through the same durable
+    // subscription store the Подписки tab uses — otherwise an onboarding-added
+    // sub vanishes on relaunch AND hasAccess (= configSourceMeta !== null) stays
+    // false, trapping the user in the onboarding loop every launch.
     configSource: {
-      getMeta: async () => ok(null),
-      set: async () => ok({ type: 'subscription-url' as const, summary: 'Android: managed via Подписки tab' }),
+      // hasAccess gate reads this: return a non-null meta whenever ≥1 sub exists
+      // so the app skips onboarding after the first add.
+      getMeta: () => wrap(async () => {
+        const subs = await listSubscriptions()
+        const first = subs[0]
+        if (!first) return null
+        const meta: ConfigSourceMetaShape = {
+          type: first.type,
+          displayName: first.name,
+          addedAt: first.addedAt,
+          ...(first.urlDomain ? { urlDomain: first.urlDomain } : {}),
+          ...(first.proxyProtocol ? { proxyProtocol: first.proxyProtocol } : {}),
+        }
+        return meta
+      }),
+      // Persist via addSubscription so onboarding/settings adds survive relaunch
+      // and feed the aggregator + server list exactly like the Подписки tab.
+      set: (payload: { type: AndroidSubscriptionType; input: string }) => wrap(async () => {
+        const entry = await addSubscription({ type: payload.type, input: payload.input.trim() })
+        invalidateServerCache()
+        const meta: ConfigSourceMetaShape = {
+          type: entry.type,
+          displayName: entry.name,
+          addedAt: entry.addedAt,
+          ...(entry.urlDomain ? { urlDomain: entry.urlDomain } : {}),
+          ...(entry.proxyProtocol ? { proxyProtocol: entry.proxyProtocol } : {}),
+        }
+        return meta
+      }),
       validate: (payload: { type: AndroidSubscriptionType; input: string }) => wrap(async () => {
         const { input } = payload
         if (!input || !input.trim()) {
@@ -255,7 +332,14 @@ export function installAndroidBridge(): void {
         // Other types accepted as-is on Android (single-proxy parses via add())
         return { valid: true, displayName: payload.type }
       }),
-      clear: async () => ok(undefined),
+      // SettingsPage "remove source" clears EVERY subscription on Android (the
+      // single-source model maps to "all subs" here) so hasAccess flips back to
+      // false and the UI returns to onboarding.
+      clear: () => wrap(async () => {
+        const subs = await listSubscriptions()
+        for (const s of subs) await removeSubscription(s.id)
+        invalidateServerCache()
+      }),
     },
 
     settings: {
@@ -332,8 +416,11 @@ export function installAndroidBridge(): void {
       setProcessList: async () => ok(undefined),
     },
     routing: {
-      listScenarios: async () => ok({ available: [], enabled: [] } as never),
-      setEnabledScenarios: async () => ok(undefined),
+      // Contract is RoutingScenarioInfo[] (an ARRAY). Returning an object here
+      // made RoutingPage do `scenarios.map(...)` on a non-array → render crash
+      // (react-router errorElement) the moment the Маршруты tab opened.
+      listScenarios: async () => ok([] as never[]),
+      setEnabledScenarios: async () => ok([] as never[]),
     },
     profiles: {
       list: async () => ok({ profiles: [], activeProfileId: null } as never),
