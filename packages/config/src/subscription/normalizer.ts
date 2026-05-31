@@ -5,6 +5,24 @@ import type { NormalizedSubscription, SubscriptionFormat } from './types'
 
 // ─── Format detection ─────────────────────────────────────────────────────────
 
+/**
+ * Decode base64 in BOTH Node (Windows main process) and the browser/Android
+ * WebView. Node has `Buffer`; the WebView does not, so fall back to atob +
+ * TextDecoder. Remnawave often strips padding, so we re-pad before decoding.
+ */
+function decodeBase64Utf8(b64: string): string {
+  const clean = b64.replace(/[\r\n\t ]/g, '')
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(clean, 'base64').toString('utf-8')
+  }
+  const padded = clean + '='.repeat((4 - (clean.length % 4)) % 4)
+  // eslint-disable-next-line no-undef
+  const bin = atob(padded)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
 function isLikelyBase64(s: string): boolean {
   const stripped = s.replace(/[\r\n\t ]/g, '')
   // Require minimum length and valid base64 charset
@@ -71,14 +89,19 @@ function normalizeText(content: string): NormalizedSubscription {
   if (isLikelyBase64(trimmed)) {
     let decoded: string
     try {
-      decoded = Buffer.from(trimmed.replace(/[\r\n\t ]/g, ''), 'base64').toString('utf-8')
+      decoded = decodeBase64Utf8(trimmed)
     } catch {
       throw new Error('Content looks like base64 but failed to decode')
     }
 
-    // Single proxy URI encoded as base64 (rare but seen in some apps)
+    // Single proxy URI encoded as base64 (rare but seen in some apps).
+    // Guard against multi-line blobs: isProxyUri() only checks the leading
+    // scheme, so a base64 that decodes to SEVERAL newline-separated vless://
+    // links would otherwise be misread as one giant URI (the #fragment name
+    // swallowing every subsequent link). Only take this path for a true
+    // single-line URI; multi-link blobs fall through to normalizeDecoded().
     const decodedTrimmed = decoded.trim()
-    if (isProxyUri(decodedTrimmed)) {
+    if (!/[\r\n]/.test(decodedTrimmed) && isProxyUri(decodedTrimmed)) {
       try {
         const entry = parseProxyUri(decodedTrimmed)
         return { yaml: buildClashYaml([entry]), format: 'base64-links', proxyCount: 1 }
