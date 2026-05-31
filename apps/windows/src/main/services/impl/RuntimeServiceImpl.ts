@@ -46,6 +46,23 @@ const DEFAULT_GENERATOR_SETTINGS = {
 function classifyMihomoLogLine_inner(line: string): { kind: RuntimeEventKind; userMessage: string } | null {
   const lower = line.toLowerCase()
 
+  // VLESS Encryption (ML-KEM-768 / X25519) — checked FIRST so an enc/key/mode
+  // problem is reported as a CRYPTO issue (keys/mode), distinct from a network
+  // failure (refused/timeout). Patterns are mihomo's actual log strings:
+  //   "failed to use encryption: empty nfsPKeysBytes"  (key empty/truncated)
+  //   "invaild vless encryption value: ..."            (mihomo's typo; bad mode)
+  if (lower.includes('nfspkeys') ||
+      (lower.includes('encryption') && (lower.includes('vless') || lower.includes('nfs'))) ||
+      lower.includes('vless encryption value')) {
+    return {
+      kind: 'proxy.encryption_error',
+      userMessage:
+        'Ошибка VLESS Encryption — ключ/режим не приняты ядром. Проверьте ' +
+        'строку encryption в подписке (режим mlkem768x25519plus, appearance, ' +
+        'rtt и полный ключ ML-KEM).',
+    }
+  }
+
   if ((lower.includes('reality') || lower.includes('utls')) &&
       (lower.includes('handshake') || lower.includes('failed') || lower.includes('error'))) {
     return { kind: 'proxy.reality_error', userMessage: 'VLESS Reality handshake failed — проверьте pbk/sid и fingerprint' }

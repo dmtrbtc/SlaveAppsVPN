@@ -51,9 +51,20 @@ function extractProxyLinks(text: string): string[] {
 // ─── Count proxies strictly within the proxies: block ────────────────────────
 
 function countProxiesInYaml(yaml: string): number {
-  const proxySection = yaml.match(/^proxies\s*:\s*\n([\s\S]*?)(?=^\S|\n[a-z-]+\s*:|\n*$)/m)
-  const section = proxySection?.[1] ?? ''
-  return (section.match(/^[ \t]*-[ \t]+name[ \t]*:/gm) ?? []).length
+  // Line scan rather than one big regex: a proxy can carry a very long single
+  // line (e.g. a ~1.6k-char VLESS `encryption:` ML-KEM key) that broke the
+  // previous lookahead-based section match and under-counted nodes.
+  const lines = yaml.split('\n')
+  let inProxies = false
+  let count = 0
+  for (const line of lines) {
+    if (/^proxies\s*:/.test(line)) { inProxies = true; continue }
+    if (!inProxies) continue
+    // A non-indented, non-list, non-comment line starts the next top-level key.
+    if (/^[^\s#-]/.test(line)) break
+    if (/^\s*-\s+name\s*:/.test(line) || /^\s*-\s*\{/.test(line)) count++
+  }
+  return count
 }
 
 // ─── Core normalization logic ─────────────────────────────────────────────────
