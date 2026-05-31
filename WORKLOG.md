@@ -162,8 +162,9 @@ core runs on both platforms (large, next iteration).
   sub-token redacted).
 - Commit `730d985` (conventional). PR **#3** →
   https://github.com/dmtrbtc/SlaveAppsVPN/pull/3 (NOT merged).
-- Android APK CI build triggered on the branch (run 26725516561) to confirm it
-  compiles with the enc-aware renderer.
+- Android APK CI build on the branch (run 26725516561) = **success** — the
+  enc-aware renderer compiles into the APK (non-enc nodes work; enc nodes surface
+  the precise unsupported-error). Live enc connect still blocked by the core.
 
 ### Verification commands
 - `pnpm --filter @slave-vpn/config build` ✓
