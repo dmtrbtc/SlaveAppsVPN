@@ -1,19 +1,28 @@
 import { Preferences } from '@capacitor/preferences'
 
 /**
- * Renderer-side subscription store for Android. Persisted via Capacitor
- * Preferences (Android EncryptedSharedPreferences under the hood).
+ * Renderer-side subscription store for Android.
  *
- * Capacitor Preferences ships as a native plugin that needs `cap sync` to
- * register it in MainActivity. pnpm-workspace symlinks sometimes break
- * that auto-discovery, in which case Preferences.set() throws "Plugin
- * not implemented" and the whole add-subscription flow dies.
+ * DURABILITY MODEL (why localStorage-primary, not Preferences-primary):
+ * Capacitor Preferences is a native plugin that needs `cap sync` to register
+ * it in MainActivity. pnpm-workspace symlinks sometimes break that
+ * auto-discovery, in which case Preferences throws "Plugin not implemented".
  *
- * To make the store resilient we fall back to localStorage when the
- * native Preferences plugin isn't available. localStorage works in any
- * WebView (no native registration needed). The downside is slightly
- * weaker durability — survives app restarts, may be cleared if the user
- * wipes WebView storage from system settings. Good enough for v1.
+ * The earlier Preferences-primary design had a subtle data-loss bug: a
+ * `useFallback` flag flipped to true the first time Preferences threw, but it
+ * RESET to false on every app launch. So a value WRITTEN to localStorage in
+ * one session could become invisible the next launch (the read tried
+ * Preferences.get first, got null/throw, and only then fell back) — the
+ * subscription appeared to "not save" and had to be re-added. That is exactly
+ * the symptom the user reported.
+ *
+ * Fix: localStorage is now the DURABLE PRIMARY (synchronous, always present in
+ * a WebView, persists across launches). Preferences is a best-effort mirror
+ * written/read after localStorage, so we still benefit from
+ * EncryptedSharedPreferences when available but never depend on it for
+ * correctness. Reads prefer localStorage and fall back to Preferences only
+ * when localStorage is empty (e.g. first launch after an OS WebView wipe but
+ * the encrypted store survived).
  */
 
 const INDEX_KEY = 'slave.subscriptions.index.v1'
@@ -39,50 +48,62 @@ export interface AndroidSubscriptionEntry {
   proxyProtocol?: string
 }
 
-// ─── Storage backend with localStorage fallback ───────────────────────────────
+// ─── Storage backend: localStorage primary + Preferences mirror ───────────────
 
-let useFallback = false
+function lsGet(key: string): string | null {
+  try { return window.localStorage.getItem(key) } catch { return null }
+}
+function lsSet(key: string, value: string): boolean {
+  try { window.localStorage.setItem(key, value); return true } catch { return false }
+}
+function lsRemove(key: string): void {
+  try { window.localStorage.removeItem(key) } catch { /* swallow */ }
+}
+
+async function prefGet(key: string): Promise<string | null> {
+  try {
+    const { value } = await Preferences.get({ key })
+    return value ?? null
+  } catch {
+    return null
+  }
+}
+function prefSet(key: string, value: string): void {
+  // best-effort mirror — never await on the hot path's correctness
+  Preferences.set({ key, value }).catch(() => undefined)
+}
+function prefRemove(key: string): void {
+  Preferences.remove({ key }).catch(() => undefined)
+}
 
 async function storageGet(key: string): Promise<string | null> {
-  if (!useFallback) {
-    try {
-      const { value } = await Preferences.get({ key })
-      return value ?? null
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[subscription-store] Preferences.get failed, falling back to localStorage', err)
-      useFallback = true
-    }
+  const local = lsGet(key)
+  if (local !== null) return local
+  // localStorage empty — try the encrypted mirror (survives a WebView wipe).
+  const mirrored = await prefGet(key)
+  if (mirrored !== null) {
+    // Re-hydrate localStorage so subsequent reads are synchronous + durable.
+    lsSet(key, mirrored)
   }
-  try { return window.localStorage.getItem(key) } catch { return null }
+  return mirrored
 }
 
 async function storageSet(key: string, value: string): Promise<void> {
-  if (!useFallback) {
-    try {
-      await Preferences.set({ key, value })
-      return
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[subscription-store] Preferences.set failed, falling back to localStorage', err)
-      useFallback = true
+  const ok = lsSet(key, value)
+  prefSet(key, value)
+  if (!ok) {
+    // localStorage refused (private mode / quota). The Preferences mirror is
+    // our only durability left — surface failure only if BOTH are unusable.
+    const verify = await prefGet(key)
+    if (verify !== value) {
+      throw new Error('Both localStorage and Preferences failed to persist subscription')
     }
-  }
-  try { window.localStorage.setItem(key, value) } catch (err) {
-    throw new Error(`Both Preferences and localStorage failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
 async function storageRemove(key: string): Promise<void> {
-  if (!useFallback) {
-    try {
-      await Preferences.remove({ key })
-      return
-    } catch {
-      useFallback = true
-    }
-  }
-  try { window.localStorage.removeItem(key) } catch { /* swallow */ }
+  lsRemove(key)
+  prefRemove(key)
 }
 
 // ─── Public store API ─────────────────────────────────────────────────────────

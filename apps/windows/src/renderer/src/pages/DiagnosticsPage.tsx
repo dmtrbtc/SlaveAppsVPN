@@ -365,13 +365,13 @@ function GeoUpdaterPanel() {
             {' · '}интервал: <span className="text-text-secondary">{state.intervalHours}ч</span>
           </div>
 
-          {state.records.length === 0 ? (
+          {(state.records?.length ?? 0) === 0 ? (
             <div className="text-center py-3 text-[11px] text-text-muted">
               Используются bundled geo базы. Запустите обновление чтобы получить свежие данные.
             </div>
           ) : (
             <div className="rounded-md border border-border bg-bg-secondary divide-y divide-border/40">
-              {state.records.map(rec => (
+              {(state.records ?? []).map(rec => (
                 <div key={rec.id} className="flex items-center gap-2 px-3 py-1.5">
                   <CheckCircle2 className="h-3 w-3 text-connected shrink-0" />
                   <div className="flex-1 min-w-0">

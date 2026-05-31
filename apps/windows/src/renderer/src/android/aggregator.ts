@@ -91,13 +91,25 @@ function uniquifyNames(entries: ProxyEntry[]): ProxyEntry[] {
   })
 }
 
+export interface AggregatedProxies {
+  proxies: ProxyEntry[]
+  warnings: string[]
+}
+
 export interface AggregatedYaml {
   yaml: string
   totalProxies: number
   warnings: string[]
 }
 
-export async function buildAggregatedYaml(): Promise<AggregatedYaml> {
+/**
+ * Fetch every enabled subscription, parse + dedup nodes, and return the
+ * deduped ProxyEntry[]. Throws if there are no subscriptions or no usable
+ * nodes (so callers can surface a meaningful error). This is the single
+ * source of truth for both the server LIST (servers.list) and the compiled
+ * sing-box config (buildAggregatedYaml).
+ */
+export async function buildAggregatedProxies(): Promise<AggregatedProxies> {
   const entries = (await listSubscriptions()).filter(e => e.enabled)
   if (entries.length === 0) {
     throw new Error('Add a subscription first (Подписки)')
@@ -120,5 +132,10 @@ export async function buildAggregatedYaml(): Promise<AggregatedYaml> {
     throw new Error(`No usable nodes (${warnings.join('; ') || 'no warnings'})`)
   }
   const deduped = uniquifyNames(dedup(all))
-  return { yaml: buildClashYaml(deduped), totalProxies: deduped.length, warnings }
+  return { proxies: deduped, warnings }
+}
+
+export async function buildAggregatedYaml(): Promise<AggregatedYaml> {
+  const { proxies, warnings } = await buildAggregatedProxies()
+  return { yaml: buildClashYaml(proxies), totalProxies: proxies.length, warnings }
 }

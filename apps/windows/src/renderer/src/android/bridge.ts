@@ -11,6 +11,7 @@ import {
   type AndroidSubscriptionType,
 } from './subscription-store'
 import { buildAggregatedYaml } from './aggregator'
+import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileSingboxConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
 
@@ -145,12 +146,19 @@ export function installAndroidBridge(): void {
     subscriptions: {
       list: () => wrap(async () => (await listSubscriptions()).map(toIpcEntry)),
       add: (payload: { type: AndroidSubscriptionType; input: string; name?: string }) =>
-        wrap(async () => toIpcEntry(await addSubscription({
-          type: payload.type,
-          input: payload.input,
-          ...(payload.name ? { name: payload.name } : {}),
-        }))),
-      remove: (payload: { id: string }) => wrap(() => removeSubscription(payload.id)),
+        wrap(async () => {
+          const entry = await addSubscription({
+            type: payload.type,
+            input: payload.input,
+            ...(payload.name ? { name: payload.name } : {}),
+          })
+          invalidateServerCache()
+          return toIpcEntry(entry)
+        }),
+      remove: (payload: { id: string }) => wrap(async () => {
+        await removeSubscription(payload.id)
+        invalidateServerCache()
+      }),
       update: (payload: { id: string; name?: string; enabled?: boolean; autoUpdateMinutes?: AndroidSubscriptionEntry['autoUpdateMinutes'] }) => wrap(async () => {
         const patch: Partial<AndroidSubscriptionEntry> = {}
         if (typeof payload.name === 'string') patch.name = payload.name
@@ -163,6 +171,7 @@ export function installAndroidBridge(): void {
       refresh: (payload: { id: string }) => wrap(async () => {
         // Refresh = re-run the aggregator (cheap on one entry); easier than
         // adding a per-entry fetch path right now.
+        invalidateServerCache()
         await buildAggregatedYaml().catch(() => undefined)
         const list = await listSubscriptions()
         const entry = list.find(e => e.id === payload.id)
@@ -170,6 +179,7 @@ export function installAndroidBridge(): void {
         return toIpcEntry(entry)
       }),
       refreshAll: () => wrap(async () => {
+        invalidateServerCache()
         await buildAggregatedYaml().catch(() => undefined)
         return (await listSubscriptions()).map(toIpcEntry)
       }),
@@ -271,7 +281,17 @@ export function installAndroidBridge(): void {
       getCapabilities: notImplemented('provider.getCapabilities'),
     },
     servers: {
-      list: async () => ok([] as never[]),
+      // Fetch + dedup nodes from every enabled subscription and map to the
+      // Server[] shape the ServersPage expects. Returns [] (not an error) when
+      // there are no subscriptions / no usable nodes so the UI shows its empty
+      // state instead of an error overlay.
+      list: () => wrap(async () => {
+        try {
+          return await listAndroidServers()
+        } catch {
+          return []
+        }
+      }),
       probe: async () => ok(undefined),
     },
     safeMode: {
@@ -322,7 +342,8 @@ export function installAndroidBridge(): void {
       apply: notImplemented('profiles.apply'),
     },
     geo: {
-      getState: async () => ok({ assets: [], lastUpdateAt: 0 } as never),
+      getState: async () =>
+        ok({ records: [], lastFullUpdateAt: null, inProgress: false, intervalHours: 24 } as never),
       updateAll: notImplemented('geo.updateAll'),
       updateOne: notImplemented('geo.updateOne'),
       listSources: async () => ok([] as never[]),
