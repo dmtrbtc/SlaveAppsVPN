@@ -12,9 +12,11 @@ const config: CapacitorConfig = {
   // global runtime is now always native-injected, no config needed).
 
   server: {
-    // Allow loading from `http://localhost` during dev; not used in release.
     androidScheme: 'https',
-    cleartext: false,
+    // Allow cleartext so native HTTP (CapacitorHttp / OkHttp) can reach the
+    // minority of subscription endpoints served over plain http://. The
+    // WebView itself still loads the local bundle over the https scheme.
+    cleartext: true,
   },
 
   android: {

@@ -10,6 +10,7 @@ import {
   updateSubscriptionMeta,
   type AndroidSubscriptionEntry,
 } from './subscription-store'
+import { fetchSubscriptionText } from './native-fetch'
 
 /**
  * Renderer-side equivalent of SubscriptionAggregatorService — fetches every
@@ -23,48 +24,6 @@ import {
  *   - no per-source LRU cache (fetch every connect) — fine for now
  */
 
-const FETCH_TIMEOUT_MS = 30_000
-
-const FALLBACK_USER_AGENTS = [
-  'clash.meta',
-  'Mihomo/1.18.7',
-  'ClashX/1.8.0',
-  'Clash/2.0.4.8 (Windows)',
-]
-
-async function fetchWithUaFallback(url: string): Promise<string> {
-  let lastError: unknown
-  for (const ua of FALLBACK_USER_AGENTS) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': ua, Accept: '*/*' },
-        signal: controller.signal,
-      })
-      if (!res.ok) {
-        lastError = new Error(`HTTP ${res.status}`)
-        continue
-      }
-      const text = await res.text()
-      if (!text.trim()) {
-        lastError = new Error('Empty response')
-        continue
-      }
-      if (text.includes('App not supported')) {
-        lastError = new Error('Server rejected user-agent')
-        continue
-      }
-      return text
-    } catch (err) {
-      lastError = err
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('All user-agents failed')
-}
-
 async function fetchEntry(
   entry: AndroidSubscriptionEntry,
   input: string,
@@ -72,7 +31,7 @@ async function fetchEntry(
   try {
     let yaml: string
     if (entry.type === 'subscription-url') {
-      const raw = await fetchWithUaFallback(input)
+      const raw = await fetchSubscriptionText(input)
       yaml = normalizeSubscriptionContent(raw).yaml
     } else if (entry.type === 'single-proxy') {
       // Treat input as a list of proxy URIs (one per line)

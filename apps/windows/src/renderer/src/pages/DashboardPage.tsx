@@ -158,7 +158,7 @@ function StatsRow() {
   const isConnected = state === 'connected'
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <StatTile
         label="Загрузка"
         value={isConnected ? formatSpeed(traffic.downloadSpeedBps) : '—'}
@@ -259,10 +259,10 @@ export function DashboardPage() {
       <StatusBar />
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 flex flex-col gap-5">
 
-        {/* Hero row — orb + right column */}
-        <div className="grid grid-cols-2 gap-6 min-h-[260px]">
+        {/* Hero row — orb + right column (stacks on narrow/mobile) */}
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:min-h-[260px]">
 
           {/* Left: Orb */}
           <div className="flex items-center justify-center">

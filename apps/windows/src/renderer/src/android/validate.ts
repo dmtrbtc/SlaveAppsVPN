@@ -2,15 +2,7 @@ import {
   normalizeSubscriptionContent,
   parseProxiesFromYaml,
 } from '@slave-vpn/config'
-
-const FETCH_TIMEOUT_MS = 30_000
-
-const FALLBACK_USER_AGENTS = [
-  'clash.meta',
-  'Mihomo/1.18.7',
-  'ClashX/1.8.0',
-  'Clash/2.0.4.8 (Windows)',
-]
+import { fetchSubscriptionText } from './native-fetch'
 
 interface ValidateResult {
   valid: boolean
@@ -19,30 +11,6 @@ interface ValidateResult {
   nodeCount?: number
   protocols?: Record<string, number>
   sampleNodes?: Array<{ name: string; protocol: string; transport: string; security: string }>
-}
-
-async function fetchWithUaFallback(url: string): Promise<string> {
-  let lastError: unknown
-  for (const ua of FALLBACK_USER_AGENTS) {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': ua, Accept: '*/*' },
-        signal: controller.signal,
-      })
-      if (!res.ok) { lastError = new Error(`HTTP ${res.status}`); continue }
-      const text = await res.text()
-      if (!text.trim()) { lastError = new Error('Empty response body'); continue }
-      if (text.includes('App not supported')) { lastError = new Error('Server rejected user-agent'); continue }
-      return text
-    } catch (err) {
-      lastError = err
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('All user-agents failed')
 }
 
 export async function fetchSubscriptionPreview(url: string): Promise<ValidateResult> {
@@ -55,7 +23,7 @@ export async function fetchSubscriptionPreview(url: string): Promise<ValidateRes
   }
 
   try {
-    const raw = await fetchWithUaFallback(url)
+    const raw = await fetchSubscriptionText(url)
     const { yaml } = normalizeSubscriptionContent(raw)
     const proxies = parseProxiesFromYaml(yaml)
 
