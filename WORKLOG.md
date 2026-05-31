@@ -153,3 +153,21 @@ instead: precise unsupported-error + non-enc nodes keep working. Forward path:
 build a gomobile mihomo (Clash.Meta) core for Android so the same enc-capable
 core runs on both platforms (large, next iteration).
 
+---
+
+## PHASE 7 — GIT / PR (done)
+- Branch `feat/vless-encryption` (off `feature/production-hardening`).
+- Secret scan before commit: no real key / UUID / sub-token / pbk / sid / private
+  key / token in changed files (test uses synthetic keys + zero-UUID; WORKLOG
+  sub-token redacted).
+- Commit `730d985` (conventional). PR **#3** →
+  https://github.com/dmtrbtc/SlaveAppsVPN/pull/3 (NOT merged).
+- Android APK CI build triggered on the branch (run 26725516561) to confirm it
+  compiles with the enc-aware renderer.
+
+### Verification commands
+- `pnpm --filter @slave-vpn/config build` ✓
+- `pnpm --filter @slave-vpn/windows typecheck` ✓  / `build` ✓
+- `node --test packages/config/test/vlessEncryption.test.ts` → 16/16 ✓
+- Windows runtime 204 via `mihomo.exe` + real enc node ✓ (see Phase 6)
+
