@@ -193,11 +193,16 @@ export function installAndroidBridge(): void {
 
     events: {
       onVpnStatus: (cb: (s: VPNStatus) => void) => {
+        // Attach .catch() immediately so a rejected addListener (e.g. plugin
+        // not yet registered) never surfaces as an unhandled rejection in the
+        // global handler / error overlay. Cleanup re-uses the same promise.
         const promise = SlaveVpn.addListener('statusChanged', cb)
+        promise.catch(() => undefined)
         return () => { void promise.then(h => h.remove()).catch(() => undefined) }
       },
       onVpnTraffic: (cb: (s: TrafficStats) => void) => {
         const promise = SlaveVpn.addListener('trafficUpdate', cb)
+        promise.catch(() => undefined)
         return () => { void promise.then(h => h.remove()).catch(() => undefined) }
       },
       onVpnError: () => () => undefined,

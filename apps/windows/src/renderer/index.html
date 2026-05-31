@@ -11,19 +11,100 @@
     <div id="root"></div>
     <script>
       // Very-early error handler — surfaces any error from the main bundle
-      // (parse, import, top-level throw) directly to the DOM so users on
-      // platforms without devtools (e.g. Android WebView) still see what
-      // went wrong instead of a white screen.
+      // (parse, import, top-level throw) so users on platforms without
+      // devtools (e.g. Android WebView) still see what went wrong instead of
+      // a white screen. The panel is a DISMISSIBLE drawer pinned to the BOTTOM
+      // so it never covers the top navigation / Settings (a previous version
+      // stacked boxes at the top of #root and blocked the whole UI).
       (function () {
+        var panel = null
+        var list = null
+        var badge = null
+        var count = 0
+        var MAX = 20
+
+        function build() {
+          if (panel) return
+          panel = document.createElement('div')
+          panel.style.cssText =
+            'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;' +
+            'max-height:45vh;display:flex;flex-direction:column;' +
+            'background:#141414;border-top:1px solid #ff4444;' +
+            'font:12px/1.4 system-ui,sans-serif;color:#fff;' +
+            'padding-bottom:env(safe-area-inset-bottom)'
+
+          var header = document.createElement('div')
+          header.style.cssText =
+            'display:flex;align-items:center;gap:8px;padding:8px 12px;' +
+            'background:#1f1414;border-bottom:1px solid #3a2020;flex:0 0 auto'
+
+          var title = document.createElement('span')
+          title.textContent = 'Ошибки приложения'
+          title.style.cssText = 'font-weight:600;color:#ff6b6b'
+
+          badge = document.createElement('span')
+          badge.style.cssText =
+            'background:#ff4444;color:#fff;border-radius:10px;padding:0 7px;' +
+            'font-size:11px;font-weight:700'
+
+          var spacer = document.createElement('span')
+          spacer.style.cssText = 'flex:1'
+
+          var collapseBtn = document.createElement('button')
+          collapseBtn.textContent = 'Свернуть'
+          collapseBtn.style.cssText = btnCss()
+          var collapsed = false
+          collapseBtn.onclick = function () {
+            collapsed = !collapsed
+            list.style.display = collapsed ? 'none' : 'block'
+            collapseBtn.textContent = collapsed ? 'Показать' : 'Свернуть'
+          }
+
+          var closeBtn = document.createElement('button')
+          closeBtn.textContent = '✕ Закрыть'
+          closeBtn.style.cssText = btnCss()
+          closeBtn.onclick = function () {
+            if (panel && panel.parentNode) panel.parentNode.removeChild(panel)
+            panel = null; list = null; badge = null; count = 0
+          }
+
+          header.appendChild(title)
+          header.appendChild(badge)
+          header.appendChild(spacer)
+          header.appendChild(collapseBtn)
+          header.appendChild(closeBtn)
+
+          list = document.createElement('div')
+          list.style.cssText = 'overflow-y:auto;padding:6px 12px 12px'
+
+          panel.appendChild(header)
+          panel.appendChild(list)
+          document.body.appendChild(panel)
+        }
+
+        function btnCss() {
+          return 'background:#2a2a2a;color:#fff;border:1px solid #444;' +
+            'border-radius:6px;padding:5px 10px;font:12px system-ui;cursor:pointer'
+        }
+
         function showError(label, payload) {
           try {
-            var root = document.getElementById('root') || document.body
+            build()
+            count++
+            badge.textContent = String(count)
+            // Cap the number of rendered rows to avoid unbounded growth.
+            while (list.childNodes.length >= MAX) list.removeChild(list.firstChild)
             var box = document.createElement('div')
-            box.style.cssText = 'font:12px/1.4 system-ui,sans-serif;color:#fff;background:#1a1a1a;padding:12px;margin:8px;border:1px solid #ff4444;border-radius:6px;white-space:pre-wrap;word-break:break-word'
+            box.style.cssText =
+              'padding:8px;margin-top:6px;background:#1a1a1a;' +
+              'border:1px solid #3a2020;border-radius:6px;' +
+              'white-space:pre-wrap;word-break:break-word'
             box.textContent = '[' + label + '] ' + payload
-            root.appendChild(box)
+            list.appendChild(box)
+            list.scrollTop = list.scrollHeight
           } catch (e) { /* swallow */ }
         }
+
         window.addEventListener('error', function (e) {
           showError('ERROR', (e.error && (e.error.stack || e.error.message)) || e.message || String(e))
         })

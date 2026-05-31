@@ -38,7 +38,12 @@ class SlaveVpnPlugin : Plugin() {
         private const val REQ_VPN_PREPARE = 0x5AFE
     }
 
+    // Pending calls awaiting the VpnService.prepare() consent dialog result.
+    // We track them in member fields (NOT bridge.savedCall, which has no
+    // public no-arg accessor in Capacitor 7 — savedCalls is a private Map).
+    private var pendingPermissionCall: PluginCall? = null
     private var pendingConnectCall: PluginCall? = null
+    private var pendingConfig: String? = null
 
     @PluginMethod
     fun checkPermission(call: PluginCall) {
@@ -54,8 +59,9 @@ class SlaveVpnPlugin : Plugin() {
             call.resolve(JSObject().put("granted", true))
             return
         }
-        // Persist the call so we can resolve it after onActivityResult
-        bridge.saveCall(call)
+        // Persist the call so it survives the activity-result round-trip.
+        call.setKeepAlive(true)
+        pendingPermissionCall = call
         activity.startActivityForResult(intent, REQ_VPN_PREPARE)
     }
 
@@ -63,23 +69,26 @@ class SlaveVpnPlugin : Plugin() {
         super.handleOnActivityResult(requestCode, resultCode, data)
         if (requestCode != REQ_VPN_PREPARE) return
 
-        val saved = bridge.savedCall ?: return
         val granted = resultCode == android.app.Activity.RESULT_OK
-        saved.resolve(JSObject().put("granted", granted))
-        bridge.releaseCall(saved)
 
-        // If user granted and a connect was pending, kick off the service
+        // Resolve a standalone requestPermission() call, if any.
+        pendingPermissionCall?.let { permCall ->
+            permCall.resolve(JSObject().put("granted", granted))
+            permCall.setKeepAlive(false)
+            pendingPermissionCall = null
+        }
+
+        // If a connect() was waiting on consent, resume or fail it.
         pendingConnectCall?.let { connectCall ->
             if (granted) {
                 startVpnService(connectCall)
             } else {
                 connectCall.reject("VPN permission denied")
-                pendingConnectCall = null
             }
+            connectCall.setKeepAlive(false)
+            pendingConnectCall = null
         }
     }
-
-    private var pendingConfig: String? = null
 
     @PluginMethod
     fun connect(call: PluginCall) {
@@ -93,8 +102,8 @@ class SlaveVpnPlugin : Plugin() {
         val intent = VpnService.prepare(context)
         if (intent != null) {
             // Need consent first — request, then resume connect on success
+            call.setKeepAlive(true)
             pendingConnectCall = call
-            bridge.saveCall(call)
             activity.startActivityForResult(intent, REQ_VPN_PREPARE)
             return
         }

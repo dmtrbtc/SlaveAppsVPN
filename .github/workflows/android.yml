@@ -57,6 +57,29 @@ jobs:
             pnpm exec cap add android
           fi
 
+      - name: Enable Kotlin in the generated Android project
+        working-directory: apps/android/android
+        run: |
+          set -e
+          # The Capacitor template applies ONLY 'com.android.application' — no
+          # Kotlin plugin. Without this our *.kt plugin files (SlaveVpnPlugin,
+          # SlaveVpnService, SingboxBridge) are silently skipped by the Java
+          # compiler, the SlaveVpn plugin class never lands in the APK, and the
+          # JS side throws `"SlaveVpn" plugin is not implemented on android`.
+          if ! grep -q 'kotlin-gradle-plugin' build.gradle; then
+            sed -i "/com.android.tools.build:gradle:/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25'" build.gradle
+          fi
+          if ! grep -q "kotlin-android" app/build.gradle; then
+            sed -i "/apply plugin: 'com.android.application'/a apply plugin: 'kotlin-android'" app/build.gradle
+          fi
+          # Kotlin JVM target must match Capacitor's Java 21 compileOptions or
+          # Gradle fails with "Inconsistent JVM-target compatibility".
+          if ! grep -q "jvmTarget" app/build.gradle; then
+            sed -i 's|android {|android {\n    kotlinOptions { jvmTarget = "21" }|' app/build.gradle
+          fi
+          echo "=== root build.gradle classpaths ==="; grep -n "classpath" build.gradle
+          echo "=== app build.gradle head ==="; head -6 app/build.gradle
+
       - name: Copy sample Kotlin plugin
         working-directory: apps/android
         run: |
@@ -67,10 +90,21 @@ jobs:
         working-directory: apps/android
         run: |
           set -e
-          MAIN=android/app/src/main/java/com/slavevpn/MainActivity.kt
-          mkdir -p "$(dirname "$MAIN")"
+          # IMPORTANT: appId is com.slavevpn.app, so Capacitor generates the
+          # launcher activity at com/slavevpn/app/MainActivity.java. We must
+          # register the plugin in THAT activity (the one the manifest launches)
+          # — registering in com.slavevpn.MainActivity did nothing because that
+          # activity was never started.
+          PKG_DIR=android/app/src/main/java/com/slavevpn/app
+          mkdir -p "$PKG_DIR"
+          # Drop the auto-generated Java launcher so it can't shadow our Kotlin
+          # one (duplicate class) and so the plugin actually gets registered.
+          rm -f "$PKG_DIR/MainActivity.java"
+          # Clean up the stale wrong-package activity from earlier CI versions.
+          rm -f android/app/src/main/java/com/slavevpn/MainActivity.kt
+          MAIN="$PKG_DIR/MainActivity.kt"
           cat > "$MAIN" <<'EOF'
-          package com.slavevpn
+          package com.slavevpn.app
 
           import android.os.Bundle
           import com.getcapacitor.BridgeActivity
@@ -85,6 +119,8 @@ jobs:
           EOF
           echo "MainActivity.kt wired with SlaveVpnPlugin registration:"
           cat "$MAIN"
+          echo "=== launcher package in manifest ==="
+          grep -n 'package=' android/app/src/main/AndroidManifest.xml || true
 
       - name: Copy libbox.aar (sing-box mobile engine)
         working-directory: apps/android
