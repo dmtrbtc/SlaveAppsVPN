@@ -1,14 +1,16 @@
 /*
- * SlaveVpnService — Android VpnService that hands TUN fd to libbox
- * (sing-box mobile). Phase K.5 — real engine integration.
+ * SlaveVpnService — Android VpnService that drives the mihomo (Clash.Meta)
+ * core via the gomobile clashbox bridge. mihomo supports VLESS Encryption
+ * (ML-KEM-768 / X25519); the previous sing-box libbox engine did not.
  *
  * Lifecycle:
- *   onStartCommand(ACTION_START, config) → establish TUN → SingboxBridge.start()
- *   onStartCommand(ACTION_STOP)          → SingboxBridge.stop() → close TUN
+ *   onStartCommand(ACTION_START, config) → establish TUN → ClashBridge.start()
+ *   onStartCommand(ACTION_STOP)          → ClashBridge.stop() → close TUN
  *
- * Config JSON is passed via Intent extra "config". The Capacitor plugin
- * generates it from the user's subscription + scenarios using shared
- * @slave-vpn/config code (renderer side, via SingboxConfigCompiler).
+ * The config is a Clash YAML produced by the SHARED @slave-vpn/config
+ * generateMihomoConfig (same builder Windows uses — so enc nodes are NOT
+ * skipped). The VpnService TUN file descriptor is handed to the core via the
+ * clash `tun.file-descriptor` field, injected here once we have the fd.
  */
 
 package com.slavevpn.plugin
@@ -33,9 +35,7 @@ import kotlinx.coroutines.launch
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tunInterface: ParcelFileDescriptor? = null
-    private var libboxJob: Job? = null
-    var tunFd: Int = -1
-        private set
+    private var coreJob: Job? = null
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
@@ -43,6 +43,7 @@ class SlaveVpnService : VpnService() {
         const val EXTRA_CONFIG = "config"
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
+        const val TUN_MTU      = 9000
 
         @JvmStatic var currentState: String = "disconnected"
             private set
@@ -54,15 +55,14 @@ class SlaveVpnService : VpnService() {
             private set
 
         private var currentMode: String = "bypass"
-        private var currentEngine: String = "singbox"
+        private var currentEngine: String = "mihomo"
 
         @JvmStatic fun setMode(mode: String) { currentMode = mode }
         @JvmStatic fun setEngine(engine: String) { currentEngine = engine }
 
         // ─── In-memory log ring buffer ──────────────────────────────────────
-        // libbox writeLog() + our own lifecycle lines land here so the in-app
-        // Logs panel (diagnostics.getLogs) shows REAL engine output, not an
-        // empty TODO stub. Capped to avoid unbounded growth.
+        // mihomo core logs + our own lifecycle lines land here so the in-app
+        // Logs panel (diagnostics.getLogs) shows REAL engine output. Capped.
         private const val LOG_CAP = 600
         private val logRing = ArrayDeque<String>(LOG_CAP)
 
@@ -84,15 +84,11 @@ class SlaveVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        // Initialise libbox once per process; safe to call multiple times
+        // Initialise the mihomo core home dir once per process.
         try {
-            SingboxBridge.setup(
-                basePath = filesDir.absolutePath,
-                workingPath = filesDir.absolutePath,
-                tempPath = cacheDir.absolutePath,
-            )
+            ClashBridge.setup(filesDir.absolutePath)
         } catch (e: Exception) {
-            android.util.Log.e("SlaveVpnService", "libbox setup failed", e)
+            android.util.Log.e("SlaveVpnService", "mihomo setup failed", e)
         }
     }
 
@@ -116,11 +112,11 @@ class SlaveVpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun startVpn(configJson: String) {
+    private fun startVpn(configYaml: String) {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
         currentError = null  // fresh attempt — clear any prior failure reason
-        appendLog("[service] starting VPN")
+        appendLog("[service] starting VPN (mihomo)")
 
         startForeground(NOTIF_ID, buildNotification("Подключение..."))
 
@@ -133,7 +129,7 @@ class SlaveVpnService : VpnService() {
                 .addRoute("::", 0)
                 .addDnsServer("8.8.8.8")
                 .addDnsServer("1.1.1.1")
-                .setMtu(9000)
+                .setMtu(TUN_MTU)
                 .setBlocking(true)
 
             // TODO: per-app routing for currentMode == "split"
@@ -142,25 +138,34 @@ class SlaveVpnService : VpnService() {
             val pfd = builder.establish()
                 ?: throw RuntimeException("VpnService.Builder.establish() returned null")
             tunInterface = pfd
-            tunFd = pfd.fd
-            android.util.Log.i("SlaveVpnService", "TUN established, fd=$tunFd")
-            appendLog("[service] TUN established, fd=$tunFd")
 
-            // Hand TUN fd + config to libbox on a worker coroutine
-            libboxJob = scope.launch {
+            // mihomo's sing-tun wraps the fd DIRECTLY (os.NewFile, no dup) and
+            // closes it on Shutdown. Give it a DUP'd fd it owns exclusively, and
+            // keep the original ParcelFileDescriptor for ourselves — avoids a
+            // double-close of the same descriptor on stop.
+            val coreFd = ParcelFileDescriptor.dup(pfd.fileDescriptor).detachFd()
+            android.util.Log.i("SlaveVpnService", "TUN established, coreFd=$coreFd")
+            appendLog("[service] TUN established, fd=$coreFd")
+
+            val config = injectTunFd(configYaml, coreFd)
+
+            coreJob = scope.launch {
                 try {
-                    val platform = SlavePlatformInterface(this@SlaveVpnService)
-                    SingboxBridge.start(configJson, platform)
+                    ClashBridge.start(
+                        configYaml = config,
+                        protect = { fd -> protect(fd) },
+                        onLog = { level, message -> appendLog("[$level] $message") },
+                    )
                     currentState = "connected"
                     currentError = null
-                    appendLog("[service] connected · sing-box ${SingboxBridge.version()}")
-                    notify("Подключено · sing-box ${SingboxBridge.version()}")
+                    appendLog("[service] connected · mihomo ${ClashBridge.version()}")
+                    notify("Подключено · mihomo ${ClashBridge.version()}")
                 } catch (e: Exception) {
                     val msg = e.message ?: e.javaClass.simpleName
-                    android.util.Log.e("SlaveVpnService", "libbox start failed", e)
+                    android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
                     currentState = "error"
-                    currentError = "libbox: $msg"
-                    appendLog("[service] libbox start failed: $msg")
+                    currentError = "mihomo: $msg"
+                    appendLog("[service] mihomo start failed: $msg")
                     notify("Ошибка: $msg")
                     cleanupTun()
                     stopSelf()
@@ -178,12 +183,34 @@ class SlaveVpnService : VpnService() {
         }
     }
 
+    /**
+     * Append the Android TUN block to the shared Clash YAML. The renderer emits
+     * the config WITHOUT a tun section (tunEnabled:false); we add it here with
+     * the VpnService fd. auto-route/auto-detect-interface are false because the
+     * OS routing is owned by VpnService and outbound binding by the socket hook.
+     */
+    private fun injectTunFd(configYaml: String, fd: Int): String {
+        val tunBlock = buildString {
+            append("\n")
+            append("tun:\n")
+            append("  enable: true\n")
+            append("  file-descriptor: ").append(fd).append("\n")
+            append("  stack: gvisor\n")
+            append("  mtu: ").append(TUN_MTU).append("\n")
+            append("  auto-route: false\n")
+            append("  auto-detect-interface: false\n")
+            append("  dns-hijack:\n")
+            append("    - any:53\n")
+        }
+        return configYaml.trimEnd() + "\n" + tunBlock
+    }
+
     private fun stopVpn() {
         scope.launch {
-            try { SingboxBridge.stop() } catch (_: Exception) { }
+            try { ClashBridge.stop() } catch (_: Exception) { }
         }
-        libboxJob?.cancel()
-        libboxJob = null
+        coreJob?.cancel()
+        coreJob = null
         cleanupTun()
         currentState = "disconnected"
         notify("Отключено")
@@ -191,31 +218,21 @@ class SlaveVpnService : VpnService() {
         stopSelf()
     }
 
-    /**
-     * libbox takes ownership of the TUN fd after openTun() — we set
-     * tunInterface to null so we don't double-close on stop().
-     */
-    fun releaseTunOwnership() {
-        // Keep the ParcelFileDescriptor reference alive but don't close it ourselves.
-        // We do NOT detachFd() here because libbox dup()s it internally.
-    }
-
     private fun cleanupTun() {
         try { tunInterface?.close() } catch (_: Exception) { }
         tunInterface = null
-        tunFd = -1
     }
 
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
-        try { SingboxBridge.stop() } catch (_: Exception) { }
+        try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()
     }
 
     override fun onRevoke() {
-        // System or user revoked VPN — sing-box must stop cleanly
-        try { SingboxBridge.stop() } catch (_: Exception) { }
+        // System or user revoked VPN — core must stop cleanly
+        try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()
         stopSelf()
         super.onRevoke()
