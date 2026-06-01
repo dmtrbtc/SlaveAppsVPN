@@ -301,3 +301,40 @@ Changes:
 - Unit tests: 16 enc + 2 new (mihomo KEEPS enc / sing-box SKIPS enc) = **18 green**.
 - renderer typecheck + build OK.
 - REMAINING device-only: live TUN connect on a phone (operator) — see hand-off.
+
+## Phase 4 — HAND-OFF (operator manual test on a real phone)
+
+The mihomo core change can only be fully verified on a device (live TUN). The
+device-free checks above all pass; the steps below are for the operator.
+
+### Install
+1. Download the APK from the CI run artifact "SlaveAppsVPN-Android-debug"
+   (Actions → "Android APK" run on branch `feat/android-mihomo-core`) or the
+   GitHub release if published. ABI: arm64-v8a (most phones).
+2. Sideload: enable "Install unknown apps" for the browser/file manager, open
+   the .apk, install. On first connect Android shows the VPN consent dialog —
+   allow it; also allow notifications.
+
+### What to verify
+1. **Non-enc (regression)**: add the subscription, pick a Reality node
+   (Slave-FR / Slave-NL), Connect → open a site / run a speedtest. Internet must
+   work as before. (Confirms mihomo didn't break non-enc routes.)
+2. **Enc node (the goal)**: pick **Slave-EE** (the VLESS-Encryption node),
+   Connect → open `http://www.gstatic.com/generate_204` (expect HTTP 204) or
+   just browse. This is the post-quantum ML-KEM/X25519 tunnel that sing-box
+   could not do.
+3. **HWID**: the device should appear in the Remnawave panel's device list and
+   stay the SAME across reconnects (stable x-hwid). Reconnect a few times and
+   confirm no new device rows pile up.
+
+### If it does NOT connect — capture logs
+- In-app: Диагностика → **Логи** (mihomo core output is forwarded there).
+- The status/notification shows the specific error (e.g. an
+  `mihomo: ...` reason).
+- adb: `adb logcat -s SlaveVpnService:* ClashBridge:* GoLog:*`.
+- Send the Логи panel text + the notification error. Likely first-run suspects
+  to look for: TUN fd handover, `fake-ip`/DNS, or socket-protect (`protect`).
+
+### Success criteria
+Enc node (Slave-EE) brings up the tunnel and carries traffic (204 / browsing),
+AND a Reality node still works, AND the HWID device is stable in the panel.
