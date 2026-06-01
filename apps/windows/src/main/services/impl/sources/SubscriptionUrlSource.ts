@@ -89,6 +89,17 @@ export class SubscriptionUrlSource implements ConfigSource {
           return this.cache.yaml
         }
 
+        if (status === 404 || status === 403) {
+          // Remnawave answers 404/403 when the HWID is unknown or the device
+          // limit is exceeded — a distinct, actionable cause vs "no servers".
+          getLogger().warn({ ua, status, urlDomain: new URL(this.url).hostname }, 'subscription rejected (HWID/limit)')
+          lastError = new Error(
+            `HTTP ${status}: подписка отклонила запрос (HWID / лимит устройств). ` +
+            `Проверьте лимит устройств в панели.`,
+          )
+          continue
+        }
+
         if (status < 200 || status >= 300) {
           getLogger().warn({ ua, status, urlDomain: new URL(this.url).hostname }, 'subscription HTTP error')
           lastError = new Error(`HTTP ${status}`)

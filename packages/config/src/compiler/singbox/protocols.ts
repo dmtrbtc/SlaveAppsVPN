@@ -1,5 +1,6 @@
 import type { ParsedProxy } from '../../parser/ParsedProfile'
 import type { SingboxOutbound, SingboxTlsConfig, SingboxTransport } from './types'
+import { isEncryptionValue } from '../../encryption/vlessEncryption'
 
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined
@@ -123,6 +124,14 @@ function compileVless(proxy: ParsedProxy): SingboxOutbound | null {
   const port = asNumber(proxy['port'])
   const uuid = asString(proxy['uuid'])
   if (!server || !port || !uuid) return null
+
+  // VLESS Encryption (ML-KEM-768 / X25519) is NOT supported by the sing-box
+  // core (it rejects the outbound `encryption` field). Emitting the node here
+  // would either break config parse or silently connect WITHOUT encryption to
+  // an enc-only server. Skip it honestly so the caller can report it, rather
+  // than fake a broken/insecure outbound. (mihomo, the Windows core, DOES
+  // support it — see generateMihomoConfig.)
+  if (isEncryptionValue(proxy['encryption'])) return null
 
   const out: SingboxOutbound = {
     type: 'vless',

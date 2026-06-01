@@ -9,9 +9,19 @@ function parseVless(url: URL): ProxyEntry {
   const p = url.searchParams
   const name = decodeURIComponent(url.hash.slice(1)) || `${server}:${port}`
   const security = p.get('security') ?? 'none'
-  const network = p.get('type') ?? 'tcp'
+  // "raw" is the new name for "tcp"; mihomo's clash schema still uses "tcp".
+  const networkRaw = p.get('type') ?? 'tcp'
+  const network = networkRaw === 'raw' ? 'tcp' : networkRaw
 
   const extra: Record<string, unknown> = { uuid, udp: true }
+
+  // VLESS Encryption ("vlessenc", ML-KEM-768 / X25519). Opaque credential —
+  // captured VERBATIM so it reaches the core unmodified (mihomo reads the
+  // clash `encryption` field). Skip the no-op "none".
+  const encryption = p.get('encryption')
+  if (encryption && encryption !== 'none') {
+    extra.encryption = encryption
+  }
 
   if (security === 'tls' || security === 'reality') {
     extra.tls = true

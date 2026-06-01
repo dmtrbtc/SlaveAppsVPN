@@ -140,6 +140,17 @@ export async function fetchSubscriptionText(url: string): Promise<string> {
         ? await fetchOnceNative(url, ua)
         : await fetchOnceWeb(url, ua)
 
+      if (status === 404 || status === 403) {
+        // Remnawave returns 404/403 for an unknown/over-limit HWID, NOT "no
+        // servers". Surface that distinction so the user checks the device
+        // limit instead of blaming the subscription.
+        sawPlaceholder = true
+        lastError = new Error(
+          `HTTP ${status}: подписка отклонила запрос (HWID/лимит устройств). ` +
+          `Проверьте лимит устройств в панели подписки.`,
+        )
+        continue
+      }
       if (status < 200 || status >= 300) {
         lastError = new Error(`HTTP ${status}`)
         continue

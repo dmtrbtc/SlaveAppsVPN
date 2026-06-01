@@ -241,6 +241,7 @@ export type RuntimeEventKind =
   | 'proxy.dns_error'
   | 'proxy.connection_refused'
   | 'proxy.timeout'
+  | 'proxy.encryption_error'
   | 'proxy.selected'
 
 export interface RuntimeEvent {

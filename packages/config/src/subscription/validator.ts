@@ -1,4 +1,5 @@
 import type { ProxyEntry, CompatibilityReport, ValidationIssue } from './types'
+import { validateVlessEncryption } from '../encryption/vlessEncryption'
 
 // Valid TLS client fingerprints supported by Mihomo/xray
 const VALID_FINGERPRINTS = new Set([
@@ -134,6 +135,18 @@ function validateVless(proxy: ProxyEntry): ValidationIssue[] {
       severity: 'error',
       field: 'flow',
       message: 'XTLS flow requires security=reality or security=tls',
+    })
+  }
+
+  // VLESS Encryption ("vlessenc") — only structurally fails on an unusable
+  // credential (truncated → no key, or an unknown handshake mode). A valid
+  // string is passed to the core verbatim; we never reject unusual-but-valid.
+  const encCheck = validateVlessEncryption(proxy.extra.encryption)
+  if (!encCheck.ok) {
+    issues.push({
+      severity: 'error',
+      field: 'encryption',
+      message: encCheck.message ?? 'Invalid VLESS encryption string',
     })
   }
 

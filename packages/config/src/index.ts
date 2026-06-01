@@ -1,6 +1,22 @@
 export { applyUtlsRotation } from './utls/applyUtlsRotation'
 export type { UtlsFingerprint, ApplyUtlsRotationOptions } from './utls/applyUtlsRotation'
 
+export {
+  parseVlessEncryption,
+  validateVlessEncryption,
+  transformEncryptionForSingbox,
+  isEncryptionValue,
+  XRAY_HANDSHAKE,
+  SINGBOX_HANDSHAKE,
+} from './encryption/vlessEncryption'
+export type {
+  ParsedVlessEncryption,
+  EncryptionValidation,
+  EncHandshakeKind,
+  EncAppearance,
+  EncRtt,
+} from './encryption/vlessEncryption'
+
 export type { ConfigCompiler, CompileInput, CompilerEngineType } from './compiler'
 export {
   MihomoConfigCompiler,

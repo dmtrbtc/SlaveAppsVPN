@@ -1,11 +1,13 @@
 import {
   generateSingboxConfig,
+  buildClashYaml,
+  isEncryptionValue,
   type ConfigGenerationContext,
   type GeneratorSettings,
 } from '@slave-vpn/config'
 import { DnsProfilePresets, type DnsProfile } from '@slave-vpn/dns'
 import type { VPNMode } from '@slave-vpn/shared'
-import { buildAggregatedYaml } from './aggregator'
+import { buildAggregatedProxies } from './aggregator'
 
 /**
  * Compile a ready-to-use sing-box JSON for the Android libbox engine, given
@@ -52,7 +54,30 @@ export interface CompiledAndroidConfig {
 export async function compileSingboxConfigForAndroid(
   options: CompileSingboxConfigOptions,
 ): Promise<CompiledAndroidConfig> {
-  const { yaml, totalProxies, warnings } = await buildAggregatedYaml()
+  const { proxies, warnings } = await buildAggregatedProxies()
+
+  // VLESS Encryption (ML-KEM-768 / X25519) is NOT supported by the Android
+  // sing-box core. Detect such nodes up front so we fail with a SPECIFIC,
+  // honest reason instead of silently dropping the node or producing a config
+  // sing-box can't load. (The Windows mihomo core supports it.)
+  const encNodes = proxies.filter(p => isEncryptionValue(p.extra['encryption'])).map(p => p.name)
+  if (options.selectedProxy && encNodes.includes(options.selectedProxy)) {
+    throw new Error(
+      `Сервер «${options.selectedProxy}» использует VLESS Encryption ` +
+      `(пост-квантовое шифрование), которое не поддерживается Android-ядром ` +
+      `(sing-box). Подключитесь к этому серверу из Windows-клиента или ` +
+      `выберите другой сервер.`,
+    )
+  }
+  if (encNodes.length > 0) {
+    warnings.push(
+      `Пропущены сервера с VLESS Encryption (не поддерживается Android-ядром): ` +
+      encNodes.join(', '),
+    )
+  }
+
+  const yaml = buildClashYaml(proxies)
+  const totalProxies = proxies.length
 
   const generatorSettings: GeneratorSettings = {
     tunEnabled: true,
