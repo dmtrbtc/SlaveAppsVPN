@@ -22,6 +22,7 @@ import (
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/tunnel"
+	"github.com/metacubex/mihomo/tunnel/statistic"
 )
 
 // Protector is implemented in Kotlin. Protect MUST call
@@ -128,7 +129,27 @@ func SelectProxy(group, name string) error {
 	if !ok {
 		return fmt.Errorf("proxy %q is not a selectable group", group)
 	}
-	return selector.Set(name)
+	before := CurrentProxy(group)
+	if err := selector.Set(name); err != nil {
+		// Warnln so it always reaches the in-app Logs (Диагностика→Логи).
+		log.Warnln("[slave-select] %s set %q FAILED: %v", group, name, err)
+		return err
+	}
+	// mihomo does NOT re-route already-established connections on a selector
+	// change, so drop them — new connections then egress through the chosen
+	// node (otherwise keep-alive reuse masks the switch and the IP looks stuck).
+	closeAllConnections()
+	log.Warnln("[slave-select] %s: %q -> %q (now leaf=%q)", group, before, name, CurrentProxy(group))
+	return nil
+}
+
+// closeAllConnections drops every tracked connection (same as the clash API
+// DELETE /connections) so a proxy switch takes effect immediately.
+func closeAllConnections() {
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		_ = c.Close()
+		return true
+	})
 }
 
 // CurrentProxy returns the effective active proxy name for a group, resolving

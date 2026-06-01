@@ -401,3 +401,59 @@ AND a Reality node still works, AND the HWID device is stable in the panel.
 - clashbox host build + gomobile bind exit 0; new select API in the .aar.
 - renderer typecheck + build OK; 18 config tests green.
 - Live switch (different egress IP EE↔FR↔NL) is device-only — operator step.
+
+---
+
+# fix/android-selector-nested-group — switch STILL broken on device (rc2)
+
+## Instrumental diagnosis (device-free, definitive)
+Ran desktop mihomo.exe with the Android-style config (SLAVE-SELECT =
+[SLAVE-AUTO, Slave-FR, Slave-EE, Slave-NL]) and drove its clash controller:
+- default `now` = SLAVE-AUTO → request logged `using SLAVE-SELECT[Slave-EE]`.
+- PUT /proxies/SLAVE-SELECT {Slave-NL} → `now` = Slave-NL → fresh request logged
+  `using SLAVE-SELECT[Slave-NL  45]`.
+⇒ **`Selector.Set` on SLAVE-SELECT DOES change the route** even with SLAVE-AUTO
+first. The nested-group hypothesis is **REFUTED**. (Also learned: an already
+open keep-alive connection is NOT re-routed — the Slave-FR step reused the
+default connection and showed no new log line.)
+
+## REAL root cause (param-name mismatch)
+The IPC contract is `VpnSetProxyPayload = { proxyName }` and the store calls
+`vpnApi.setProxy({ proxyName: name })`, but the Android bridge `setProxy` read
+**`payload.proxy`** (undefined). So the chosen name never reached
+`SlaveVpn.selectProxy` → SLAVE-SELECT stayed on its SLAVE-AUTO default → EE. The
+two previous "fixes" passed device-free checks because the break was in the
+JS param read, which no config/Go test exercises. FIX: read `payload.proxyName`
+(live switch + persist + connect payload all flow now).
+
+## Also fixed / added
+- **Connections aren't re-routed on switch** (proved above) → `clashbox
+  SelectProxy` now calls `closeAllConnections()` (= clash API DELETE
+  /connections) after `Set`, so a switch takes effect immediately instead of
+  riding a stale keep-alive to EE. Rebuilt clashbox.aar.
+- **Runtime diagnostics** (the main ask — device-free checks alone proved
+  insufficient): `SelectProxy` logs `[slave-select] <group>: <before> -> <name>
+  (now leaf=<after>)` via the core log (→ Диагностика→Логи); `ClashBridge.
+  selectProxy` appends `[selector] selectProxy(... ) current before/after` to the
+  in-app log ring buffer. Plus mihomo's own `[TCP] ... using SLAVE-SELECT[leaf]`
+  lines (config log-level=info) show the ACTUAL outbound per connection. So the
+  operator sees, per switch: (1) group+name in, (2) CurrentProxy before/after,
+  (3) the real leaf each new connection egresses through.
+
+## Device-free verification
+- typecheck OK; 18 config tests green; `mihomo -t` OK (generator untouched —
+  SLAVE-SELECT still [SLAVE-AUTO, 3 nodes], enc/reality intact).
+- clashbox host build + gomobile bind exit 0; public API unchanged
+  (selectProxy/currentProxy); APK builds in CI.
+- The live egress-IP change EE↔FR↔NL is the operator step — but the param fix is
+  the concrete cause, and the new logs make the chain observable on device.
+
+## Hand-off — what to read in Логи on switch
+Tap a server, then look at Диагностика→Логи for, in order:
+1. `[selector] selectProxy(SLAVE-SELECT, Slave-XX) — current before=...`
+2. `[slave-select] SLAVE-SELECT: "..." -> "Slave-XX" (now leaf="Slave-XX")`
+3. `[selector] selectProxy done — current after=Slave-XX`
+4. new `[TCP] ... using SLAVE-SELECT[Slave-XX]` lines for fresh requests.
+If (1)–(3) show the right name and `now leaf` = your pick, the choice reached
+the core. If (4) then shows `[Slave-XX]`, traffic egresses through it. If (4)
+still shows EE, capture those lines — the break is past selection (routing/DNS).

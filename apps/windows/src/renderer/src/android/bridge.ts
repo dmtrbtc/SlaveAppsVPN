@@ -183,13 +183,21 @@ export function installAndroidBridge(): void {
         await SlaveVpn.setMode(payload).catch(() => undefined)
       }),
       getConnectivity: notImplemented('vpn.getConnectivity'),
-      setProxy: (payload: { proxy: string }) => wrap(async () => {
-        currentSelectedProxy = payload.proxy
-        try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, payload.proxy) } catch { /* swallow */ }
+      // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
+      // VpnSetProxyPayload = { proxyName }, but this handler read `payload.proxy`
+      // (undefined) — so the chosen name NEVER reached the native selectProxy and
+      // SLAVE-SELECT stayed on its SLAVE-AUTO default (url-test → EE). Read
+      // `proxyName`. (Instrumentally confirmed: Selector.Set DOES change the
+      // route; the bug was the name never arriving.)
+      setProxy: (payload: { proxyName: string }) => wrap(async () => {
+        const name = payload.proxyName
+        if (!name) throw new Error('setProxy: proxyName is empty')
+        currentSelectedProxy = name
+        try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
         // Live-switch the mihomo SLAVE-SELECT group. Native no-ops gracefully if
         // not connected — the choice is re-applied on the next connect via the
         // connect payload (and persisted by mihomo store-selected).
-        await SlaveVpn.selectProxy({ name: payload.proxy }).catch(() => undefined)
+        await SlaveVpn.selectProxy({ name }).catch(() => undefined)
       }),
       getProxyList: () => wrap(async () => {
         // The list works disconnected too (the running core isn't required) —

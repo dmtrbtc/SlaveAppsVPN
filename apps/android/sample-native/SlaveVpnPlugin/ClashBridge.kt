@@ -80,7 +80,12 @@ object ClashBridge {
      * not running or the name is unknown.
      */
     fun selectProxy(name: String, group: String = SELECT_GROUP) {
+        // Runtime diagnostics → Диагностика→Логи: prove whether the choice
+        // reaches the core and what the active leaf is before/after.
+        val before = currentProxy(group)
+        SlaveVpnService.appendLog("[selector] selectProxy($group, $name) — current before=$before")
         Clashbox.selectProxy(group, name)
+        SlaveVpnService.appendLog("[selector] selectProxy done — current after=${currentProxy(group)}")
     }
 
     /** Effective active proxy (leaf node) of a group, "" if unknown / not running. */
