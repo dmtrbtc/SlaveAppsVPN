@@ -172,3 +172,45 @@ core runs on both platforms (large, next iteration).
 - `node --test packages/config/test/vlessEncryption.test.ts` → 16/16 ✓
 - Windows runtime 204 via `mihomo.exe` + real enc node ✓ (see Phase 6)
 
+---
+
+## CONTINUATION — STRATEGY = SPLIT (ship Windows now, Android enc deferred)
+
+### Part A — tails closed
+- A1 Android APK CI = **success** (run 26725516561, 4m58s).
+- A2 tests 16/16 (`node --test`); only test file in repo is the enc suite.
+- A3 whole-branch secret scan (`git diff feature/production-hardening...HEAD`,
+  patterns: real key/uuid/sub-token/pbk/sid/private-key/gh-token/aws/slack) =
+  **CLEAN** in both added lines and current file content.
+- A4 **regression** (non-enc must still work):
+  - Windows Reality node via current `generateMihomoConfig` →
+    `gstatic /generate_204` = **204**, log `using SLAVE-SELECT[Slave-FR]`.
+  - Android: `generateSingboxConfig` on the 3-node sub → vless outbounds =
+    `["Slave-FR","Slave-NL 45"]` (enc node Slave-EE **skipped**), and the JSON
+    contains **no** `encryption` field. Non-enc path intact, enc honestly excluded.
+  - NOTE: desktop `sing-box.exe` 1.13.12 rejects our config with "legacy inbound
+    fields ... removed in 1.13.0" (`sniff`/`sniff_override_destination` on mixed,
+    `inet4_address`/`sniff` on tun). This is PRE-EXISTING in `buildInbounds`
+    (untouched by enc) and only affects the desktop 1.13.x binary; Android libbox
+    1.11.15 accepts these fields (the n24–n27 APKs ran this exact inbound shape).
+
+### Part B — Windows production-ready
+- **Fresh 204 (current code path)**: `generateMihomoConfig` on the enc node →
+  mihomo (mixed-port, no admin) → `gstatic /generate_204` = **204**, log
+  `match Match using SLAVE-SELECT[Slave-EE]` ⇒ traffic egressed through the
+  enc tunnel via the production config builder, not a hand-made one.
+- **Subscription-driven + HWID**: fresh `x-hwid` + `Mihomo/` UA → HTTP 200 with
+  the enc node present (enc string 1622 chars in the returned Clash YAML). The
+  panel accepted/counted the device (HWID-gated panels 404/placeholder an
+  unknown/over-limit device). Visual confirmation of the device row in the
+  Remnawave panel needs the operator's panel access (no admin creds here).
+- **Any key set**: covered by unit tests (single / multiple / X25519-only /
+  ML-KEM-only / padding / both prefixes) — all green.
+
+### Part B — Android (deferred, honest)
+- Non-enc nodes work; selecting an enc node → specific RU error
+  ("VLESS Encryption … не поддерживается Android-ядром … подключитесь из Windows").
+- Follow-up issue filed: "Android: mihomo gomobile core for VLESS encryption".
+
+PR #3 description updated: Windows = done & verified; Android enc = deferred (issue).
+
