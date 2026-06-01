@@ -214,3 +214,190 @@ core runs on both platforms (large, next iteration).
 
 PR #3 description updated: Windows = done & verified; Android enc = deferred (issue).
 
+
+---
+
+# ISSUE #4 — Android mihomo (Clash.Meta) core via gomobile (branch feat/android-mihomo-core)
+
+## Phase 0 — recon
+- Android engine today = sing-box **libbox 1.11.15** (no VLESS enc). Kotlin layer:
+  `apps/android/sample-native/SlaveVpnPlugin/{SlaveVpnService,SingboxBridge,
+  PlatformInterface,SlaveVpnPlugin}.kt`. CI (`.github/workflows/android.yml`)
+  copies `apps/android/libs/libbox.aar` → `android/app/libs/` and adds
+  `implementation fileTree(dir:'libs', include:['*.aar'])` — so ANY .aar dropped
+  in `apps/android/libs/` is auto-included. Renderer config built by
+  `compile-config.ts` → `generateSingboxConfig` (currently SKIPS enc nodes).
+- Toolchain on E:\dev (from K.5.x): Go 1.26.3 (`E:\dev\go`), Android NDK
+  26.1.10909125, JDK 21. The `gomobile.exe` in gopath is the **sagernet fork**
+  (for libbox) — mihomo needs the **standard** `golang.org/x/mobile` gomobile.
+
+## Phase 1 — build mihomo .aar
+- mihomo source: cloned MetaCubeX/mihomo. `main` is stale (Feb 2025, no enc);
+  **Alpha** branch (`fc8c5a24`, 2026-05-30) IS enc-capable: `adapter/outbound/
+  vless.go` wires `transport/vless/encryption`; go.mod has `metacubex/mlkem`.
+  Same v1.19.x line as the Windows binary that passed 204.
+- Integration surface (no custom TUN code needed):
+  - TUN fd via clash config `tun.file-descriptor` (`listener/config/tun.go`).
+  - socket-protect via `dialer.DefaultSocketHook` (CMFA contract).
+  - start/stop via `hub/executor` `ParseWithBytes`+`ApplyConfig`/`Shutdown`.
+  - Android embedding behind build tags `cmfa` + `with_gvisor`.
+- Wrote a thin gomobile wrapper `clashbox` (libbox-equivalent):
+  `E:\dev\src\mihomo\clashbox\clashbox.go` — Setup/SetProtector/StartLogForward/
+  Start(configYAML)/Stop/Version. Host `go build ./clashbox` = OK.
+- Installed STANDARD gomobile+gobind to `E:\dev\gomobile-std\bin` (kept the
+  sagernet one intact). `gomobile bind -target=android/arm64 -androidapi=21
+  -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor` → in progress.
+  (PS 5.1 gotcha: must use `--%` stop-parsing; a `-ldflags=-s -w` space split
+  args the first attempt.)
+
+## Phase 2 — integration plan (Path A: replace sing-box with mihomo)
+- Renderer `compile-config.ts`: emit a **mihomo clash YAML** via the SHARED
+  `generateMihomoConfig` (enc no longer skipped; enc string verbatim) with
+  `tunEnabled:false` (the native side injects the Android TUN block).
+- Native `SlaveVpnService`: establish VpnService TUN → fd; inject
+  `tun: { enable, file-descriptor: <fd>, stack: gvisor, auto-route:false,
+  auto-detect-interface:false, dns-hijack:[any:53] }`; `ClashBridge.setProtector
+  { fd -> protect(fd) }`; `ClashBridge.start(config)`. Stop → `ClashBridge.stop()`.
+- Keep SingboxBridge code present (unused) for trivial rollback / Path B.
+
+## Phase 2 — integration (Path A: mihomo replaces sing-box on Android)
+WHY Path A (not B/parallel): both libbox.aar and clashbox.aar ship
+`jni/.../libgojni.so` + `go.Seq` classes — two gomobile .aar CANNOT coexist in
+one APK (duplicate native lib + classes). So sing-box is replaced, not kept
+alongside. (Rollback = git; libbox.aar stays in history.)
+
+Changes:
+- `apps/android/libs/`: removed libbox.aar (+ libbox-sources.jar); added
+  clashbox.aar (30 MB, arm64-v8a). CI `fileTree(dir:'libs')` auto-includes it;
+  the explicit copy step now copies `libs/*.aar`.
+- `apps/android/clashbox-src/`: committed `clashbox.go` (wrapper) +
+  `build-clashbox.ps1` for reproducibility (binary committed per repo precedent;
+  CI-build alternative noted).
+- new `ClashBridge.kt`; removed `SingboxBridge.kt` + `PlatformInterface.kt`.
+- `SlaveVpnService.kt` rewritten: establishes VpnService TUN → DUPs the fd
+  (mihomo's sing-tun wraps the fd directly with `os.NewFile`, no dup, and closes
+  it on shutdown — so we give it an exclusive dup and keep the original) →
+  injects `tun: {enable, file-descriptor:<fd>, stack:gvisor, mtu:9000,
+  auto-route:false, auto-detect-interface:false, dns-hijack:[any:53]}` → starts
+  mihomo with a socket-protect callback (VpnService.protect) and a log forwarder.
+- renderer `compile-config.ts`: emits a mihomo **Clash YAML** via the SHARED
+  `generateMihomoConfig` (enc no longer skipped), `tunEnabled:false`, and an
+  Android DNS profile (balanced − fallback nameservers, `useSystemDns:true`) so
+  the config carries no geoip `fallback-filter`, no `geox-url`, and no
+  `respect-rules` (which would require `proxy-server-nameserver`). `bridge.ts`
+  passes `compiled.config`.
+
+## Phase 3 — device-free checks (all green)
+- **mihomo core .aar builds** (gomobile bind, exit 0, 108s): the CGO/NDK blocker
+  risk is cleared. API: `com.slavevpn.clash.clashbox.Clashbox` (setup/start/stop/
+  setProtector/startLogForward/version) + `Protector`/`LogHandler`.
+- Android-generated mihomo config (replicating compile-config): **`mihomo -t`
+  successful**; checks: enc node **KEPT** (`mlkem768x25519plus` present), reality
+  nodes present, no desktop tun, no geoip fallback-filter, no geox-url,
+  `GEOIP,private` builtin present.
+- **204 through the Android-generated config** (enc node Slave-EE selected,
+  mixed-port) → HTTP 204, log `using SLAVE-SELECT[Slave-EE]`. Proves the config
+  path + enc handshake; only the TUN-fd handover is device-specific.
+- Unit tests: 16 enc + 2 new (mihomo KEEPS enc / sing-box SKIPS enc) = **18 green**.
+- renderer typecheck + build OK.
+- REMAINING device-only: live TUN connect on a phone (operator) — see hand-off.
+
+## Phase 4 — HAND-OFF (operator manual test on a real phone)
+
+The mihomo core change can only be fully verified on a device (live TUN). The
+device-free checks above all pass; the steps below are for the operator.
+
+### Install
+1. Download the APK from the CI run artifact "SlaveAppsVPN-Android-debug"
+   (Actions → "Android APK" run on branch `feat/android-mihomo-core`) or the
+   GitHub release if published. ABI: arm64-v8a (most phones).
+2. Sideload: enable "Install unknown apps" for the browser/file manager, open
+   the .apk, install. On first connect Android shows the VPN consent dialog —
+   allow it; also allow notifications.
+
+### What to verify
+1. **Non-enc (regression)**: add the subscription, pick a Reality node
+   (Slave-FR / Slave-NL), Connect → open a site / run a speedtest. Internet must
+   work as before. (Confirms mihomo didn't break non-enc routes.)
+2. **Enc node (the goal)**: pick **Slave-EE** (the VLESS-Encryption node),
+   Connect → open `http://www.gstatic.com/generate_204` (expect HTTP 204) or
+   just browse. This is the post-quantum ML-KEM/X25519 tunnel that sing-box
+   could not do.
+3. **HWID**: the device should appear in the Remnawave panel's device list and
+   stay the SAME across reconnects (stable x-hwid). Reconnect a few times and
+   confirm no new device rows pile up.
+
+### If it does NOT connect — capture logs
+- In-app: Диагностика → **Логи** (mihomo core output is forwarded there).
+- The status/notification shows the specific error (e.g. an
+  `mihomo: ...` reason).
+- adb: `adb logcat -s SlaveVpnService:* ClashBridge:* GoLog:*`.
+- Send the Логи panel text + the notification error. Likely first-run suspects
+  to look for: TUN fd handover, `fake-ip`/DNS, or socket-protect (`protect`).
+
+### Success criteria
+Enc node (Slave-EE) brings up the tunnel and carries traffic (204 / browsing),
+AND a Reality node still works, AND the HWID device is stable in the panel.
+
+---
+
+# fix/android-server-selector — server switching + indication + name truncation
+
+## Phase 0 — root cause (confirmed, не на веру)
+- **Symptom 1 (any choice → traffic via EE):** `generateMihomoConfig` NEVER
+  references `ctx.selectedProxy`; the `SLAVE-SELECT` group's first member is
+  `SLAVE-AUTO` (url-test). mihomo `select` defaults to its first member →
+  SLAVE-AUTO → url-test picks the fastest = EE (co-located). And the renderer
+  `vpn.setProxy` only set a JS var (`currentSelectedProxy`) — it never told the
+  running core to switch. ⇒ selection fully inert.
+- **Symptom 3 (main screen "Серверы не загружены" / no active indicator):**
+  `vpn.getProxyList` returned `ok([])` on Android, so the shared
+  `ConnectionTargetSelector` (the Dashboard server list) had an empty list.
+  Active node was read from the dead model; `onProxyChanged` was a no-op.
+- **Symptom 2 (names ellipsised to "Slave-..."):** the selector name span used
+  the `truncate` class; the narrow mobile panel clipped short names.
+- **Switch path:** chose **B (clashbox wrapper method)**, NOT A (controller),
+  because our embedding calls `executor.ApplyConfig`, documented in mihomo as
+  "without ExternalController" — the HTTP controller is NEVER started, so a
+  RESTful PUT /proxies is impossible. The wrapper select call is the same op
+  the controller would do internally.
+
+## Phase 1 — real switching + persist
+- `clashbox.go` (+ committed src): added `SelectProxy(group,name)` (=
+  `tunnel.Proxies()[group].Adapter().(outboundgroup.SelectAble).Set(name)` — the
+  exact route-handler logic) and `CurrentProxy(group)` (resolves nested groups
+  to the leaf node). Rebuilt clashbox.aar (arm64, gomobile, exit 0); generated
+  API now has `selectProxy(String,String)` + `currentProxy(String):String`.
+- `ClashBridge.kt`: `selectProxy(name)` / `currentProxy()` (group SLAVE-SELECT).
+- `SlaveVpnService`: connect carries `EXTRA_SELECTED`; after `ClashBridge.start`
+  succeeds, applies the persisted choice (`selectProxy`) so the chosen server is
+  active from the start (overriding the url-test default).
+- `SlaveVpnPlugin`: `connect` forwards `selectedProxy`; new `selectProxy` method
+  (live switch; no-op pre-connect, reject on real error); `getStatus` now
+  returns `activeProxy` from `ClashBridge.currentProxy()`.
+- `bridge.ts`: `setProxy` → `SlaveVpn.selectProxy({name})` (live) + persist to
+  `localStorage`; persisted choice restored on install + sent in the connect
+  payload. (mihomo `store-selected:true` also persists natively across
+  reconnects → no reset to EE.)
+
+## Phase 2 — list + active indication
+- `bridge.ts getProxyList` → maps `listAndroidServers()` (the deduped sub nodes)
+  to ProxyEntry[]; works disconnected too → "Серверы не загружены" gone once a
+  sub exists.
+- `bridge.ts onProxyChanged` → was no-op; now seeds the persisted choice and
+  polls `getStatus().activeProxy` (the real SLAVE-SELECT leaf), emitting on
+  change → drives the store's `selectedProxy` → the selector highlights the
+  REAL active server.
+- `readNativeStatus` carries `activeProxy` through to VPNStatus.
+
+## Phase 3 — name truncation
+- `ConnectionTargetSelector`: `truncate` → `break-words` (full names; short
+  names render on one line on both platforms — no Windows regression).
+
+## Device-free verification
+- `mihomo -t` on the Android-generated config: **successful**;
+  `SLAVE-SELECT = [SLAVE-AUTO, Slave-FR, Slave-EE, Slave-NL  45]`; **Slave-EE(enc)
+  kept**; reality kept; geoip-db-free (config UNCHANGED — generator not touched).
+- clashbox host build + gomobile bind exit 0; new select API in the .aar.
+- renderer typecheck + build OK; 18 config tests green.
+- Live switch (different egress IP EE↔FR↔NL) is device-only — operator step.
