@@ -214,3 +214,90 @@ core runs on both platforms (large, next iteration).
 
 PR #3 description updated: Windows = done & verified; Android enc = deferred (issue).
 
+
+---
+
+# ISSUE #4 — Android mihomo (Clash.Meta) core via gomobile (branch feat/android-mihomo-core)
+
+## Phase 0 — recon
+- Android engine today = sing-box **libbox 1.11.15** (no VLESS enc). Kotlin layer:
+  `apps/android/sample-native/SlaveVpnPlugin/{SlaveVpnService,SingboxBridge,
+  PlatformInterface,SlaveVpnPlugin}.kt`. CI (`.github/workflows/android.yml`)
+  copies `apps/android/libs/libbox.aar` → `android/app/libs/` and adds
+  `implementation fileTree(dir:'libs', include:['*.aar'])` — so ANY .aar dropped
+  in `apps/android/libs/` is auto-included. Renderer config built by
+  `compile-config.ts` → `generateSingboxConfig` (currently SKIPS enc nodes).
+- Toolchain on E:\dev (from K.5.x): Go 1.26.3 (`E:\dev\go`), Android NDK
+  26.1.10909125, JDK 21. The `gomobile.exe` in gopath is the **sagernet fork**
+  (for libbox) — mihomo needs the **standard** `golang.org/x/mobile` gomobile.
+
+## Phase 1 — build mihomo .aar
+- mihomo source: cloned MetaCubeX/mihomo. `main` is stale (Feb 2025, no enc);
+  **Alpha** branch (`fc8c5a24`, 2026-05-30) IS enc-capable: `adapter/outbound/
+  vless.go` wires `transport/vless/encryption`; go.mod has `metacubex/mlkem`.
+  Same v1.19.x line as the Windows binary that passed 204.
+- Integration surface (no custom TUN code needed):
+  - TUN fd via clash config `tun.file-descriptor` (`listener/config/tun.go`).
+  - socket-protect via `dialer.DefaultSocketHook` (CMFA contract).
+  - start/stop via `hub/executor` `ParseWithBytes`+`ApplyConfig`/`Shutdown`.
+  - Android embedding behind build tags `cmfa` + `with_gvisor`.
+- Wrote a thin gomobile wrapper `clashbox` (libbox-equivalent):
+  `E:\dev\src\mihomo\clashbox\clashbox.go` — Setup/SetProtector/StartLogForward/
+  Start(configYAML)/Stop/Version. Host `go build ./clashbox` = OK.
+- Installed STANDARD gomobile+gobind to `E:\dev\gomobile-std\bin` (kept the
+  sagernet one intact). `gomobile bind -target=android/arm64 -androidapi=21
+  -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor` → in progress.
+  (PS 5.1 gotcha: must use `--%` stop-parsing; a `-ldflags=-s -w` space split
+  args the first attempt.)
+
+## Phase 2 — integration plan (Path A: replace sing-box with mihomo)
+- Renderer `compile-config.ts`: emit a **mihomo clash YAML** via the SHARED
+  `generateMihomoConfig` (enc no longer skipped; enc string verbatim) with
+  `tunEnabled:false` (the native side injects the Android TUN block).
+- Native `SlaveVpnService`: establish VpnService TUN → fd; inject
+  `tun: { enable, file-descriptor: <fd>, stack: gvisor, auto-route:false,
+  auto-detect-interface:false, dns-hijack:[any:53] }`; `ClashBridge.setProtector
+  { fd -> protect(fd) }`; `ClashBridge.start(config)`. Stop → `ClashBridge.stop()`.
+- Keep SingboxBridge code present (unused) for trivial rollback / Path B.
+
+## Phase 2 — integration (Path A: mihomo replaces sing-box on Android)
+WHY Path A (not B/parallel): both libbox.aar and clashbox.aar ship
+`jni/.../libgojni.so` + `go.Seq` classes — two gomobile .aar CANNOT coexist in
+one APK (duplicate native lib + classes). So sing-box is replaced, not kept
+alongside. (Rollback = git; libbox.aar stays in history.)
+
+Changes:
+- `apps/android/libs/`: removed libbox.aar (+ libbox-sources.jar); added
+  clashbox.aar (30 MB, arm64-v8a). CI `fileTree(dir:'libs')` auto-includes it;
+  the explicit copy step now copies `libs/*.aar`.
+- `apps/android/clashbox-src/`: committed `clashbox.go` (wrapper) +
+  `build-clashbox.ps1` for reproducibility (binary committed per repo precedent;
+  CI-build alternative noted).
+- new `ClashBridge.kt`; removed `SingboxBridge.kt` + `PlatformInterface.kt`.
+- `SlaveVpnService.kt` rewritten: establishes VpnService TUN → DUPs the fd
+  (mihomo's sing-tun wraps the fd directly with `os.NewFile`, no dup, and closes
+  it on shutdown — so we give it an exclusive dup and keep the original) →
+  injects `tun: {enable, file-descriptor:<fd>, stack:gvisor, mtu:9000,
+  auto-route:false, auto-detect-interface:false, dns-hijack:[any:53]}` → starts
+  mihomo with a socket-protect callback (VpnService.protect) and a log forwarder.
+- renderer `compile-config.ts`: emits a mihomo **Clash YAML** via the SHARED
+  `generateMihomoConfig` (enc no longer skipped), `tunEnabled:false`, and an
+  Android DNS profile (balanced − fallback nameservers, `useSystemDns:true`) so
+  the config carries no geoip `fallback-filter`, no `geox-url`, and no
+  `respect-rules` (which would require `proxy-server-nameserver`). `bridge.ts`
+  passes `compiled.config`.
+
+## Phase 3 — device-free checks (all green)
+- **mihomo core .aar builds** (gomobile bind, exit 0, 108s): the CGO/NDK blocker
+  risk is cleared. API: `com.slavevpn.clash.clashbox.Clashbox` (setup/start/stop/
+  setProtector/startLogForward/version) + `Protector`/`LogHandler`.
+- Android-generated mihomo config (replicating compile-config): **`mihomo -t`
+  successful**; checks: enc node **KEPT** (`mlkem768x25519plus` present), reality
+  nodes present, no desktop tun, no geoip fallback-filter, no geox-url,
+  `GEOIP,private` builtin present.
+- **204 through the Android-generated config** (enc node Slave-EE selected,
+  mixed-port) → HTTP 204, log `using SLAVE-SELECT[Slave-EE]`. Proves the config
+  path + enc handshake; only the TUN-fd handover is device-specific.
+- Unit tests: 16 enc + 2 new (mihomo KEEPS enc / sing-box SKIPS enc) = **18 green**.
+- renderer typecheck + build OK.
+- REMAINING device-only: live TUN connect on a phone (operator) — see hand-off.
