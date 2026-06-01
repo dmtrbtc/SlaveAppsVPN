@@ -41,6 +41,7 @@ class SlaveVpnService : VpnService() {
         const val ACTION_START = "com.slavevpn.START"
         const val ACTION_STOP  = "com.slavevpn.STOP"
         const val EXTRA_CONFIG = "config"
+        const val EXTRA_SELECTED = "selectedProxy"
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
         const val TUN_MTU      = 9000
@@ -105,14 +106,14 @@ class SlaveVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startVpn(config)
+                startVpn(config, intent.getStringExtra(EXTRA_SELECTED))
             }
             ACTION_STOP -> stopVpn()
         }
         return START_STICKY
     }
 
-    private fun startVpn(configYaml: String) {
+    private fun startVpn(configYaml: String, selectedProxy: String?) {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
         currentError = null  // fresh attempt — clear any prior failure reason
@@ -156,6 +157,17 @@ class SlaveVpnService : VpnService() {
                         protect = { fd -> protect(fd) },
                         onLog = { level, message -> appendLog("[$level] $message") },
                     )
+                    // Apply the user's persisted server choice now that the
+                    // SLAVE-SELECT group exists — otherwise mihomo defaults to
+                    // SLAVE-AUTO (url-test) and ignores the selection.
+                    if (!selectedProxy.isNullOrBlank()) {
+                        try {
+                            ClashBridge.selectProxy(selectedProxy)
+                            appendLog("[service] selected proxy: $selectedProxy")
+                        } catch (e: Exception) {
+                            appendLog("[service] select proxy failed: ${e.message}")
+                        }
+                    }
                     currentState = "connected"
                     currentError = null
                     appendLog("[service] connected · mihomo ${ClashBridge.version()}")
