@@ -4,6 +4,7 @@ import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import type { VpnHealthPayload, ProxyEntry, BalancerState, BalancerMode } from '@shared/ipc/types'
 import { vpnApi, settingsApi, events } from '../lib/api'
+import { IS_MOBILE } from '../lib/platform'
 
 interface VpnStore {
   status: VPNStatus
@@ -129,6 +130,11 @@ export const useVpnStore = create<VpnStore>()(
       try {
         const vpnState = get().status.state
         if (vpnState === 'connected') {
+          await vpnApi.setProxy({ proxyName: name })
+        } else if (IS_MOBILE) {
+          // Android: settingsApi has no main process to read it on connect, so
+          // route through the bridge (it persists the choice + applies it on the
+          // next connect; the live-switch is a safe no-op while disconnected).
           await vpnApi.setProxy({ proxyName: name })
         } else {
           await settingsApi.set({ selectedProxy: name })

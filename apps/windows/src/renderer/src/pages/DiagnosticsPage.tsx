@@ -4,6 +4,7 @@ import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
   Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
   Database, Zap, RotateCcw, Search, Stethoscope, MinusCircle, Loader2,
+  Copy, Share2,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -635,6 +636,51 @@ export function DiagnosticsPage() {
     }
   }
 
+  const buildLogText = (): string => {
+    const header =
+      `SLAVE VPN v${__APP_VERSION__} (${__APP_COMMIT__}) · built ${__BUILD_TIMESTAMP__}\n` +
+      `--- ${filteredLogs.length} log lines ---\n`
+    const body = filteredLogs
+      .map(l => `${new Date(l.time).toISOString()} ${pinoLevelToString(l.level).toUpperCase()} ${l.msg}`)
+      .join('\n')
+    return header + body
+  }
+
+  // Copy the whole log buffer to the clipboard so the operator doesn't retype
+  // from a phone. navigator.clipboard works in the Capacitor WebView + Electron;
+  // falls back to a hidden textarea for older WebViews.
+  const handleCopyLogs = async () => {
+    const text = buildLogText()
+    try {
+      await navigator.clipboard.writeText(text)
+      notify({ type: 'success', title: 'Скопировано', message: `${filteredLogs.length} строк в буфере обмена` })
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.focus(); ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        notify({ type: 'success', title: 'Скопировано', message: `${filteredLogs.length} строк` })
+      } catch (e) {
+        notify({ type: 'error', title: 'Не удалось скопировать', message: e instanceof Error ? e.message : String(e) })
+      }
+    }
+  }
+
+  const handleShareLogs = async () => {
+    const text = buildLogText()
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string }) => Promise<void> }
+    if (typeof nav.share === 'function') {
+      try { await nav.share({ title: 'SLAVE VPN logs', text }) } catch { /* cancelled / unsupported */ }
+    } else {
+      await handleCopyLogs()
+    }
+  }
+
   const handleRefresh = () => {
     void refetchSys()
     void refetchLogs()
@@ -834,17 +880,38 @@ export function DiagnosticsPage() {
 
         {/* Process logs */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15, duration: 0.2 }}>
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="flex items-center gap-1.5">
               <Terminal className="h-3.5 w-3.5 text-text-muted" />
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Логи</p>
             </div>
-            <Segmented
-              options={LOG_FILTER_OPTIONS}
-              value={logFilter}
-              onChange={setLogFilter}
-              size="sm"
-            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void handleCopyLogs()}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-bg-secondary text-text-secondary hover:text-text-primary border border-border/60 transition-colors"
+                title="Копировать все логи в буфер обмена"
+              >
+                <Copy className="h-3 w-3" /> Копировать
+              </button>
+              <button
+                onClick={() => void handleShareLogs()}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-bg-secondary text-text-secondary hover:text-text-primary border border-border/60 transition-colors"
+                title="Поделиться логами"
+              >
+                <Share2 className="h-3 w-3" /> Поделиться
+              </button>
+              <Segmented
+                options={LOG_FILTER_OPTIONS}
+                value={logFilter}
+                onChange={setLogFilter}
+                size="sm"
+              />
+            </div>
+          </div>
+
+          {/* Build version — закрывает вопрос «тот ли APK установлен». */}
+          <div className="mb-2 font-mono text-[10px] text-text-muted">
+            build: v{__APP_VERSION__} · {__APP_COMMIT__} · {new Date(__BUILD_TIMESTAMP__).toLocaleString('ru-RU')}
           </div>
 
           <LogCard>
