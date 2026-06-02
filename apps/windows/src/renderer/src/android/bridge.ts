@@ -1,5 +1,6 @@
 import { registerPlugin } from '@capacitor/core'
 import type { VPNMode, VPNStatus, TrafficStats, Server } from '@slave-vpn/shared'
+import type { VpnSetProxyPayload } from '@shared/ipc/types'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import {
   listSubscriptions,
@@ -26,6 +27,7 @@ interface NativeSlaveVpn {
   getTraffic(): Promise<{ traffic: TrafficStats }>
   setMode(options: { mode: VPNMode }): Promise<void>
   selectProxy(options: { name: string }): Promise<void>
+  appendLog(options: { line: string }): Promise<void>
   getLogs(options?: { tail?: number }): Promise<{ lines: string[] }>
   setEngine(options: { engine: 'mihomo' | 'singbox' }): Promise<void>
   addListener(
@@ -59,6 +61,12 @@ type ConfigSourceMetaShape = {
 
 function ok<T>(data: T): IpcOk<T> { return { ok: true, data } }
 function err(code: string, message: string): IpcErr { return { ok: false, error: { code, message } } }
+
+// Push a diagnostic line into the native in-app Logs ring buffer
+// (Диагностика→Логи), so the renderer half of the chain is observable on device.
+function nativeLog(msg: string): void {
+  void SlaveVpn.appendLog({ line: msg }).catch(() => undefined)
+}
 
 // Map an aggregated Server → the IPC ProxyEntry shape the renderer's proxy list
 // expects (name/type/countryCode/latencyMs are what the UI renders).
@@ -189,8 +197,12 @@ export function installAndroidBridge(): void {
       // SLAVE-SELECT stayed on its SLAVE-AUTO default (url-test → EE). Read
       // `proxyName`. (Instrumentally confirmed: Selector.Set DOES change the
       // route; the bug was the name never arriving.)
-      setProxy: (payload: { proxyName: string }) => wrap(async () => {
+      // Param typed against the shared IPC contract (VpnSetProxyPayload) so the
+      // proxy-vs-proxyName mismatch that broke switching can't recur — it would
+      // now fail typecheck.
+      setProxy: (payload: VpnSetProxyPayload) => wrap(async () => {
         const name = payload.proxyName
+        nativeLog(`[bridge] setProxy(${name}) reached the native bridge`)
         if (!name) throw new Error('setProxy: proxyName is empty')
         currentSelectedProxy = name
         try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }

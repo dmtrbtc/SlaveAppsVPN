@@ -236,6 +236,18 @@ class SlaveVpnPlugin : Plugin() {
         call.reject("Not yet implemented")
     }
 
+    /**
+     * Lets the renderer push a diagnostic line into the in-app Logs ring buffer
+     * (Диагностика→Логи). Used to make the UI→store→bridge chain observable on
+     * device (e.g. confirm a server tap actually reached bridge.setProxy).
+     */
+    @PluginMethod
+    fun appendLog(call: PluginCall) {
+        val line = call.getString("line")
+        if (!line.isNullOrBlank()) SlaveVpnService.appendLog(line)
+        call.resolve()
+    }
+
     @PluginMethod
     fun getLogs(call: PluginCall) {
         // Real engine + lifecycle logs from the in-memory ring buffer that
