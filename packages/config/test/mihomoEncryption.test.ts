@@ -64,6 +64,23 @@ test('mihomo (Android core): enc node is KEPT with the encryption string verbati
   assert.ok(out.includes('RealityNode'), 'reality node must be present (no regression)')
 })
 
+test('mihomo Reality node: client-fingerprint present, NO bare fingerprint (cert-pinning)', () => {
+  // utlsFingerprint set → applyUtlsRotation override "always" (the real app path
+  // that emitted a bare `fingerprint` and broke every Reality dial in mihomo).
+  const out = generateMihomoConfig({
+    subscriptionYaml: SUB,
+    vpnMode: 'full',
+    settings: baseSettings,
+    apiPort: 9090,
+    apiSecret: 'x',
+    utlsFingerprint: 'randomized',
+  })
+  assert.ok(/client-fingerprint:/.test(out), 'must emit client-fingerprint')
+  // A line that is `fingerprint:` NOT preceded by `client-` would be the
+  // cert-pinning field mihomo rejects. It must be absent.
+  assert.ok(!/(^|\n)[ \t]*fingerprint:/.test(out), 'must NOT emit a bare `fingerprint` field')
+})
+
 test('sing-box compiler still SKIPS enc nodes (libbox cannot represent them)', () => {
   const out = generateSingboxConfig({
     subscriptionYaml: SUB,
