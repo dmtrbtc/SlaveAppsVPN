@@ -20,7 +20,7 @@
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.cjs",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/vlessEncryption.test.ts",
+    "test": "node --test test/vlessEncryption.test.ts && pnpm build && node --test test/mihomoEncryption.test.ts",
     "clean": "rimraf dist *.tsbuildinfo"
   },
   "dependencies": {
