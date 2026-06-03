@@ -122,15 +122,17 @@ jobs:
           echo "=== launcher package in manifest ==="
           grep -n 'package=' android/app/src/main/AndroidManifest.xml || true
 
-      - name: Copy libbox.aar (sing-box mobile engine)
+      - name: Copy core .aar (clashbox = mihomo/Clash.Meta engine, VLESS-enc capable)
         working-directory: apps/android
         run: |
           mkdir -p android/app/libs
-          if [ -f libs/libbox.aar ]; then
-            cp libs/libbox.aar android/app/libs/
-            echo "libbox.aar copied ($(du -h libs/libbox.aar | cut -f1))"
+          shopt -s nullglob
+          aars=(libs/*.aar)
+          if [ ${#aars[@]} -gt 0 ]; then
+            cp libs/*.aar android/app/libs/
+            for f in "${aars[@]}"; do echo "copied $(basename "$f") ($(du -h "$f" | cut -f1))"; done
           else
-            echo "WARNING: apps/android/libs/libbox.aar missing — APK will lack VPN engine"
+            echo "WARNING: apps/android/libs/*.aar missing — APK will lack the VPN engine"
           fi
 
       - name: Patch AndroidManifest with VPN permissions + service

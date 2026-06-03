@@ -18,11 +18,39 @@ export interface GeneratorSettings {
   splitTunnelProcesses?: string[]
 }
 
+export type AndroidRoutingMode = 'smart' | 'global' | 'direct'
+
+export interface AndroidBypassProvider {
+  name: string
+  behavior: 'domain' | 'ipcidr'
+  url: string
+  /** relative path under the working dir where mihomo caches the list */
+  path: string
+}
+
+/**
+ * Android "smart" routing (RU split tunnelling). When set, generateMihomoConfig
+ * emits an ordered rule list (node domains DIRECT → bypass/RKN-blocked through
+ * the VPN → private/RU IPs+domains DIRECT → everything else through the VPN),
+ * auto-downloading geo databases and the bypass rule-providers. Unset = the
+ * legacy single-MATCH behavior (Windows).
+ */
+export interface AndroidRoutingOptions {
+  mode: AndroidRoutingMode
+  /** Domain suffixes of the proxy nodes → DIRECT (anti-loop). e.g. ['slave-apps.online'] */
+  nodeDomainSuffixes: string[]
+  /** External rule-providers for RKN-blocked sites → routed through the VPN. */
+  bypassProviders: AndroidBypassProvider[]
+  /** geox-url for auto-downloaded GeoIP.dat/GeoSite.dat (RU geo rules). */
+  geoEnabled: boolean
+}
+
 export interface ConfigGenerationContext {
   subscriptionYaml: string
   selectedProxy?: string
   vpnMode: VPNMode
   settings: GeneratorSettings
+  androidRouting?: AndroidRoutingOptions
   apiPort: number
   apiSecret: string
   routingPolicy?: NormalizedPolicy
@@ -76,22 +104,29 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     },
   ]
 
-  const rules = ctx.routingPolicy
+  const rules = ctx.androidRouting
+    ? buildAndroidRules(ctx.androidRouting)
+    : ctx.routingPolicy
     ? ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules
     : buildLegacyRules(ctx.vpnMode, ctx.settings.splitTunnelProcesses)
 
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
     'allow-lan': false,
-    mode: 'rule',
+    mode: ctx.androidRouting ? androidClashMode(ctx.androidRouting.mode) : 'rule',
     'log-level': 'info',
     'unified-delay': true,
     'tcp-concurrent': true,
     'external-controller': `127.0.0.1:${ctx.apiPort}`,
     secret: ctx.apiSecret,
-    // Use file-based geo databases instead of auto-downloading.
-    // file://-prefixed URLs work cross-platform; Windows paths get normalised.
-    ...(ctx.rulesDir ? {
+    // Geo databases: Android auto-downloads from MetaCubeX (no rulesDir, files
+    // too big to ship); desktop uses the packaged file:// databases.
+    ...(ctx.androidRouting?.geoEnabled ? {
+      'geodata-mode': true,
+      'geo-auto-update': true,
+      'geo-update-interval': 24,
+      'geox-url': META_GEOX_URL,
+    } : ctx.rulesDir ? {
       'geodata-mode': true,
       'geo-auto-update': false,
       'geox-url': {
@@ -106,6 +141,9 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       // Filter out groups with no proxies — mihomo rejects empty select/url-test groups
       ...profile.proxyGroups.filter(g => g.proxies.length > 0),
     ] as unknown[],
+    ...(ctx.androidRouting && ctx.androidRouting.bypassProviders.length > 0
+      ? { 'rule-providers': buildBypassRuleProviders(ctx.androidRouting.bypassProviders) }
+      : {}),
     rules,
   }
 
@@ -114,7 +152,9 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     config['sniffer'] = buildSnifferSection()
   }
 
-  config['dns'] = ctx.dnsProfile
+  config['dns'] = ctx.androidRouting
+    ? buildAndroidDnsSection(ctx.settings, ctx.androidRouting)
+    : ctx.dnsProfile
     ? dnsCompiler.compile(ctx.dnsProfile).config
     : buildLegacyDnsSection(ctx.settings)
 
@@ -240,6 +280,95 @@ function buildLegacyRules(mode: VPNMode, splitProcesses?: string[]): string[] {
         ...PRIVATE_DIRECT_RULES,
         `MATCH,${SLAVE_SELECT_GROUP}`,
       ]
+  }
+}
+
+// ─── Android smart routing (RU split tunnelling) — verified by real curls ────
+
+// Auto-downloaded geo databases (MetaCubeX/meta-rules-dat) for the GEOIP/GEOSITE
+// RU rules. mihomo fetches these on first start (needs internet once).
+const META_GEOX_URL = {
+  geoip:   'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+  geosite: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+  mmdb:    'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb',
+}
+
+function androidClashMode(mode: AndroidRoutingMode): 'rule' | 'global' | 'direct' {
+  if (mode === 'global') return 'global'
+  if (mode === 'direct') return 'direct'
+  return 'rule'
+}
+
+// Ordered rules (verified: instagram→proxy, yandex→direct, node→direct, *→proxy):
+//   1. node domains → DIRECT (anti-loop)
+//   2. RKN-blocked rule-providers → SLAVE-SELECT (через VPN)  [BEFORE GEOSITE:RU]
+//   3. private/local → DIRECT
+//   4. GEOSITE,category-ru → DIRECT  +  GEOIP,ru → DIRECT     (РФ напрямую, скорость)
+//   5. MATCH → SLAVE-SELECT
+function buildAndroidRules(opts: AndroidRoutingOptions): string[] {
+  if (opts.mode === 'direct') return ['MATCH,DIRECT']
+  if (opts.mode === 'global') return [...PRIVATE_DIRECT_RULES, `MATCH,${SLAVE_SELECT_GROUP}`]
+
+  const rules: string[] = []
+  for (const s of opts.nodeDomainSuffixes) rules.push(`DOMAIN-SUFFIX,${s},DIRECT`)
+  for (const p of opts.bypassProviders) {
+    rules.push(p.behavior === 'ipcidr'
+      ? `RULE-SET,${p.name},${SLAVE_SELECT_GROUP},no-resolve`
+      : `RULE-SET,${p.name},${SLAVE_SELECT_GROUP}`)
+  }
+  rules.push(...PRIVATE_DIRECT_RULES)
+  if (opts.geoEnabled) {
+    rules.push('GEOSITE,category-ru,DIRECT')
+    rules.push('GEOIP,ru,DIRECT')
+  }
+  rules.push(`MATCH,${SLAVE_SELECT_GROUP}`)
+  return rules
+}
+
+function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const p of providers) {
+    out[p.name] = {
+      type: 'http',
+      behavior: p.behavior,
+      url: p.url,
+      path: p.path,
+      interval: 86400, // auto-refresh daily
+      format: 'text',
+    }
+  }
+  return out
+}
+
+// Hardened DNS (issue #9): DoH for clean domains, RU domains via fast RU DNS
+// (direct), proxy-server-nameserver resolves the node domains, respect-rules
+// keeps user-domain DNS inside the tunnel. default-nameserver is the only
+// plaintext and ONLY bootstraps the DoH host / direct lookups. (verified)
+function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutingOptions): Record<string, unknown> {
+  const doh = settings.dnsOverHttps || 'https://cloudflare-dns.com/dns-query'
+  return {
+    enable: true,
+    listen: '0.0.0.0:1053',
+    ipv6: false,
+    'use-system-hosts': false,
+    'enhanced-mode': 'fake-ip',
+    'fake-ip-range': '198.18.0.1/16',
+    'fake-ip-filter': [
+      '*.lan', '*.local', '*.localdomain', '*.localhost', 'localhost',
+      'time.*.com', 'ntp.*.com', '*.msftncsi.com', '*.msftconnecttest.com',
+      'connectivitycheck.gstatic.com', 'captive.apple.com',
+      // never fake-ip the node domains — they must resolve to real IPs
+      ...opts.nodeDomainSuffixes.map(s => `+.${s}`),
+    ],
+    'default-nameserver': ['223.5.5.5', '8.8.8.8'],
+    nameserver: [doh],
+    'proxy-server-nameserver': [doh],
+    'nameserver-policy': {
+      // RU domains → Yandex DNS, resolved directly (fast, no leak for RU)
+      'geosite:category-ru': '77.88.8.8',
+      'geosite:private': 'system',
+    },
+    'respect-rules': true,
   }
 }
 

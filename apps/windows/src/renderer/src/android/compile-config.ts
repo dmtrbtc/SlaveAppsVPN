@@ -1,28 +1,22 @@
 import {
-  generateSingboxConfig,
+  generateMihomoConfig,
   buildClashYaml,
-  isEncryptionValue,
   type ConfigGenerationContext,
   type GeneratorSettings,
 } from '@slave-vpn/config'
-import { DnsProfilePresets, type DnsProfile } from '@slave-vpn/dns'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
 
 /**
- * Compile a ready-to-use sing-box JSON for the Android libbox engine, given
- * the current subscription set.
+ * Compile a ready-to-use **mihomo (Clash.Meta) YAML** for the Android clashbox
+ * engine, given the current subscription set.
  *
- * Settings we hard-code for the first Android cut:
- *   - DNS profile: "balanced" preset (DoH 1.1.1.1 + 8.8.8.8, no custom rules)
- *   - routing policy: none (engine uses MATCH→SLAVE-SELECT)
- *   - VPN mode: caller-supplied
- *   - apiPort/apiSecret: irrelevant on Android — clash_api is reachable
- *     locally inside the app process, so we use a short random secret.
- *
- * Later iterations should source DNS profile + routing policy from
- * window.slaveVPN settings once the renderer's settings store is wired
- * to Capacitor Preferences too.
+ * Android runs mihomo (not sing-box) because mihomo supports VLESS Encryption
+ * (ML-KEM-768 / X25519). We reuse the SAME shared `generateMihomoConfig` as
+ * Windows; the Android-specific behavior comes from the `androidRouting` option
+ * (smart RU split tunnelling, bypass rule-providers, geo auto-download, and a
+ * hardened DNS section — issue #9). `tunEnabled:false` because the native
+ * SlaveVpnService injects the Android TUN (`tun.file-descriptor`) block.
  */
 
 function randomSecret(): string {
@@ -35,59 +29,50 @@ function randomSecret(): string {
   return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('')
 }
 
-function defaultDns(): DnsProfile {
-  return DnsProfilePresets.balanced()
-}
+export type AndroidRoutingModeOption = 'smart' | 'global' | 'direct'
 
-export interface CompileSingboxConfigOptions {
+export interface CompileMihomoConfigOptions {
   vpnMode: VPNMode
   selectedProxy?: string
   utlsFingerprint?: string
+  /** Smart RU split (default) / Global (all via VPN) / Direct (diagnostics). */
+  routingMode?: AndroidRoutingModeOption
 }
 
 export interface CompiledAndroidConfig {
-  json: string
+  /** Clash YAML for mihomo. Native side appends `tun.file-descriptor`. */
+  config: string
   proxyCount: number
   warnings: string[]
 }
 
-export async function compileSingboxConfigForAndroid(
-  options: CompileSingboxConfigOptions,
+// RKN-blocked domain list (auto-refreshed daily by mihomo). Public, GitHub-hosted
+// → reliable. Blocked sites get routed THROUGH the VPN (before GEOSITE:RU→DIRECT).
+const BYPASS_DOMAINS_URL =
+  'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-blocked-dist.lst'
+
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
+
+export async function compileMihomoConfigForAndroid(
+  options: CompileMihomoConfigOptions,
 ): Promise<CompiledAndroidConfig> {
   const { proxies, warnings } = await buildAggregatedProxies()
-
-  // VLESS Encryption (ML-KEM-768 / X25519) is NOT supported by the Android
-  // sing-box core. Detect such nodes up front so we fail with a SPECIFIC,
-  // honest reason instead of silently dropping the node or producing a config
-  // sing-box can't load. (The Windows mihomo core supports it.)
-  const encNodes = proxies.filter(p => isEncryptionValue(p.extra['encryption'])).map(p => p.name)
-  if (options.selectedProxy && encNodes.includes(options.selectedProxy)) {
-    throw new Error(
-      `Сервер «${options.selectedProxy}» использует VLESS Encryption ` +
-      `(пост-квантовое шифрование), которое не поддерживается Android-ядром ` +
-      `(sing-box). Подключитесь к этому серверу из Windows-клиента или ` +
-      `выберите другой сервер.`,
-    )
-  }
-  if (encNodes.length > 0) {
-    warnings.push(
-      `Пропущены сервера с VLESS Encryption (не поддерживается Android-ядром): ` +
-      encNodes.join(', '),
-    )
-  }
-
   const yaml = buildClashYaml(proxies)
-  const totalProxies = proxies.length
+
+  // Node domains → DIRECT (anti-loop) — derived from the actual proxy servers,
+  // so it works for any subscription. IP servers don't need it (mihomo dials
+  // them directly, not via the rule engine).
+  const nodeDomainSuffixes = [...new Set(
+    proxies.map(p => p.server).filter((s): s is string => !!s && !IPV4_RE.test(s)),
+  )]
 
   const generatorSettings: GeneratorSettings = {
-    tunEnabled: true,
-    // libbox manages the TUN fd through PlatformInterface.openTun — the
-    // singbox config still needs a `tun` inbound for the engine to call
-    // openTun via PlatformInterface. Stack 'mixed' is the sing-box default
-    // for mobile.
-    tunStack: 'mixed',
-    fakeIpEnabled: false,
-    dnsOverHttps: 'https://1.1.1.1/dns-query',
+    // The native SlaveVpnService injects the Android TUN (fd) block; the desktop
+    // tun section here would carry the wrong device/auto-route for Android.
+    tunEnabled: false,
+    tunStack: 'gvisor',
+    fakeIpEnabled: true,
+    dnsOverHttps: 'https://cloudflare-dns.com/dns-query',
     fallbackDns: ['8.8.8.8', '1.1.1.1'],
     mixedPort: 7890,
   }
@@ -100,9 +85,16 @@ export async function compileSingboxConfigForAndroid(
     utlsFingerprint: options.utlsFingerprint ?? 'randomized',
     apiPort: 9090,
     apiSecret: randomSecret(),
-    dnsProfile: defaultDns(),
+    androidRouting: {
+      mode: options.routingMode ?? 'smart',
+      nodeDomainSuffixes,
+      geoEnabled: true,
+      bypassProviders: [
+        { name: 'bypass-domains', behavior: 'domain', url: BYPASS_DOMAINS_URL, path: './rules/bypass-domains.list' },
+      ],
+    },
   }
 
-  const json = generateSingboxConfig(ctx)
-  return { json, proxyCount: totalProxies, warnings }
+  const config = generateMihomoConfig(ctx)
+  return { config, proxyCount: proxies.length, warnings }
 }
