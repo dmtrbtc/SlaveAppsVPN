@@ -185,16 +185,38 @@ class SlaveVpnPlugin : Plugin() {
 
     @PluginMethod
     fun getTraffic(call: PluginCall) {
-        // TODO: pipe from engine in Phase I-D
+        // Real live traffic from the mihomo statistic manager.
+        val t = try { org.json.JSONObject(ClashBridge.getTraffic()) } catch (_: Exception) { org.json.JSONObject() }
+        val up = t.optLong("up", 0)
+        val down = t.optLong("down", 0)
+        val upTotal = t.optLong("upTotal", 0)
+        val downTotal = t.optLong("downTotal", 0)
         val traffic = JSObject()
-            .put("uploadBytes", 0)
-            .put("downloadBytes", 0)
-            .put("uploadSpeedBps", 0)
-            .put("downloadSpeedBps", 0)
-            .put("sessionUploadBytes", 0)
-            .put("sessionDownloadBytes", 0)
+            .put("uploadBytes", upTotal)
+            .put("downloadBytes", downTotal)
+            .put("uploadSpeedBps", up)
+            .put("downloadSpeedBps", down)
+            .put("sessionUploadBytes", upTotal)
+            .put("sessionDownloadBytes", downTotal)
             .put("sessionStartedAt", JSObject.NULL)
         call.resolve(JSObject().put("traffic", traffic))
+    }
+
+    /** Active connections snapshot (clash-API JSON) for the dashboard. */
+    @PluginMethod
+    fun getConnections(call: PluginCall) {
+        call.resolve(JSObject().put("snapshot", ClashBridge.getConnections()))
+    }
+
+    /** Latency (ms) of a proxy via URL test; -1 on error. */
+    @PluginMethod
+    fun testDelay(call: PluginCall) {
+        val name = call.getString("name") ?: return call.reject("name required")
+        val url = call.getString("url") ?: "https://www.gstatic.com/generate_204"
+        val timeout = call.getInt("timeout") ?: 5000
+        if (!ClashBridge.isRunning()) { call.resolve(JSObject().put("delay", -1)); return }
+        val delay = ClashBridge.testDelay(name, url, timeout)
+        call.resolve(JSObject().put("delay", delay))
     }
 
     @PluginMethod

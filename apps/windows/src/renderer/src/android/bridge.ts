@@ -25,6 +25,8 @@ interface NativeSlaveVpn {
   disconnect(): Promise<void>
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
+  getConnections(): Promise<{ snapshot: string }>
+  testDelay(options: { name: string; url?: string; timeout?: number }): Promise<{ delay: number }>
   setMode(options: { mode: VPNMode }): Promise<void>
   selectProxy(options: { name: string }): Promise<void>
   appendLog(options: { line: string }): Promise<void>
@@ -155,6 +157,57 @@ function saveUtlsToLocalStorage(value: string): void {
   try { window.localStorage.setItem(UTLS_LS_KEY, value) } catch { /* swallow */ }
 }
 
+// Registered by events.onServerLatency; probeAll pushes per-node results here.
+let serverLatencyCb: ((p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) | null = null
+
+// Android smart-routing mode (persisted) — passed to compile-config on connect.
+const ROUTING_MODE_LS_KEY = 'slave.settings.routingMode.v1'
+let currentRoutingMode: 'smart' | 'global' | 'direct' = 'smart'
+
+// Map mihomo's clash-API connections snapshot JSON → ActiveConnectionsSnapshot.
+function parseConnectionsSnapshot(raw: string): {
+  uploadTotal: number; downloadTotal: number; count: number
+  connections: unknown[]; fetchedAt: number
+} | null {
+  try {
+    const s = JSON.parse(raw) as {
+      uploadTotal?: number; downloadTotal?: number
+      connections?: Array<{
+        id?: string; upload?: number; download?: number; start?: string
+        rule?: string; rulePayload?: string; chains?: string[]
+        metadata?: Record<string, string>
+      }>
+    }
+    const conns = (s.connections ?? []).map((c) => {
+      const m = c.metadata ?? {}
+      return {
+        id: c.id ?? '',
+        host: m['host'] || m['destinationIP'] || '',
+        network: m['network'] ?? 'tcp',
+        type: m['type'] ?? '',
+        destinationIP: m['destinationIP'] ?? '',
+        destinationPort: m['destinationPort'] ?? '',
+        sourceIP: m['sourceIP'] ?? '',
+        sourcePort: m['sourcePort'] ?? '',
+        chain: Array.isArray(c.chains) && c.chains.length > 0 ? c.chains[0]! : '',
+        rule: c.rule ?? '',
+        upload: c.upload ?? 0,
+        download: c.download ?? 0,
+        start: c.start ?? '',
+      }
+    })
+    return {
+      uploadTotal: s.uploadTotal ?? 0,
+      downloadTotal: s.downloadTotal ?? 0,
+      count: conns.length,
+      connections: conns,
+      fetchedAt: Date.now(),
+    }
+  } catch {
+    return null
+  }
+}
+
 // ─── Install ──────────────────────────────────────────────────────────────────
 
 let installed = false
@@ -177,6 +230,7 @@ export function installAndroidBridge(): void {
           vpnMode: currentMode,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           utlsFingerprint: currentUtlsFingerprint,
+          routingMode: currentRoutingMode,
         })
         await SlaveVpn.connect({
           config: compiled.config,
@@ -218,12 +272,27 @@ export function installAndroidBridge(): void {
         const servers = await listAndroidServers()
         return servers.map(toProxyEntry)
       }),
-      getConnections: async () => ok(null),
+      getConnections: () => wrap(async () => {
+        try {
+          const { snapshot } = await SlaveVpn.getConnections()
+          return parseConnectionsSnapshot(snapshot)
+        } catch {
+          return null
+        }
+      }),
       closeConnection: notImplemented('vpn.closeConnection'),
       getBalancerState: notImplemented('vpn.getBalancerState'),
       setBalancerEnabled: notImplemented('vpn.setBalancerEnabled'),
       setBalancerMode: notImplemented('vpn.setBalancerMode'),
-      probeAll: notImplemented('vpn.probeAll'),
+      probeAll: () => wrap(async () => {
+        // URL-test every node via mihomo and push results to the store's
+        // serverLatency map (drives the ms badges in the server list).
+        const servers = await listAndroidServers()
+        await Promise.all(servers.map(async (s) => {
+          const { delay } = await SlaveVpn.testDelay({ name: s.name, timeout: 5000 }).catch(() => ({ delay: -1 }))
+          serverLatencyCb?.({ proxyName: s.name, latencyMs: delay >= 0 ? delay : null, success: delay >= 0 })
+        }))
+      }),
     },
 
     subscriptions: {
@@ -309,9 +378,16 @@ export function installAndroidBridge(): void {
         return () => { stopped = true; clearInterval(timer) }
       },
       onVpnTraffic: (cb: (s: TrafficStats) => void) => {
-        const promise = SlaveVpn.addListener('trafficUpdate', cb)
-        promise.catch(() => undefined)
-        return () => { void promise.then(h => h.remove()).catch(() => undefined) }
+        // Native emits no trafficUpdate event → poll getTraffic each second
+        // (mihomo updates the per-second speed internally).
+        let stopped = false
+        const tick = async (): Promise<void> => {
+          if (stopped) return
+          try { const { traffic } = await SlaveVpn.getTraffic(); cb(traffic) } catch { /* ignore */ }
+        }
+        void tick()
+        const timer = setInterval(() => { void tick() }, 1000)
+        return () => { stopped = true; clearInterval(timer) }
       },
       onVpnError: () => () => undefined,
       onVpnHealth: () => () => undefined,
@@ -322,7 +398,10 @@ export function installAndroidBridge(): void {
       onUpdateDownloaded: () => () => undefined,
       onUpdateProgress: () => () => undefined,
       onNotification: () => () => undefined,
-      onServerLatency: () => () => undefined,
+      onServerLatency: (cb: (p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) => {
+        serverLatencyCb = cb
+        return () => { if (serverLatencyCb === cb) serverLatencyCb = null }
+      },
       onProxyChanged: (cb: (name: string) => void) => {
         // Drive the store's selectedProxy (active-server indication). Native
         // emits nothing, so we seed the persisted choice and then poll the real
@@ -534,6 +613,13 @@ export function installAndroidBridge(): void {
   try {
     const saved = window.localStorage.getItem(SELECTED_PROXY_LS_KEY)
     if (saved) currentSelectedProxy = saved
+  } catch { /* swallow */ }
+
+  // Restore the persisted routing mode (Smart/Global/Direct). The Settings UI
+  // writes this key; it's applied to the config on the next connect.
+  try {
+    const m = window.localStorage.getItem(ROUTING_MODE_LS_KEY)
+    if (m === 'smart' || m === 'global' || m === 'direct') currentRoutingMode = m
   } catch { /* swallow */ }
 
   // Best-effort initial traffic ping so the sparkline doesn't NaN.

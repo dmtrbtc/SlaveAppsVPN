@@ -13,10 +13,14 @@
 package clashbox
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"syscall"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
+	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub/executor"
@@ -150,6 +154,54 @@ func closeAllConnections() {
 		_ = c.Close()
 		return true
 	})
+}
+
+// ─── Telemetry (dashboard) ──────────────────────────────────────────────────
+
+// GetTraffic returns live up/down speed (bytes/s) and cumulative totals as JSON:
+// {"up":N,"down":N,"upTotal":N,"downTotal":N}.
+func GetTraffic() string {
+	up, down := statistic.DefaultManager.Now()
+	upTotal, downTotal := statistic.DefaultManager.Total()
+	b, err := json.Marshal(map[string]int64{
+		"up": up, "down": down, "upTotal": upTotal, "downTotal": downTotal,
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// GetConnections returns the clash-API connections snapshot as JSON.
+func GetConnections() string {
+	b, err := json.Marshal(statistic.DefaultManager.Snapshot())
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// TestDelay measures the latency (ms) of a single proxy via an URL test (same
+// as the clash API GET /proxies/{name}/delay). Returns -1 on error/timeout.
+func TestDelay(name, url string, timeoutMs int) int {
+	p, ok := tunnel.Proxies()[name]
+	if !ok {
+		return -1
+	}
+	if url == "" {
+		url = "https://www.gstatic.com/generate_204"
+	}
+	if timeoutMs <= 0 {
+		timeoutMs = 5000
+	}
+	expected, _ := utils.NewUnsignedRanges[uint16]("")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+	delay, err := p.URLTest(ctx, url, expected)
+	if err != nil {
+		return -1
+	}
+	return int(delay)
 }
 
 // CurrentProxy returns the effective active proxy name for a group, resolving

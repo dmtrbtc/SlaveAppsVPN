@@ -92,6 +92,18 @@ object ClashBridge {
     fun currentProxy(group: String = SELECT_GROUP): String =
         try { Clashbox.currentProxy(group) } catch (_: Throwable) { "" }
 
+    /** Live traffic as JSON {up,down,upTotal,downTotal} (bytes / bytes-per-sec). */
+    fun getTraffic(): String =
+        try { Clashbox.getTraffic() } catch (_: Throwable) { "{}" }
+
+    /** Active connections snapshot as clash-API JSON. */
+    fun getConnections(): String =
+        try { Clashbox.getConnections() } catch (_: Throwable) { "{}" }
+
+    /** Proxy latency (ms) via URL test; -1 on error/timeout. */
+    fun testDelay(name: String, url: String, timeoutMs: Int): Long =
+        try { Clashbox.testDelay(name, url, timeoutMs.toLong()) } catch (_: Throwable) { -1L }
+
     fun version(): String = try { Clashbox.version() } catch (_: Throwable) { "unknown" }
 
     // Must match SLAVE_SELECT_GROUP in @slave-vpn/config generateMihomoConfig.
