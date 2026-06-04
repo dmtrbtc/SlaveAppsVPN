@@ -54,12 +54,17 @@ function shouldRewrite(proxy: ParsedProxy, override: ApplyUtlsRotationOptions['o
 }
 
 /**
- * Walk every proxy entry and stamp `client-fingerprint` (Clash-style) and
- * `fingerprint` (VLESS-URI style) with the chosen uTLS profile. Returns
- * a NEW array — the input is not mutated.
+ * Walk every proxy entry and stamp ONLY `client-fingerprint` (the Clash-style
+ * browser-fingerprint field) with the chosen uTLS profile. Returns a NEW
+ * array — the input is not mutated.
  *
- * Both fields are written for cross-engine compatibility: the sing-box
- * compiler reads either, Mihomo reads `client-fingerprint`.
+ * We must NOT write a bare `fingerprint` field: in Clash/mihomo `fingerprint`
+ * means TLS CERTIFICATE PINNING, and mihomo rejects every Reality/TLS dial with
+ * "`fingerprint` is used for TLS certificate pinning ... use `client-fingerprint`"
+ * — which silently killed all Reality nodes (only the security:none enc node
+ * survived). `client-fingerprint` is what both mihomo AND the sing-box compiler
+ * (`buildTls` reads `client-fingerprint` first) consume, so it's sufficient and
+ * safe. Any pre-existing bare `fingerprint` is stripped when we rewrite.
  */
 export function applyUtlsRotation(
   proxies: ParsedProxy[],
@@ -70,10 +75,8 @@ export function applyUtlsRotation(
 
   return proxies.map((proxy) => {
     if (!shouldRewrite(proxy, override)) return proxy
-    return {
-      ...proxy,
-      'client-fingerprint': fingerprint,
-      fingerprint,
-    } as ParsedProxy
+    const next = { ...proxy, 'client-fingerprint': fingerprint } as Record<string, unknown>
+    delete next['fingerprint'] // never emit the cert-pinning field
+    return next as unknown as ParsedProxy
   })
 }

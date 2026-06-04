@@ -8,7 +8,7 @@ import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
 import { cn, countryFlagEmoji } from '../lib/utils'
 import { useServers } from '../hooks/useServers'
-import { useVpnStore, selectVpnStatus } from '../stores/vpn.store'
+import { useVpnStore, selectVpnStatus, selectSelectedProxy } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
 import type { Server, ServerAvailability } from '@slave-vpn/shared'
 import type { ServerLatencyPayload } from '../../../shared/ipc/types'
@@ -250,6 +250,8 @@ export function ServersPage() {
   const [connectingId, setConnectingId] = useState<string | null>(null)
 
   const connect = useVpnStore(s => s.connect)
+  const setProxy = useVpnStore(s => s.setProxy)
+  const selectedProxy = useVpnStore(selectSelectedProxy)
 
   const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
   const bestNode = useBestNode(servers, latencyMap)
@@ -284,10 +286,21 @@ export function ServersPage() {
     if (connectingId || server.availability === 'offline') return
     setConnectingId(server.id)
     try {
-      await connect()
-      notify({ type: 'success', title: 'Подключение', message: `→ ${server.name}` })
+      // THE fix: actually select the tapped server. Previously this only called
+      // connect() — a no-op when already connected — so the choice never reached
+      // the store/bridge/core and traffic stayed on the default (EE).
+      // server.id === proxy name (servers map id from the proxy name).
+      await setProxy(server.id)
+      if (status.state !== 'connected') {
+        // Not connected yet → connect; the persisted selection is applied on start.
+        await connect()
+        notify({ type: 'success', title: 'Подключение', message: `→ ${server.name}` })
+      } else {
+        // Already connected → setProxy live-switched the active server.
+        notify({ type: 'success', title: 'Сервер', message: `→ ${server.name}` })
+      }
     } catch (err) {
-      notify({ type: 'error', title: 'Ошибка подключения', message: err instanceof Error ? err.message : String(err) })
+      notify({ type: 'error', title: 'Ошибка', message: err instanceof Error ? err.message : String(err) })
     } finally {
       setConnectingId(null)
     }
@@ -383,7 +396,7 @@ export function ServersPage() {
                   server={server}
                   liveLatency={latencyMap.get(server.name) ?? null}
                   isProbing={probing && !latencyMap.has(server.name)}
-                  isSelected={status.serverName === server.name}
+                  isSelected={selectedProxy === server.id || status.serverName === server.name}
                   isFav={serverFavorites.includes(server.id)}
                   isConnecting={connectingId === server.id}
                   onSelect={() => void handleSelect(server)}

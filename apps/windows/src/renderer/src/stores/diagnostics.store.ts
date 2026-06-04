@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { RuntimeEvent } from '@shared/ipc/types'
 import { events } from '../lib/api'
 
-const MAX_EVENTS = 200
+const MAX_EVENTS = 500
 
 interface DiagnosticsStore {
   eventLog: RuntimeEvent[]

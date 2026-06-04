@@ -243,6 +243,9 @@ export type RuntimeEventKind =
   | 'proxy.timeout'
   | 'proxy.encryption_error'
   | 'proxy.selected'
+  | 'connection.opened'
+  | 'connection.closed'
+  | 'rules.updated'
 
 export interface RuntimeEvent {
   id: string

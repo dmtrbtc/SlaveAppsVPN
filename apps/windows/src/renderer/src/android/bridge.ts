@@ -1,5 +1,6 @@
 import { registerPlugin } from '@capacitor/core'
-import type { VPNMode, VPNStatus, TrafficStats } from '@slave-vpn/shared'
+import type { VPNMode, VPNStatus, TrafficStats, Server } from '@slave-vpn/shared'
+import type { VpnSetProxyPayload, RuntimeEvent } from '@shared/ipc/types'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import {
   listSubscriptions,
@@ -12,7 +13,7 @@ import {
 } from './subscription-store'
 import { buildAggregatedYaml } from './aggregator'
 import { listAndroidServers, invalidateServerCache } from './servers'
-import { compileSingboxConfigForAndroid } from './compile-config'
+import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
@@ -22,9 +23,15 @@ interface NativeSlaveVpn {
   requestPermission(): Promise<{ granted: boolean }>
   connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode }): Promise<void>
   disconnect(): Promise<void>
-  getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null } }>
+  getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
+  getConnections(): Promise<{ snapshot: string }>
+  getRuleProviders(): Promise<{ providers: string }>
+  updateRuleProviders(): Promise<{ providers: string }>
+  testDelay(options: { name: string; url?: string; timeout?: number }): Promise<{ delay: number }>
   setMode(options: { mode: VPNMode }): Promise<void>
+  selectProxy(options: { name: string }): Promise<void>
+  appendLog(options: { line: string }): Promise<void>
   getLogs(options?: { tail?: number }): Promise<{ lines: string[] }>
   setEngine(options: { engine: 'mihomo' | 'singbox' }): Promise<void>
   addListener(
@@ -59,6 +66,29 @@ type ConfigSourceMetaShape = {
 function ok<T>(data: T): IpcOk<T> { return { ok: true, data } }
 function err(code: string, message: string): IpcErr { return { ok: false, error: { code, message } } }
 
+// Push a diagnostic line into the native in-app Logs ring buffer
+// (Диагностика→Логи), so the renderer half of the chain is observable on device.
+function nativeLog(msg: string): void {
+  void SlaveVpn.appendLog({ line: msg }).catch(() => undefined)
+}
+
+// Map an aggregated Server → the IPC ProxyEntry shape the renderer's proxy list
+// expects (name/type/countryCode/latencyMs are what the UI renders).
+function toProxyEntry(s: Server): {
+  name: string; type: string; server: string; latencyMs: number | null
+  countryCode?: string; transport?: string; security?: string
+} {
+  return {
+    name: s.name,
+    type: s.proxyType ?? 'vless',
+    server: '',
+    latencyMs: s.latencyMs ?? null,
+    ...(s.countryCode ? { countryCode: s.countryCode } : {}),
+    ...(s.transport ? { transport: s.transport } : {}),
+    ...(s.securityType ? { security: s.securityType } : {}),
+  }
+}
+
 async function wrap<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
   try {
     return ok(await fn())
@@ -84,6 +114,7 @@ function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
 let currentMode: VPNMode = 'bypass'
 let currentSelectedProxy: string | undefined
 let currentUtlsFingerprint: string = 'randomized'
+const SELECTED_PROXY_LS_KEY = 'slave.settings.selectedProxy.v1'
 // Timestamp of the most recent transition into "connected", so getStatus can
 // report stable uptime instead of resetting connectedAt on every poll.
 let connectedSince: number | null = null
@@ -107,6 +138,8 @@ async function readNativeStatus(): Promise<VPNStatus> {
       protocol: null,
       connectedAt: connectedSince,
       lastError: status?.lastError ?? null,
+      // Real exit node read from the mihomo SLAVE-SELECT group (null when idle).
+      ...(status?.activeProxy ? { activeProxy: status.activeProxy } : {}),
     }
   } catch {
     return INITIAL_VPN_STATUS
@@ -124,6 +157,191 @@ function loadUtlsFromLocalStorage(): void {
 
 function saveUtlsToLocalStorage(value: string): void {
   try { window.localStorage.setItem(UTLS_LS_KEY, value) } catch { /* swallow */ }
+}
+
+// Registered by events.onServerLatency; probeAll pushes per-node results here.
+let serverLatencyCb: ((p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) | null = null
+
+// Android smart-routing mode (persisted) — passed to compile-config on connect.
+const ROUTING_MODE_LS_KEY = 'slave.settings.routingMode.v1'
+let currentRoutingMode: 'smart' | 'global' | 'direct' = 'smart'
+
+// Map mihomo's clash-API connections snapshot JSON → ActiveConnectionsSnapshot.
+function parseConnectionsSnapshot(raw: string): {
+  uploadTotal: number; downloadTotal: number; count: number
+  connections: unknown[]; fetchedAt: number
+} | null {
+  try {
+    const s = JSON.parse(raw) as {
+      uploadTotal?: number; downloadTotal?: number
+      connections?: Array<{
+        id?: string; upload?: number; download?: number; start?: string
+        rule?: string; rulePayload?: string; chains?: string[]
+        metadata?: Record<string, string>
+      }>
+    }
+    const conns = (s.connections ?? []).map((c) => {
+      const m = c.metadata ?? {}
+      return {
+        id: c.id ?? '',
+        host: m['host'] || m['destinationIP'] || '',
+        network: m['network'] ?? 'tcp',
+        type: m['type'] ?? '',
+        destinationIP: m['destinationIP'] ?? '',
+        destinationPort: m['destinationPort'] ?? '',
+        sourceIP: m['sourceIP'] ?? '',
+        sourcePort: m['sourcePort'] ?? '',
+        chain: Array.isArray(c.chains) && c.chains.length > 0 ? c.chains[0]! : '',
+        rule: c.rule ?? '',
+        upload: c.upload ?? 0,
+        download: c.download ?? 0,
+        start: c.start ?? '',
+      }
+    })
+    return {
+      uploadTotal: s.uploadTotal ?? 0,
+      downloadTotal: s.downloadTotal ?? 0,
+      count: conns.length,
+      connections: conns,
+      fetchedAt: Date.now(),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Rule-provider (bypass list) status — shared shape with the DiagnosticsPage
+// «Обновить списки» panel. Mirrors clashbox ruleProviderInfo.
+export interface AndroidRuleProviderEntry {
+  name: string
+  behavior: string
+  count: number
+  ok: boolean
+  error?: string
+}
+export interface AndroidRuleProvidersResult {
+  providers: AndroidRuleProviderEntry[]
+  updatedAt: number
+}
+
+function parseRuleProviders(raw: string): AndroidRuleProviderEntry[] {
+  try {
+    const arr = JSON.parse(raw) as Array<Partial<AndroidRuleProviderEntry>>
+    if (!Array.isArray(arr)) return []
+    return arr.map((p) => ({
+      name: String(p.name ?? ''),
+      behavior: String(p.behavior ?? ''),
+      count: typeof p.count === 'number' ? p.count : 0,
+      ok: p.ok !== false,
+      ...(p.error ? { error: String(p.error) } : {}),
+    }))
+  } catch {
+    return []
+  }
+}
+
+// ─── Runtime events (T2) — POLLING fallback ─────────────────────────────────
+// mihomo Alpha exposes NO connection/state event bus (verified: no EventChan /
+// observable in the core), so we cannot subscribe to real push events. Instead
+// we POLL getStatus + getConnections every 2s and emit a RuntimeEvent on each
+// observed *change* (state transition, error, active-node switch, connection
+// open/close). This is explicitly a fallback — the first emitted event says so —
+// NOT a faithful event subscription.
+type RuntimeEventInput = Pick<RuntimeEvent, 'kind' | 'severity' | 'message'> & { metadata?: Record<string, unknown> }
+const runtimeEventSubs = new Set<(e: RuntimeEvent) => void>()
+let runtimeEventSeq = 0
+
+function emitRuntimeEvent(input: RuntimeEventInput): void {
+  const ev: RuntimeEvent = {
+    id: `evt-${Date.now()}-${runtimeEventSeq++}`,
+    kind: input.kind,
+    severity: input.severity,
+    timestamp: Date.now(),
+    message: input.message,
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  }
+  for (const cb of runtimeEventSubs) { try { cb(ev) } catch { /* ignore */ } }
+}
+
+function stateToKind(state: string): RuntimeEvent['kind'] {
+  if (state === 'connected') return 'vpn.connected'
+  if (state === 'disconnected') return 'vpn.disconnected'
+  if (state === 'error') return 'vpn.error'
+  return 'vpn.state_changed'
+}
+
+let runtimePollTimer: ReturnType<typeof setInterval> | null = null
+let lastRuntimeState: string | null = null
+let lastRuntimeError: string | null = null
+let lastRuntimeActive: string | null = null
+let lastConnIds = new Set<string>()
+
+function startRuntimePolling(): void {
+  if (runtimePollTimer) return
+  emitRuntimeEvent({
+    kind: 'vpn.state_changed',
+    severity: 'debug',
+    message: 'Поток runtime-событий: опрос ядра каждые 2с (mihomo Alpha без шины событий — fallback)',
+  })
+  const tick = async (): Promise<void> => {
+    // Status diff → state / error / active-node events.
+    try {
+      const status = await readNativeStatus()
+      if (status.state !== lastRuntimeState) {
+        const prev = lastRuntimeState
+        lastRuntimeState = status.state
+        emitRuntimeEvent({
+          kind: stateToKind(status.state),
+          severity: status.state === 'error' ? 'error' : 'info',
+          message: `Состояние: ${prev ?? '—'} → ${status.state}`,
+        })
+      }
+      if (status.lastError && status.lastError !== lastRuntimeError) {
+        lastRuntimeError = status.lastError
+        emitRuntimeEvent({ kind: 'vpn.error', severity: 'error', message: status.lastError })
+      }
+      const active = status.activeProxy ?? null
+      if (active && active !== lastRuntimeActive) {
+        lastRuntimeActive = active
+        emitRuntimeEvent({ kind: 'proxy.selected', severity: 'info', message: `Активный узел: ${active}` })
+      }
+    } catch { /* ignore */ }
+    // Connections diff → open / close events.
+    try {
+      const { snapshot } = await SlaveVpn.getConnections()
+      const snap = parseConnectionsSnapshot(snapshot)
+      if (snap) {
+        const ids = new Set<string>()
+        for (const conn of snap.connections as Array<{ id: string; host: string; destinationIP: string; chain: string; rule: string }>) {
+          ids.add(conn.id)
+          if (!lastConnIds.has(conn.id)) {
+            const target = conn.host || conn.destinationIP || conn.id.slice(0, 8)
+            emitRuntimeEvent({
+              kind: 'connection.opened',
+              severity: 'debug',
+              message: `+ ${target} → ${conn.chain || 'DIRECT'}${conn.rule ? ` [${conn.rule}]` : ''}`,
+            })
+          }
+        }
+        for (const id of lastConnIds) {
+          if (!ids.has(id)) {
+            emitRuntimeEvent({ kind: 'connection.closed', severity: 'debug', message: `− соединение ${id.slice(0, 8)} закрыто` })
+          }
+        }
+        lastConnIds = ids
+      }
+    } catch { /* ignore */ }
+  }
+  void tick()
+  runtimePollTimer = setInterval(() => { void tick() }, 2000)
+}
+
+function stopRuntimePolling(): void {
+  if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null }
+  lastConnIds = new Set()
+  lastRuntimeState = null
+  lastRuntimeError = null
+  lastRuntimeActive = null
 }
 
 // ─── Install ──────────────────────────────────────────────────────────────────
@@ -144,13 +362,14 @@ export function installAndroidBridge(): void {
           const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
           if (!requested.granted) throw new Error('Android VPN permission denied')
         }
-        const compiled = await compileSingboxConfigForAndroid({
+        const compiled = await compileMihomoConfigForAndroid({
           vpnMode: currentMode,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           utlsFingerprint: currentUtlsFingerprint,
+          routingMode: currentRoutingMode,
         })
         await SlaveVpn.connect({
-          config: compiled.json,
+          config: compiled.config,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           vpnMode: currentMode,
         })
@@ -162,16 +381,71 @@ export function installAndroidBridge(): void {
         await SlaveVpn.setMode(payload).catch(() => undefined)
       }),
       getConnectivity: notImplemented('vpn.getConnectivity'),
-      setProxy: (payload: { proxy: string }) => wrap(async () => {
-        currentSelectedProxy = payload.proxy
+      // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
+      // VpnSetProxyPayload = { proxyName }, but this handler read `payload.proxy`
+      // (undefined) — so the chosen name NEVER reached the native selectProxy and
+      // SLAVE-SELECT stayed on its SLAVE-AUTO default (url-test → EE). Read
+      // `proxyName`. (Instrumentally confirmed: Selector.Set DOES change the
+      // route; the bug was the name never arriving.)
+      // Param typed against the shared IPC contract (VpnSetProxyPayload) so the
+      // proxy-vs-proxyName mismatch that broke switching can't recur — it would
+      // now fail typecheck.
+      setProxy: (payload: VpnSetProxyPayload) => wrap(async () => {
+        const name = payload.proxyName
+        nativeLog(`[bridge] setProxy(${name}) reached the native bridge`)
+        if (!name) throw new Error('setProxy: proxyName is empty')
+        currentSelectedProxy = name
+        try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
+        // Live-switch the mihomo SLAVE-SELECT group. Native no-ops gracefully if
+        // not connected — the choice is re-applied on the next connect via the
+        // connect payload (and persisted by mihomo store-selected).
+        await SlaveVpn.selectProxy({ name }).catch(() => undefined)
       }),
-      getProxyList: async () => ok([] as never[]),
-      getConnections: async () => ok(null),
+      getProxyList: () => wrap(async () => {
+        // The list works disconnected too (the running core isn't required) —
+        // it's the deduped subscription nodes, so the main screen never shows
+        // "Серверы не загружены" once a subscription exists.
+        const servers = await listAndroidServers()
+        return servers.map(toProxyEntry)
+      }),
+      getConnections: () => wrap(async () => {
+        try {
+          const { snapshot } = await SlaveVpn.getConnections()
+          return parseConnectionsSnapshot(snapshot)
+        } catch {
+          return null
+        }
+      }),
       closeConnection: notImplemented('vpn.closeConnection'),
       getBalancerState: notImplemented('vpn.getBalancerState'),
       setBalancerEnabled: notImplemented('vpn.setBalancerEnabled'),
       setBalancerMode: notImplemented('vpn.setBalancerMode'),
-      probeAll: notImplemented('vpn.probeAll'),
+      probeAll: () => wrap(async () => {
+        // URL-test every node via mihomo and push results to the store's
+        // serverLatency map (drives the ms badges in the server list).
+        const servers = await listAndroidServers()
+        await Promise.all(servers.map(async (s) => {
+          const { delay } = await SlaveVpn.testDelay({ name: s.name, timeout: 5000 }).catch(() => ({ delay: -1 }))
+          serverLatencyCb?.({ proxyName: s.name, latencyMs: delay >= 0 ? delay : null, success: delay >= 0 })
+        }))
+      }),
+      // T1 «Обновить списки»: force-refresh the RKN bypass rule-providers in the
+      // running mihomo core and report per-provider count/errors. Rejects (native)
+      // when the core isn't running — the lists live in the engine.
+      getRuleProviders: () => wrap(async (): Promise<AndroidRuleProvidersResult> => {
+        const { providers } = await SlaveVpn.getRuleProviders()
+        return { providers: parseRuleProviders(providers), updatedAt: Date.now() }
+      }),
+      updateRuleProviders: () => wrap(async (): Promise<AndroidRuleProvidersResult> => {
+        const { providers } = await SlaveVpn.updateRuleProviders()
+        const parsed = parseRuleProviders(providers)
+        emitRuntimeEvent({
+          kind: 'rules.updated',
+          severity: parsed.some(p => !p.ok) ? 'warning' : 'info',
+          message: `Списки обхода обновлены: ${parsed.map(p => `${p.name}=${p.count}`).join(', ') || 'нет провайдеров'}`,
+        })
+        return { providers: parsed, updatedAt: Date.now() }
+      }),
     },
 
     subscriptions: {
@@ -257,22 +531,61 @@ export function installAndroidBridge(): void {
         return () => { stopped = true; clearInterval(timer) }
       },
       onVpnTraffic: (cb: (s: TrafficStats) => void) => {
-        const promise = SlaveVpn.addListener('trafficUpdate', cb)
-        promise.catch(() => undefined)
-        return () => { void promise.then(h => h.remove()).catch(() => undefined) }
+        // Native emits no trafficUpdate event → poll getTraffic each second
+        // (mihomo updates the per-second speed internally).
+        let stopped = false
+        const tick = async (): Promise<void> => {
+          if (stopped) return
+          try { const { traffic } = await SlaveVpn.getTraffic(); cb(traffic) } catch { /* ignore */ }
+        }
+        void tick()
+        const timer = setInterval(() => { void tick() }, 1000)
+        return () => { stopped = true; clearInterval(timer) }
       },
       onVpnError: () => () => undefined,
       onVpnHealth: () => () => undefined,
-      onRuntimeEvent: () => () => undefined,
+      // T2: real runtime-event stream via the polling fallback above. The first
+      // subscriber starts the 2s poller; the last to unsubscribe stops it.
+      onRuntimeEvent: (cb: (e: RuntimeEvent) => void) => {
+        runtimeEventSubs.add(cb)
+        startRuntimePolling()
+        return () => {
+          runtimeEventSubs.delete(cb)
+          if (runtimeEventSubs.size === 0) stopRuntimePolling()
+        }
+      },
       onSubscriptionUpdated: () => () => undefined,
       onAuthExpired: () => () => undefined,
       onUpdateAvailable: () => () => undefined,
       onUpdateDownloaded: () => () => undefined,
       onUpdateProgress: () => () => undefined,
       onNotification: () => () => undefined,
-      onServerLatency: () => () => undefined,
+      onServerLatency: (cb: (p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) => {
+        serverLatencyCb = cb
+        return () => { if (serverLatencyCb === cb) serverLatencyCb = null }
+      },
+      onProxyChanged: (cb: (name: string) => void) => {
+        // Drive the store's selectedProxy (active-server indication). Native
+        // emits nothing, so we seed the persisted choice and then poll the real
+        // active node (SLAVE-SELECT leaf) while running, emitting on change.
+        let last: string | null = null
+        let stopped = false
+        const emit = (name: string | null | undefined): void => {
+          if (name && name !== last) { last = name; cb(name) }
+        }
+        if (currentSelectedProxy) emit(currentSelectedProxy)
+        const tick = async (): Promise<void> => {
+          if (stopped) return
+          try {
+            const { status } = await SlaveVpn.getStatus()
+            emit(status?.activeProxy ?? null)
+          } catch { /* ignore */ }
+        }
+        void tick()
+        const timer = setInterval(() => { void tick() }, 3000)
+        return () => { stopped = true; clearInterval(timer) }
+      },
       onBalancerState: () => () => undefined,
-      onProxyChanged: () => () => undefined,
       onSubscriptionsChanged: () => () => undefined,
       onProfilesChanged: () => () => undefined,
       onGeoUpdaterState: () => () => undefined,
@@ -456,6 +769,20 @@ export function installAndroidBridge(): void {
 
   // Restore persisted uTLS fingerprint preference.
   loadUtlsFromLocalStorage()
+
+  // Restore the persisted server choice so a reconnect re-applies it (the
+  // connect payload carries selectedProxy; mihomo store-selected also persists).
+  try {
+    const saved = window.localStorage.getItem(SELECTED_PROXY_LS_KEY)
+    if (saved) currentSelectedProxy = saved
+  } catch { /* swallow */ }
+
+  // Restore the persisted routing mode (Smart/Global/Direct). The Settings UI
+  // writes this key; it's applied to the config on the next connect.
+  try {
+    const m = window.localStorage.getItem(ROUTING_MODE_LS_KEY)
+    if (m === 'smart' || m === 'global' || m === 'direct') currentRoutingMode = m
+  } catch { /* swallow */ }
 
   // Best-effort initial traffic ping so the sparkline doesn't NaN.
   void SlaveVpn.getTraffic().catch(() => ({ traffic: EMPTY_TRAFFIC_STATS }))

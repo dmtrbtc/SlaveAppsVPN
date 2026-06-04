@@ -44,6 +44,7 @@ class SlaveVpnPlugin : Plugin() {
     private var pendingPermissionCall: PluginCall? = null
     private var pendingConnectCall: PluginCall? = null
     private var pendingConfig: String? = null
+    private var pendingSelected: String? = null
 
     @PluginMethod
     fun checkPermission(call: PluginCall) {
@@ -94,10 +95,11 @@ class SlaveVpnPlugin : Plugin() {
     fun connect(call: PluginCall) {
         val config = call.getString("config")
         if (config.isNullOrBlank()) {
-            call.reject("connect requires 'config' (sing-box JSON)")
+            call.reject("connect requires 'config' (Clash YAML for mihomo)")
             return
         }
         pendingConfig = config
+        pendingSelected = call.getString("selectedProxy")
 
         val intent = VpnService.prepare(context)
         if (intent != null) {
@@ -112,7 +114,9 @@ class SlaveVpnPlugin : Plugin() {
 
     private fun startVpnService(call: PluginCall) {
         val config = pendingConfig
+        val selected = pendingSelected
         pendingConfig = null
+        pendingSelected = null
         if (config.isNullOrBlank()) {
             call.reject("Missing config when starting VPN")
             return
@@ -120,6 +124,7 @@ class SlaveVpnPlugin : Plugin() {
         val serviceIntent = Intent(context, SlaveVpnService::class.java).apply {
             action = SlaveVpnService.ACTION_START
             putExtra(SlaveVpnService.EXTRA_CONFIG, config)
+            if (!selected.isNullOrBlank()) putExtra(SlaveVpnService.EXTRA_SELECTED, selected)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -141,6 +146,9 @@ class SlaveVpnPlugin : Plugin() {
     @PluginMethod
     fun getStatus(call: PluginCall) {
         val state = SlaveVpnService.currentState
+        // Effective active server (leaf node) read from the mihomo SLAVE-SELECT
+        // group, so the UI shows the REAL exit, not a stale model.
+        val active = if (ClashBridge.isRunning()) ClashBridge.currentProxy() else ""
         val status = JSObject()
             .put("state", state)
             .put("mode", "bypass")
@@ -148,21 +156,88 @@ class SlaveVpnPlugin : Plugin() {
             // Specific failure reason (null when none) so the UI can show WHY
             // a connection failed instead of a generic "Connection failed".
             .put("lastError", SlaveVpnService.currentError ?: JSObject.NULL)
+            .put("activeProxy", if (active.isNotBlank()) active else JSObject.NULL)
         call.resolve(JSObject().put("status", status))
+    }
+
+    /**
+     * Live-switch the active server in the mihomo SLAVE-SELECT group. New
+     * connections egress through it. Persistence across reconnect is handled by
+     * mihomo `store-selected` + the renderer re-applying the saved choice on
+     * connect.
+     */
+    @PluginMethod
+    fun selectProxy(call: PluginCall) {
+        val name = call.getString("name") ?: return call.reject("name required")
+        if (!ClashBridge.isRunning()) {
+            // Not connected yet — the choice is persisted by the renderer and
+            // applied on the next connect. Nothing to do live.
+            call.resolve()
+            return
+        }
+        try {
+            ClashBridge.selectProxy(name)
+            call.resolve()
+        } catch (e: Exception) {
+            call.reject("select proxy failed: ${e.message}")
+        }
     }
 
     @PluginMethod
     fun getTraffic(call: PluginCall) {
-        // TODO: pipe from engine in Phase I-D
+        // Real live traffic from the mihomo statistic manager.
+        val t = try { org.json.JSONObject(ClashBridge.getTraffic()) } catch (_: Exception) { org.json.JSONObject() }
+        val up = t.optLong("up", 0)
+        val down = t.optLong("down", 0)
+        val upTotal = t.optLong("upTotal", 0)
+        val downTotal = t.optLong("downTotal", 0)
         val traffic = JSObject()
-            .put("uploadBytes", 0)
-            .put("downloadBytes", 0)
-            .put("uploadSpeedBps", 0)
-            .put("downloadSpeedBps", 0)
-            .put("sessionUploadBytes", 0)
-            .put("sessionDownloadBytes", 0)
+            .put("uploadBytes", upTotal)
+            .put("downloadBytes", downTotal)
+            .put("uploadSpeedBps", up)
+            .put("downloadSpeedBps", down)
+            .put("sessionUploadBytes", upTotal)
+            .put("sessionDownloadBytes", downTotal)
             .put("sessionStartedAt", JSObject.NULL)
         call.resolve(JSObject().put("traffic", traffic))
+    }
+
+    /** Active connections snapshot (clash-API JSON) for the dashboard. */
+    @PluginMethod
+    fun getConnections(call: PluginCall) {
+        call.resolve(JSObject().put("snapshot", ClashBridge.getConnections()))
+    }
+
+    /** Current rule-providers (bypass lists) status JSON, without refreshing. */
+    @PluginMethod
+    fun getRuleProviders(call: PluginCall) {
+        val json = if (ClashBridge.isRunning()) ClashBridge.getRuleProviders() else "[]"
+        call.resolve(JSObject().put("providers", json))
+    }
+
+    /**
+     * «Обновить списки» — force-refresh every bypass rule-provider NOW and return
+     * the resulting status JSON. No-op (empty) when the core isn't running.
+     */
+    @PluginMethod
+    fun updateRuleProviders(call: PluginCall) {
+        if (!ClashBridge.isRunning()) {
+            call.reject("VPN не запущен — списки обновляются у работающего ядра")
+            return
+        }
+        val json = ClashBridge.updateRuleProviders()
+        call.resolve(JSObject().put("providers", json))
+    }
+
+    /** Latency (ms) of a proxy via URL test; -1 on error. */
+    @PluginMethod
+    fun testDelay(call: PluginCall) {
+        val name = call.getString("name") ?: return call.reject("name required")
+        val url = call.getString("url") ?: "https://www.gstatic.com/generate_204"
+        val timeout = call.getInt("timeout") ?: 5000
+        if (!ClashBridge.isRunning()) { call.resolve(JSObject().put("delay", -1)); return }
+        val delay = ClashBridge.testDelay(name, url, timeout)
+        call.resolve(JSObject().put("delay", delay))
     }
 
     @PluginMethod
@@ -202,6 +277,18 @@ class SlaveVpnPlugin : Plugin() {
     @PluginMethod
     fun refreshSubscription(call: PluginCall) {
         call.reject("Not yet implemented")
+    }
+
+    /**
+     * Lets the renderer push a diagnostic line into the in-app Logs ring buffer
+     * (Диагностика→Логи). Used to make the UI→store→bridge chain observable on
+     * device (e.g. confirm a server tap actually reached bridge.setProxy).
+     */
+    @PluginMethod
+    fun appendLog(call: PluginCall) {
+        val line = call.getString("line")
+        if (!line.isNullOrBlank()) SlaveVpnService.appendLog(line)
+        call.resolve()
     }
 
     @PluginMethod
