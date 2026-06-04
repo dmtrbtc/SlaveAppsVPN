@@ -181,6 +181,57 @@ func GetConnections() string {
 	return string(b)
 }
 
+// ─── Rule providers (RKN bypass lists) ──────────────────────────────────────
+
+type ruleProviderInfo struct {
+	Name     string `json:"name"`
+	Behavior string `json:"behavior"`
+	Count    int    `json:"count"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
+}
+
+// GetRuleProviders returns the current rule-providers (bypass lists) status as
+// JSON [{name,behavior,count,ok}] WITHOUT triggering a refresh.
+func GetRuleProviders() string {
+	var out []ruleProviderInfo
+	for name, p := range tunnel.RuleProviders() {
+		out = append(out, ruleProviderInfo{
+			Name: name, Behavior: fmt.Sprintf("%v", p.Behavior()), Count: p.Count(), OK: true,
+		})
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// UpdateRuleProviders force-refreshes every rule-provider NOW (same as the clash
+// API PUT /providers/rules/{name} for all of them) and returns the resulting
+// status JSON [{name,behavior,count,ok,error}]. Used by the "Обновить списки"
+// button. Errors per-provider are reported, not fatal.
+func UpdateRuleProviders() string {
+	var out []ruleProviderInfo
+	for name, p := range tunnel.RuleProviders() {
+		info := ruleProviderInfo{Name: name, Behavior: fmt.Sprintf("%v", p.Behavior())}
+		if err := p.Update(); err != nil {
+			info.OK = false
+			info.Error = err.Error()
+			info.Count = p.Count()
+		} else {
+			info.OK = true
+			info.Count = p.Count()
+		}
+		out = append(out, info)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 // TestDelay measures the latency (ms) of a single proxy via an URL test (same
 // as the clash API GET /proxies/{name}/delay). Returns -1 on error/timeout.
 func TestDelay(name, url string, timeoutMs int) int {

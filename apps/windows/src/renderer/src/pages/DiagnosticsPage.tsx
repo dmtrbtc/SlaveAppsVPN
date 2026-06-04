@@ -4,7 +4,7 @@ import {
   RefreshCw, Download, Terminal, Cpu, MemoryStick, Info, Activity,
   Wifi, WifiOff, CheckCircle2, XCircle, Shield, Server, Lock, AlertCircle,
   Database, Zap, RotateCcw, Search, Stethoscope, MinusCircle, Loader2,
-  Copy, Share2,
+  Copy, Share2, ListChecks,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -17,6 +17,7 @@ import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSou
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
 import { IS_MOBILE } from '../lib/platform'
+import type { AndroidRuleProvidersResult } from '../android/bridge'
 import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus, GeoUpdaterState } from '@shared/ipc/types'
 
 const LOG_LEVEL_COLOR: Record<string, string> = {
@@ -53,6 +54,24 @@ const EVENT_SEVERITY_COLOR: Record<RuntimeEventSeverity, string> = {
 const LOG_LEVELS = ['all', 'error', 'warn', 'info', 'debug'] as const
 type LogFilter = typeof LOG_LEVELS[number]
 const LOG_FILTER_OPTIONS = LOG_LEVELS.map(l => ({ value: l, label: l === 'all' ? 'Все' : l.toUpperCase() }))
+
+// Runtime-event category filter (T2). Maps a RuntimeEvent.kind prefix → category.
+type EventFilter = 'all' | 'connections' | 'proxy' | 'rules'
+const EVENT_FILTER_OPTIONS: { value: EventFilter; label: string }[] = [
+  { value: 'all',         label: 'Все' },
+  { value: 'connections', label: 'Соед.' },
+  { value: 'proxy',       label: 'Прокси' },
+  { value: 'rules',       label: 'Правила' },
+]
+function eventMatchesFilter(kind: string, f: EventFilter): boolean {
+  if (f === 'all') return true
+  if (f === 'connections') return kind.startsWith('connection.')
+  if (f === 'proxy') return kind.startsWith('proxy.')
+  if (f === 'rules') return kind.startsWith('rules.')
+  return true
+}
+
+const MAX_EVENTS_CAP = 500
 
 // ─── Startup phases panel ─────────────────────────────────────────────────────
 
@@ -593,11 +612,113 @@ function DnsLeakPanel() {
   )
 }
 
+// ─── Rule providers (bypass lists) force-update panel — T1, Android-only ─────
+
+type RuleProvidersIpc =
+  | { ok: true; data: AndroidRuleProvidersResult }
+  | { ok: false; error: { code: string; message: string } }
+
+interface RuleProvidersBridge {
+  getRuleProviders: () => Promise<RuleProvidersIpc>
+  updateRuleProviders: () => Promise<RuleProvidersIpc>
+}
+
+// Narrow accessor for the Android-only vpn.updateRuleProviders/getRuleProviders
+// (not part of the Windows SlaveVPNBridge type). Returns null on desktop.
+function ruleProvidersBridge(): RuleProvidersBridge | null {
+  const b = (window as unknown as { slaveVPN?: { vpn?: Partial<RuleProvidersBridge> } }).slaveVPN
+  if (b?.vpn?.updateRuleProviders && b.vpn.getRuleProviders) {
+    return b.vpn as RuleProvidersBridge
+  }
+  return null
+}
+
+function RuleProvidersPanel() {
+  const { notify } = useUIStore()
+  const [result, setResult] = useState<AndroidRuleProvidersResult | null>(null)
+  const [running, setRunning] = useState(false)
+
+  useEffect(() => {
+    const api = ruleProvidersBridge()
+    if (!api) return
+    api.getRuleProviders().then(r => { if (r.ok) setResult(r.data) }).catch(() => undefined)
+  }, [])
+
+  const handleUpdate = async (): Promise<void> => {
+    const api = ruleProvidersBridge()
+    if (!api || running) return
+    setRunning(true)
+    try {
+      const r = await api.updateRuleProviders()
+      if (!r.ok) throw new Error(r.error.message)
+      setResult(r.data)
+      const total = r.data.providers.reduce((n, p) => n + p.count, 0)
+      const failed = r.data.providers.filter(p => !p.ok)
+      if (failed.length > 0) {
+        notify({ type: 'warning', title: 'Обновлено с ошибками', message: `${failed.length} из ${r.data.providers.length} не обновились` })
+      } else {
+        notify({ type: 'success', title: 'Списки обновлены', message: `${r.data.providers.length} провайдеров · ${total} правил` })
+      }
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка обновления', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-bg-primary p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="text-[12px] font-semibold text-text-primary">Списки обхода (RKN)</p>
+          <p className="text-[11px] text-text-muted">
+            Принудительно обновить rule-provider'ы блокировок в работающем ядре
+          </p>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => void handleUpdate()} disabled={running}>
+          {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+          {running ? 'Обновляем...' : 'Обновить списки'}
+        </Button>
+      </div>
+
+      {result && (
+        <>
+          <div className="text-[11px] text-text-muted mb-2">
+            Последнее обновление: <span className="text-text-secondary">{timeAgo2(result.updatedAt)}</span>
+          </div>
+          {result.providers.length === 0 ? (
+            <div className="text-center py-3 text-[11px] text-text-muted">
+              Нет активных списков (подключитесь, чтобы ядро загрузило провайдеры).
+            </div>
+          ) : (
+            <div className="rounded-md border border-border bg-bg-secondary divide-y divide-border/40">
+              {result.providers.map(p => (
+                <div key={p.name} className="flex items-center gap-2 px-3 py-1.5">
+                  {p.ok
+                    ? <CheckCircle2 className="h-3 w-3 text-connected shrink-0" />
+                    : <XCircle className="h-3 w-3 text-error shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] text-text-secondary font-medium">{p.name}</span>
+                    <div className="text-[10px] text-text-muted leading-tight font-mono break-all">
+                      {p.behavior} · {p.count} правил{p.error ? ` · ${p.error}` : ''}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function DiagnosticsPage() {
   const { notify } = useUIStore()
   const [logFilter, setLogFilter] = useState<LogFilter>('all')
+  const [eventFilter, setEventFilter] = useState<EventFilter>('all')
   const [isExporting, setIsExporting] = useState(false)
 
   const { data: sysInfo, isLoading: sysLoading, error: sysError, refetch: refetchSys, isFetching: sysFetching } = useSystemInfo()
@@ -608,6 +729,7 @@ export function DiagnosticsPage() {
   const eventLog = useDiagnosticsStore(selectEventLog)
 
   const filteredLogs = logFilter === 'all' ? logs : logs.filter(l => pinoLevelToString(l.level) === logFilter)
+  const filteredEvents = eventFilter === 'all' ? eventLog : eventLog.filter(e => eventMatchesFilter(e.kind, eventFilter))
 
   const lastError = useMemo(
     () => [...eventLog].reverse().find(e => e.severity === 'error' || e.severity === 'critical'),
@@ -845,9 +967,21 @@ export function DiagnosticsPage() {
           </motion.div>
         )}
 
+        {/* Rule providers force-update (T1) — Android-only (bypass lists live in
+            the running mihomo core; desktop bridge doesn't expose the method). */}
+        {IS_MOBILE && (
+          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09, duration: 0.2 }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <ListChecks className="h-3.5 w-3.5 text-text-muted" />
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Списки обхода</p>
+            </div>
+            <RuleProvidersPanel />
+          </motion.div>
+        )}
+
         {/* Runtime events */}
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.2 }}>
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
             <div className="flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-text-muted" />
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Runtime события</p>
@@ -858,18 +992,26 @@ export function DiagnosticsPage() {
                 <Badge tone="bad">{lastErrors.length} ошибок</Badge>
               )}
             </div>
-            <span className="text-[10px] text-text-muted">{eventLog.length} / 200</span>
+            <div className="flex items-center gap-2">
+              <Segmented
+                options={EVENT_FILTER_OPTIONS}
+                value={eventFilter}
+                onChange={setEventFilter}
+                size="sm"
+              />
+              <span className="text-[10px] text-text-muted">{filteredEvents.length} / {MAX_EVENTS_CAP}</span>
+            </div>
           </div>
           <LogCard>
             <div className="h-36 overflow-y-auto">
-              {eventLog.length === 0 ? (
+              {filteredEvents.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full gap-2 text-text-muted">
                   <Activity className="h-5 w-5 opacity-40" />
                   <p className="text-[12px]">Событий нет</p>
                 </div>
               ) : (
                 <div className="font-mono divide-y divide-border/40">
-                  {[...eventLog].reverse().map(event => (
+                  {[...filteredEvents].reverse().map(event => (
                     <EventRow key={event.id} event={event} />
                   ))}
                 </div>

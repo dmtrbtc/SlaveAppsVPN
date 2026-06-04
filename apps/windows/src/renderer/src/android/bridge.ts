@@ -1,6 +1,6 @@
 import { registerPlugin } from '@capacitor/core'
 import type { VPNMode, VPNStatus, TrafficStats, Server } from '@slave-vpn/shared'
-import type { VpnSetProxyPayload } from '@shared/ipc/types'
+import type { VpnSetProxyPayload, RuntimeEvent } from '@shared/ipc/types'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import {
   listSubscriptions,
@@ -26,6 +26,8 @@ interface NativeSlaveVpn {
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
   getConnections(): Promise<{ snapshot: string }>
+  getRuleProviders(): Promise<{ providers: string }>
+  updateRuleProviders(): Promise<{ providers: string }>
   testDelay(options: { name: string; url?: string; timeout?: number }): Promise<{ delay: number }>
   setMode(options: { mode: VPNMode }): Promise<void>
   selectProxy(options: { name: string }): Promise<void>
@@ -208,6 +210,140 @@ function parseConnectionsSnapshot(raw: string): {
   }
 }
 
+// Rule-provider (bypass list) status — shared shape with the DiagnosticsPage
+// «Обновить списки» panel. Mirrors clashbox ruleProviderInfo.
+export interface AndroidRuleProviderEntry {
+  name: string
+  behavior: string
+  count: number
+  ok: boolean
+  error?: string
+}
+export interface AndroidRuleProvidersResult {
+  providers: AndroidRuleProviderEntry[]
+  updatedAt: number
+}
+
+function parseRuleProviders(raw: string): AndroidRuleProviderEntry[] {
+  try {
+    const arr = JSON.parse(raw) as Array<Partial<AndroidRuleProviderEntry>>
+    if (!Array.isArray(arr)) return []
+    return arr.map((p) => ({
+      name: String(p.name ?? ''),
+      behavior: String(p.behavior ?? ''),
+      count: typeof p.count === 'number' ? p.count : 0,
+      ok: p.ok !== false,
+      ...(p.error ? { error: String(p.error) } : {}),
+    }))
+  } catch {
+    return []
+  }
+}
+
+// ─── Runtime events (T2) — POLLING fallback ─────────────────────────────────
+// mihomo Alpha exposes NO connection/state event bus (verified: no EventChan /
+// observable in the core), so we cannot subscribe to real push events. Instead
+// we POLL getStatus + getConnections every 2s and emit a RuntimeEvent on each
+// observed *change* (state transition, error, active-node switch, connection
+// open/close). This is explicitly a fallback — the first emitted event says so —
+// NOT a faithful event subscription.
+type RuntimeEventInput = Pick<RuntimeEvent, 'kind' | 'severity' | 'message'> & { metadata?: Record<string, unknown> }
+const runtimeEventSubs = new Set<(e: RuntimeEvent) => void>()
+let runtimeEventSeq = 0
+
+function emitRuntimeEvent(input: RuntimeEventInput): void {
+  const ev: RuntimeEvent = {
+    id: `evt-${Date.now()}-${runtimeEventSeq++}`,
+    kind: input.kind,
+    severity: input.severity,
+    timestamp: Date.now(),
+    message: input.message,
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  }
+  for (const cb of runtimeEventSubs) { try { cb(ev) } catch { /* ignore */ } }
+}
+
+function stateToKind(state: string): RuntimeEvent['kind'] {
+  if (state === 'connected') return 'vpn.connected'
+  if (state === 'disconnected') return 'vpn.disconnected'
+  if (state === 'error') return 'vpn.error'
+  return 'vpn.state_changed'
+}
+
+let runtimePollTimer: ReturnType<typeof setInterval> | null = null
+let lastRuntimeState: string | null = null
+let lastRuntimeError: string | null = null
+let lastRuntimeActive: string | null = null
+let lastConnIds = new Set<string>()
+
+function startRuntimePolling(): void {
+  if (runtimePollTimer) return
+  emitRuntimeEvent({
+    kind: 'vpn.state_changed',
+    severity: 'debug',
+    message: 'Поток runtime-событий: опрос ядра каждые 2с (mihomo Alpha без шины событий — fallback)',
+  })
+  const tick = async (): Promise<void> => {
+    // Status diff → state / error / active-node events.
+    try {
+      const status = await readNativeStatus()
+      if (status.state !== lastRuntimeState) {
+        const prev = lastRuntimeState
+        lastRuntimeState = status.state
+        emitRuntimeEvent({
+          kind: stateToKind(status.state),
+          severity: status.state === 'error' ? 'error' : 'info',
+          message: `Состояние: ${prev ?? '—'} → ${status.state}`,
+        })
+      }
+      if (status.lastError && status.lastError !== lastRuntimeError) {
+        lastRuntimeError = status.lastError
+        emitRuntimeEvent({ kind: 'vpn.error', severity: 'error', message: status.lastError })
+      }
+      const active = status.activeProxy ?? null
+      if (active && active !== lastRuntimeActive) {
+        lastRuntimeActive = active
+        emitRuntimeEvent({ kind: 'proxy.selected', severity: 'info', message: `Активный узел: ${active}` })
+      }
+    } catch { /* ignore */ }
+    // Connections diff → open / close events.
+    try {
+      const { snapshot } = await SlaveVpn.getConnections()
+      const snap = parseConnectionsSnapshot(snapshot)
+      if (snap) {
+        const ids = new Set<string>()
+        for (const conn of snap.connections as Array<{ id: string; host: string; destinationIP: string; chain: string; rule: string }>) {
+          ids.add(conn.id)
+          if (!lastConnIds.has(conn.id)) {
+            const target = conn.host || conn.destinationIP || conn.id.slice(0, 8)
+            emitRuntimeEvent({
+              kind: 'connection.opened',
+              severity: 'debug',
+              message: `+ ${target} → ${conn.chain || 'DIRECT'}${conn.rule ? ` [${conn.rule}]` : ''}`,
+            })
+          }
+        }
+        for (const id of lastConnIds) {
+          if (!ids.has(id)) {
+            emitRuntimeEvent({ kind: 'connection.closed', severity: 'debug', message: `− соединение ${id.slice(0, 8)} закрыто` })
+          }
+        }
+        lastConnIds = ids
+      }
+    } catch { /* ignore */ }
+  }
+  void tick()
+  runtimePollTimer = setInterval(() => { void tick() }, 2000)
+}
+
+function stopRuntimePolling(): void {
+  if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null }
+  lastConnIds = new Set()
+  lastRuntimeState = null
+  lastRuntimeError = null
+  lastRuntimeActive = null
+}
+
 // ─── Install ──────────────────────────────────────────────────────────────────
 
 let installed = false
@@ -292,6 +428,23 @@ export function installAndroidBridge(): void {
           const { delay } = await SlaveVpn.testDelay({ name: s.name, timeout: 5000 }).catch(() => ({ delay: -1 }))
           serverLatencyCb?.({ proxyName: s.name, latencyMs: delay >= 0 ? delay : null, success: delay >= 0 })
         }))
+      }),
+      // T1 «Обновить списки»: force-refresh the RKN bypass rule-providers in the
+      // running mihomo core and report per-provider count/errors. Rejects (native)
+      // when the core isn't running — the lists live in the engine.
+      getRuleProviders: () => wrap(async (): Promise<AndroidRuleProvidersResult> => {
+        const { providers } = await SlaveVpn.getRuleProviders()
+        return { providers: parseRuleProviders(providers), updatedAt: Date.now() }
+      }),
+      updateRuleProviders: () => wrap(async (): Promise<AndroidRuleProvidersResult> => {
+        const { providers } = await SlaveVpn.updateRuleProviders()
+        const parsed = parseRuleProviders(providers)
+        emitRuntimeEvent({
+          kind: 'rules.updated',
+          severity: parsed.some(p => !p.ok) ? 'warning' : 'info',
+          message: `Списки обхода обновлены: ${parsed.map(p => `${p.name}=${p.count}`).join(', ') || 'нет провайдеров'}`,
+        })
+        return { providers: parsed, updatedAt: Date.now() }
       }),
     },
 
@@ -391,7 +544,16 @@ export function installAndroidBridge(): void {
       },
       onVpnError: () => () => undefined,
       onVpnHealth: () => () => undefined,
-      onRuntimeEvent: () => () => undefined,
+      // T2: real runtime-event stream via the polling fallback above. The first
+      // subscriber starts the 2s poller; the last to unsubscribe stops it.
+      onRuntimeEvent: (cb: (e: RuntimeEvent) => void) => {
+        runtimeEventSubs.add(cb)
+        startRuntimePolling()
+        return () => {
+          runtimeEventSubs.delete(cb)
+          if (runtimeEventSubs.size === 0) stopRuntimePolling()
+        }
+      },
       onSubscriptionUpdated: () => () => undefined,
       onAuthExpired: () => () => undefined,
       onUpdateAvailable: () => () => undefined,

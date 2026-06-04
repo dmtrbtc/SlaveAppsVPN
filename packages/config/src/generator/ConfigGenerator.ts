@@ -70,6 +70,11 @@ const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
 const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
 const URL_TEST_URL = 'http://www.gstatic.com/generate_204'
 const URL_TEST_INTERVAL = 300
+// Autobalancer (SLAVE-AUTO) tuning: only re-pick a faster node when it beats the
+// current one by >50ms (tolerance) to avoid flapping between near-equal servers;
+// lazy=true skips health checks while the group isn't actively carrying traffic.
+const URL_TEST_TOLERANCE = 50
+const URL_TEST_LAZY = true
 
 const dnsCompiler = new MihomoDnsCompiler()
 const ruleCompiler = new MihomoRuleCompiler()
@@ -101,6 +106,8 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       proxies: proxyNames.length > 0 ? proxyNames : ['DIRECT'],
       url: URL_TEST_URL,
       interval: URL_TEST_INTERVAL,
+      tolerance: URL_TEST_TOLERANCE,
+      lazy: URL_TEST_LAZY,
     },
   ]
 
@@ -340,16 +347,40 @@ function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<st
   return out
 }
 
-// Hardened DNS (issue #9): DoH for clean domains, RU domains via fast RU DNS
-// (direct), proxy-server-nameserver resolves the node domains, respect-rules
-// keeps user-domain DNS inside the tunnel. default-nameserver is the only
-// plaintext and ONLY bootstraps the DoH host / direct lookups. (verified)
+// Hardened DNS — final polish (issue #9). Design (verified by real device logs):
+//   - main `nameserver` pool is DoH-ONLY (Cloudflare + Google), encrypted and
+//     carried THROUGH the tunnel (respect-rules) — no plaintext udp leak for
+//     general traffic.
+//   - `default-nameserver` is the sole plaintext entry; it ONLY bootstraps the
+//     DoH hostnames (dns.cloudflare.com / dns.google) and the direct lookups.
+//   - nameserver-policy overrides (intentional, direct, fast):
+//       * +.ru / +.рф / geosite:category-ru → Yandex 77.88.8.8 + Google 8.8.8.8
+//       * the proxy NODE domains → system + 8.8.8.8, so they resolve to REAL IPs
+//         BEFORE the tunnel exists (avoids the chicken-and-egg at connect time).
+//   - prefer-h3:false so DoH stays on HTTP/2 (TCP/443); h3 (QUIC/udp) is DPI-prone.
 function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutingOptions): Record<string, unknown> {
-  const doh = settings.dnsOverHttps || 'https://cloudflare-dns.com/dns-query'
+  const primaryDoh = settings.dnsOverHttps || 'https://dns.cloudflare.com/dns-query'
+  // DoH pool: primary (Cloudflare) + Google, deduped. Both reach through tunnel.
+  const dohPool = Array.from(new Set([primaryDoh, 'https://dns.google/dns-query']))
+  // RU + node direct resolvers (plaintext is OK here — intentional, direct).
+  const ruDirect = ['77.88.8.8', '8.8.8.8']
+  const nodeDirect = ['system', '8.8.8.8']
+
+  const nameserverPolicy: Record<string, unknown> = {
+    // RU TLDs + RU geosite → fast RU/Google DNS, resolved directly (no VPN hop)
+    '+.ru': ruDirect,
+    '+.рф': ruDirect,
+    'geosite:category-ru': ruDirect,
+    'geosite:private': 'system',
+  }
+  // Each proxy node domain → resolved DIRECTLY (before the tunnel) to real IPs.
+  for (const s of opts.nodeDomainSuffixes) nameserverPolicy[`+.${s}`] = nodeDirect
+
   return {
     enable: true,
     listen: '0.0.0.0:1053',
     ipv6: false,
+    'prefer-h3': false,
     'use-system-hosts': false,
     'enhanced-mode': 'fake-ip',
     'fake-ip-range': '198.18.0.1/16',
@@ -360,14 +391,11 @@ function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutin
       // never fake-ip the node domains — they must resolve to real IPs
       ...opts.nodeDomainSuffixes.map(s => `+.${s}`),
     ],
-    'default-nameserver': ['223.5.5.5', '8.8.8.8'],
-    nameserver: [doh],
-    'proxy-server-nameserver': [doh],
-    'nameserver-policy': {
-      // RU domains → Yandex DNS, resolved directly (fast, no leak for RU)
-      'geosite:category-ru': '77.88.8.8',
-      'geosite:private': 'system',
-    },
+    // plaintext bootstrap ONLY (resolves the DoH hostnames + direct lookups)
+    'default-nameserver': ['223.5.5.5', '77.88.8.8'],
+    nameserver: dohPool,
+    'proxy-server-nameserver': dohPool,
+    'nameserver-policy': nameserverPolicy,
     'respect-rules': true,
   }
 }

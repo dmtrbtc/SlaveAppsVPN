@@ -104,6 +104,25 @@ object ClashBridge {
     fun testDelay(name: String, url: String, timeoutMs: Int): Long =
         try { Clashbox.testDelay(name, url, timeoutMs.toLong()) } catch (_: Throwable) { -1L }
 
+    /** Current rule-providers (bypass lists) status JSON, without refreshing. */
+    fun getRuleProviders(): String =
+        try { Clashbox.getRuleProviders() } catch (_: Throwable) { "[]" }
+
+    /**
+     * Force-refresh every rule-provider NOW (the «Обновить списки» action) and
+     * return the resulting status JSON [{name,behavior,count,ok,error}]. Logs the
+     * outcome to Диагностика→Логи so a failed list refresh is visible on device.
+     */
+    fun updateRuleProviders(): String {
+        SlaveVpnService.appendLog("[rules] force-update rule-providers requested")
+        val json = try { Clashbox.updateRuleProviders() } catch (e: Throwable) {
+            SlaveVpnService.appendLog("[rules] update FAILED: ${e.message}")
+            "[]"
+        }
+        SlaveVpnService.appendLog("[rules] force-update result: $json")
+        return json
+    }
+
     fun version(): String = try { Clashbox.version() } catch (_: Throwable) { "unknown" }
 
     // Must match SLAVE_SELECT_GROUP in @slave-vpn/config generateMihomoConfig.

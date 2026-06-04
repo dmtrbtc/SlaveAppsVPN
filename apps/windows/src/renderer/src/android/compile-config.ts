@@ -72,7 +72,7 @@ export async function compileMihomoConfigForAndroid(
     tunEnabled: false,
     tunStack: 'gvisor',
     fakeIpEnabled: true,
-    dnsOverHttps: 'https://cloudflare-dns.com/dns-query',
+    dnsOverHttps: 'https://dns.cloudflare.com/dns-query',
     fallbackDns: ['8.8.8.8', '1.1.1.1'],
     mixedPort: 7890,
   }

@@ -208,6 +208,27 @@ class SlaveVpnPlugin : Plugin() {
         call.resolve(JSObject().put("snapshot", ClashBridge.getConnections()))
     }
 
+    /** Current rule-providers (bypass lists) status JSON, without refreshing. */
+    @PluginMethod
+    fun getRuleProviders(call: PluginCall) {
+        val json = if (ClashBridge.isRunning()) ClashBridge.getRuleProviders() else "[]"
+        call.resolve(JSObject().put("providers", json))
+    }
+
+    /**
+     * «Обновить списки» — force-refresh every bypass rule-provider NOW and return
+     * the resulting status JSON. No-op (empty) when the core isn't running.
+     */
+    @PluginMethod
+    fun updateRuleProviders(call: PluginCall) {
+        if (!ClashBridge.isRunning()) {
+            call.reject("VPN не запущен — списки обновляются у работающего ядра")
+            return
+        }
+        val json = ClashBridge.updateRuleProviders()
+        call.resolve(JSObject().put("providers", json))
+    }
+
     /** Latency (ms) of a proxy via URL test; -1 on error. */
     @PluginMethod
     fun testDelay(call: PluginCall) {

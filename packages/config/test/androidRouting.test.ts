@@ -42,11 +42,34 @@ test('smart mode: rules ordered — node DIRECT, bypass BEFORE GEOSITE:RU, MATCH
   assert.ok(idxMatch === rules.length - 1, 'MATCH must be last')
 })
 
-test('smart mode: hardened DNS (DoH, proxy-server-nameserver, no plaintext nameserver)', () => {
+test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plaintext nameserver)', () => {
   const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
   assert.equal(doc.dns['respect-rules'], true)
+  assert.equal(doc.dns['prefer-h3'], false, 'h3 (QUIC) disabled so DoH stays on TCP/443')
+  const ns = doc.dns['nameserver'] as string[]
+  assert.ok(Array.isArray(ns) && ns.length >= 2, 'nameserver is a DoH pool (>=2)')
+  assert.ok(ns.every(s => s.startsWith('https://')), 'main nameserver pool MUST be DoH-only (no plaintext)')
+  assert.ok(ns.some(s => s.includes('dns.google')), 'Google DoH present in pool')
   assert.ok(Array.isArray(doc.dns['proxy-server-nameserver']))
-  assert.ok(!JSON.stringify(doc.dns['nameserver']).includes('8.8.8.8'), 'nameserver must not contain plaintext 8.8.8.8')
+})
+
+test('smart mode: DNS nameserver-policy — RU TLDs direct + node domains resolved directly', () => {
+  const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
+  const policy = doc.dns['nameserver-policy'] as Record<string, unknown>
+  assert.deepEqual(policy['+.ru'], ['77.88.8.8', '8.8.8.8'], '+.ru → Yandex+Google direct')
+  assert.deepEqual(policy['+.рф'], ['77.88.8.8', '8.8.8.8'], '+.рф → Yandex+Google direct')
+  // node domain resolved directly (before tunnel) to real IPs
+  assert.deepEqual(policy['+.nl.example.online'], ['system', '8.8.8.8'], 'node domain → direct system/Google')
+})
+
+test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () => {
+  const doc = require('js-yaml').load(gen('smart')) as { 'proxy-groups': Array<Record<string, unknown>> }
+  const auto = doc['proxy-groups'].find(g => g['name'] === 'SLAVE-AUTO')
+  assert.ok(auto, 'SLAVE-AUTO group present')
+  assert.equal(auto!['type'], 'url-test')
+  assert.equal(auto!['tolerance'], 50)
+  assert.equal(auto!['lazy'], true)
+  assert.equal(auto!['interval'], 300)
 })
 
 test('global mode → mode:global + MATCH proxy; direct mode → mode:direct + MATCH direct', () => {
