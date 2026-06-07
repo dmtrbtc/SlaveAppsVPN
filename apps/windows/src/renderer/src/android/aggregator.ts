@@ -10,7 +10,44 @@ import {
   updateSubscriptionMeta,
   type AndroidSubscriptionEntry,
 } from './subscription-store'
-import { fetchSubscriptionText } from './native-fetch'
+import { fetchSubscriptionText, fetchSubscriptionTextUA } from './native-fetch'
+
+// UDP/QUIC protocols that Remnawave panels usually OMIT from the Clash profile
+// (Clash historically lacked them) — they live in the sing-box format instead.
+const UDP_PROTOCOLS = new Set(['hysteria2', 'hysteria', 'tuic'])
+// Alt formats to pull ONLY to recover those protocols. sing-box JSON carries
+// Hysteria2/TUIC; the VLESS-Reality-encryption nodes stay from the primary
+// Clash fetch (sing-box can't represent enc), so we never replace them.
+const ALT_FORMAT_UAS = ['SFA/1.0', 'sing-box/1.11.0'] as const
+
+const nodeKey = (p: ProxyEntry): string => `${p.server}:${p.port}:${p.type}`
+
+/**
+ * Additively recover Hysteria2/TUIC nodes the Clash profile omitted, by pulling
+ * the sing-box format and appending ONLY nodes whose server:port:type isn't
+ * already present. Best-effort: any failure leaves the primary list untouched.
+ */
+async function recoverUdpProtocolNodes(input: string, primary: ProxyEntry[]): Promise<ProxyEntry[]> {
+  // Already have them (panel did include hy2 in Clash) → no extra fetch.
+  if (primary.some(p => UDP_PROTOCOLS.has(p.type))) return []
+  const seen = new Set(primary.map(nodeKey))
+  const added: ProxyEntry[] = []
+  for (const ua of ALT_FORMAT_UAS) {
+    const raw = await fetchSubscriptionTextUA(input, ua)
+    if (!raw) continue
+    let alt: ProxyEntry[]
+    try { alt = parseProxiesFromYaml(normalizeSubscriptionContent(raw).yaml) } catch { continue }
+    for (const p of alt) {
+      if (!UDP_PROTOCOLS.has(p.type)) continue // only recover the missing UDP protocols
+      const k = nodeKey(p)
+      if (seen.has(k)) continue
+      seen.add(k)
+      added.push(p)
+    }
+    if (added.length > 0) break // got them — stop probing further formats
+  }
+  return added
+}
 
 /**
  * Renderer-side equivalent of SubscriptionAggregatorService — fetches every
@@ -40,6 +77,14 @@ async function fetchEntry(
       return { proxies: [], error: `Unsupported source type on Android: ${entry.type}` }
     }
     const proxies = parseProxiesFromYaml(yaml)
+    // Additively recover Hysteria2/TUIC nodes the Clash profile omitted (safe:
+    // never replaces the primary VLESS-enc nodes). Only for remote subscriptions.
+    if (entry.type === 'subscription-url') {
+      try {
+        const recovered = await recoverUdpProtocolNodes(input, proxies)
+        if (recovered.length > 0) proxies.push(...recovered)
+      } catch { /* best-effort — primary list stands */ }
+    }
     await updateSubscriptionMeta(entry.id, {
       lastFetchedAt: Date.now(),
       lastError: null,

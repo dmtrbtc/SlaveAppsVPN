@@ -129,6 +129,27 @@ function looksUsable(text: string): boolean {
  * the user it's an HWID / device-limit / empty-subscription situation rather
  * than a generic parse failure.
  */
+/**
+ * Fetch the subscription body with ONE explicit User-Agent (no rotation).
+ * Best-effort: returns the body text on a 2xx non-placeholder response, else
+ * null (never throws). Used by the aggregator to additionally pull an
+ * alternate format (sing-box JSON) that carries protocols the primary Clash
+ * profile omits — notably Hysteria2 / TUIC. Does NOT replace the primary fetch.
+ */
+export async function fetchSubscriptionTextUA(url: string, ua: string): Promise<string | null> {
+  try {
+    const { status, text } = isNative()
+      ? await fetchOnceNative(url, ua)
+      : await fetchOnceWeb(url, ua)
+    if (status < 200 || status >= 300) return null
+    const t = (text ?? '').trim()
+    if (!t || t.includes('App not supported')) return null
+    return t
+  } catch {
+    return null
+  }
+}
+
 export async function fetchSubscriptionText(url: string): Promise<string> {
   const native = isNative()
   let lastError: unknown
