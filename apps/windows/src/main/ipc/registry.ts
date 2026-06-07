@@ -91,6 +91,46 @@ export async function registerAllHandlers(): Promise<void> {
       registerSafeModeHandlers()
       log.debug('Safe mode IPC handlers registered')
     }),
+    import('./handlers/runtime.handler').then(({ registerRuntimeHandlers }) => {
+      registerRuntimeHandlers()
+      log.debug('Runtime IPC handlers registered')
+    }),
+    import('./handlers/cache.handler').then(({ registerCacheHandlers }) => {
+      registerCacheHandlers()
+      log.debug('Cache IPC handlers registered')
+    }),
+    import('./handlers/balancer.handler').then(({ registerBalancerHandlers }) => {
+      registerBalancerHandlers()
+      log.debug('Balancer IPC handlers registered')
+    }),
+    import('./handlers/dns.handler').then(({ registerDnsHandlers }) => {
+      registerDnsHandlers()
+      log.debug('DNS IPC handlers registered')
+    }),
+    import('./handlers/rules.handler').then(({ registerRulesHandlers }) => {
+      registerRulesHandlers()
+      log.debug('Rules IPC handlers registered')
+    }),
+    import('./handlers/split.handler').then(({ registerSplitHandlers }) => {
+      registerSplitHandlers()
+      log.debug('Split tunnel IPC handlers registered')
+    }),
+    import('./handlers/routing.handler').then(({ registerRoutingHandlers }) => {
+      registerRoutingHandlers()
+      log.debug('Routing scenarios IPC handlers registered')
+    }),
+    import('./handlers/subscriptions.handler').then(({ registerSubscriptionsHandlers }) => {
+      registerSubscriptionsHandlers()
+      log.debug('Subscriptions IPC handlers registered')
+    }),
+    import('./handlers/profiles.handler').then(({ registerProfilesHandlers }) => {
+      registerProfilesHandlers()
+      log.debug('Profiles IPC handlers registered')
+    }),
+    import('./handlers/geo.handler').then(({ registerGeoHandlers }) => {
+      registerGeoHandlers()
+      log.debug('Geo updater IPC handlers registered')
+    }),
   ])
 
   log.info('IPC handlers registered')

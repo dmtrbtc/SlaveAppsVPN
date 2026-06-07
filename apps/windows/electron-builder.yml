@@ -25,14 +25,26 @@ extraResources:
   - from: resources/rules
     to: rules
     filter:
-      - '**/*.dat'
+      - '**/*.dat'  # mihomo geo databases
+      - '**/*.db'   # sing-box geo databases
       - '**/*.yaml'
       - '**/*.yml'
 
 win:
   executableName: slave-vpn
-  requestedExecutionLevel: asInvoker
+  requestedExecutionLevel: requireAdministrator
   icon: resources/icons/icon.ico
+  # Code signing: enabled when CSC_LINK or WIN_CSC_LINK env var is set.
+  # See docs/CODESIGNING.md for setup.
+  signtoolOptions:
+    signingHashAlgorithms:
+      - sha256
+    # Optional explicit certificate file (.pfx); if unset, electron-builder
+    # uses CSC_LINK env var (URL or base64 of the .pfx).
+    # certificateFile: ../../codesign/slavevpn.pfx
+  # Authenticode timestamp server — required so signatures don't expire
+  # when the certificate does. Sectigo is reliable; DigiCert as fallback.
+  # electron-builder defaults to http://timestamp.digicert.com which is fine.
   target:
     - target: nsis
       arch:

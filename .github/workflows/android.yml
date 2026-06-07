@@ -57,21 +57,82 @@ jobs:
             pnpm exec cap add android
           fi
 
+      - name: Enable Kotlin in the generated Android project
+        working-directory: apps/android/android
+        run: |
+          set -e
+          # The Capacitor template applies ONLY 'com.android.application' — no
+          # Kotlin plugin. Without this our *.kt plugin files (SlaveVpnPlugin,
+          # SlaveVpnService, SingboxBridge) are silently skipped by the Java
+          # compiler, the SlaveVpn plugin class never lands in the APK, and the
+          # JS side throws `"SlaveVpn" plugin is not implemented on android`.
+          if ! grep -q 'kotlin-gradle-plugin' build.gradle; then
+            sed -i "/com.android.tools.build:gradle:/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25'" build.gradle
+          fi
+          if ! grep -q "kotlin-android" app/build.gradle; then
+            sed -i "/apply plugin: 'com.android.application'/a apply plugin: 'kotlin-android'" app/build.gradle
+          fi
+          # Kotlin JVM target must match Capacitor's Java 21 compileOptions or
+          # Gradle fails with "Inconsistent JVM-target compatibility".
+          if ! grep -q "jvmTarget" app/build.gradle; then
+            sed -i 's|android {|android {\n    kotlinOptions { jvmTarget = "21" }|' app/build.gradle
+          fi
+          echo "=== root build.gradle classpaths ==="; grep -n "classpath" build.gradle
+          echo "=== app build.gradle head ==="; head -6 app/build.gradle
+
       - name: Copy sample Kotlin plugin
         working-directory: apps/android
         run: |
           mkdir -p android/app/src/main/java/com/slavevpn/plugin
           cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
 
-      - name: Copy libbox.aar (sing-box mobile engine)
+      - name: Register SlaveVpnPlugin in MainActivity
+        working-directory: apps/android
+        run: |
+          set -e
+          # IMPORTANT: appId is com.slavevpn.app, so Capacitor generates the
+          # launcher activity at com/slavevpn/app/MainActivity.java. We must
+          # register the plugin in THAT activity (the one the manifest launches)
+          # — registering in com.slavevpn.MainActivity did nothing because that
+          # activity was never started.
+          PKG_DIR=android/app/src/main/java/com/slavevpn/app
+          mkdir -p "$PKG_DIR"
+          # Drop the auto-generated Java launcher so it can't shadow our Kotlin
+          # one (duplicate class) and so the plugin actually gets registered.
+          rm -f "$PKG_DIR/MainActivity.java"
+          # Clean up the stale wrong-package activity from earlier CI versions.
+          rm -f android/app/src/main/java/com/slavevpn/MainActivity.kt
+          MAIN="$PKG_DIR/MainActivity.kt"
+          cat > "$MAIN" <<'EOF'
+          package com.slavevpn.app
+
+          import android.os.Bundle
+          import com.getcapacitor.BridgeActivity
+          import com.slavevpn.plugin.SlaveVpnPlugin
+
+          class MainActivity : BridgeActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  registerPlugin(SlaveVpnPlugin::class.java)
+                  super.onCreate(savedInstanceState)
+              }
+          }
+          EOF
+          echo "MainActivity.kt wired with SlaveVpnPlugin registration:"
+          cat "$MAIN"
+          echo "=== launcher package in manifest ==="
+          grep -n 'package=' android/app/src/main/AndroidManifest.xml || true
+
+      - name: Copy core .aar (clashbox = mihomo/Clash.Meta engine, VLESS-enc capable)
         working-directory: apps/android
         run: |
           mkdir -p android/app/libs
-          if [ -f libs/libbox.aar ]; then
-            cp libs/libbox.aar android/app/libs/
-            echo "libbox.aar copied ($(du -h libs/libbox.aar | cut -f1))"
+          shopt -s nullglob
+          aars=(libs/*.aar)
+          if [ ${#aars[@]} -gt 0 ]; then
+            cp libs/*.aar android/app/libs/
+            for f in "${aars[@]}"; do echo "copied $(basename "$f") ($(du -h "$f" | cut -f1))"; done
           else
-            echo "WARNING: apps/android/libs/libbox.aar missing — APK will lack VPN engine"
+            echo "WARNING: apps/android/libs/*.aar missing — APK will lack the VPN engine"
           fi
 
       - name: Patch AndroidManifest with VPN permissions + service

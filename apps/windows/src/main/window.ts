@@ -7,9 +7,11 @@ const WINDOW_MIN_WIDTH = 380
 const WINDOW_MIN_HEIGHT = 600
 const WINDOW_DEFAULT_WIDTH = 420
 const WINDOW_DEFAULT_HEIGHT = 700
+const READY_TO_SHOW_TIMEOUT_MS = 15_000
 
 let mainWindow: BrowserWindow | null = null
 let renderCrashCount = 0
+let showTimer: ReturnType<typeof setTimeout> | null = null
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
@@ -63,6 +65,23 @@ export function createMainWindow(): BrowserWindow {
     log.warn({ url }, 'Blocked redirect attempt')
   })
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    log.info({ phase: 'renderer_loaded' }, 'Renderer did-finish-load')
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errCode, errDesc, validatedURL) => {
+    log.error({ errCode, errDesc, url: validatedURL }, 'Renderer did-fail-load')
+    // Force show so the user sees something instead of an invisible hung process
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
+  })
+
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    const src = sourceId ? sourceId.split('/').pop() : 'renderer'
+    if (level === 3) log.error({ line, src }, `[renderer] ${message}`)
+    else if (level === 2) log.warn({ line, src }, `[renderer] ${message}`)
+    else log.debug({ line, src }, `[renderer] ${message}`)
+  })
+
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     log.error({ reason: details.reason, exitCode: details.exitCode }, 'Renderer process gone')
     renderCrashCount++
@@ -75,6 +94,8 @@ export function createMainWindow(): BrowserWindow {
       }
     } else {
       log.error({ renderCrashCount }, 'Renderer crashed too many times — not reloading')
+      // Show window anyway so the user sees *something* rather than a ghost process
+      if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
     }
   })
 
@@ -86,7 +107,19 @@ export function createMainWindow(): BrowserWindow {
     log.info('Window responsive again')
   })
 
-  mainWindow.on('ready-to-show', () => {
+  // Fallback: if ready-to-show hasn't fired after READY_TO_SHOW_TIMEOUT_MS, force-show.
+  // Covers renderer crash-before-paint, preload failure, or any other invisible-window scenario.
+  showTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      log.error({ phase: 'force_show', timeoutMs: READY_TO_SHOW_TIMEOUT_MS },
+        'ready-to-show timeout — force-showing window for diagnostics')
+      mainWindow.show()
+    }
+  }, READY_TO_SHOW_TIMEOUT_MS)
+
+  mainWindow.once('ready-to-show', () => {
+    if (showTimer) { clearTimeout(showTimer); showTimer = null }
+    log.info({ phase: 'ready_to_show' }, 'Window ready-to-show')
     mainWindow?.show()
   })
 

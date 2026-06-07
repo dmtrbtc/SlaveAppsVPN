@@ -8,6 +8,7 @@ import { getSettingsStore } from './services/SettingsStore'
 import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { getUpdateService } from './services/UpdateService'
 import { getSafeModeManager } from './services/SafeModeManager'
+import { startupTracker } from './startup-tracker'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
 app.commandLine.appendSwitch('disable-http-cache')
@@ -39,12 +40,17 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 // ─── Initialization ───────────────────────────────────────────────────────────
 
+// PHASE 0: Pre-ready bootstrap logger (no userData path yet).
+// Must use synchronous stdout in production — pino-pretty is a devDependency
+// and its absence in packaged builds causes ThreadStream to deadlock via Atomics.wait().
 initLogger()
 
 // Safe mode must be initialized before bootstrap — reads crash loop counter
 getSafeModeManager().init()
 
 const log = getLogger()
+
+const isSafeModeFlag = process.argv.includes('--safe-mode')
 
 log.info({
   version: app.getVersion(),
@@ -55,36 +61,54 @@ log.info({
   electron: process.versions.electron,
   node: process.versions.node,
   env: app.isPackaged ? 'packaged' : 'dev',
+  safeMode: isSafeModeFlag || getSafeModeManager().isSafeMode(),
+  pid: process.pid,
 }, 'SLAVE VPN starting')
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
   const userDataPath = app.getPath('userData')
+  // PHASE 1: Replace pre-ready stdout logger with persistent file logger
   const logger = initLogger(userDataPath)
   setCrashLogPath(userDataPath)
 
-  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid }, 'App ready')
+  startupTracker.begin('app_ready', 'App ready')
+  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeFlag }, 'App ready')
+  startupTracker.complete('app_ready')
 
-  logger.debug({ phase: 'ipc_register' }, 'Registering IPC handlers')
+  // PHASE 2: Register IPC handlers (dynamic imports of handler chunks)
+  startupTracker.begin('ipc_register', 'Register IPC handlers')
+  logger.info({ phase: 'ipc_register_start' }, 'Registering IPC handlers')
   await registerAllHandlers()
-  logger.debug({ phase: 'ipc_register' }, 'IPC handlers registered')
+  startupTracker.complete('ipc_register')
+  logger.info({ phase: 'ipc_register_done' }, 'IPC handlers registered')
 
-  logger.debug({ phase: 'window_create' }, 'Creating main window')
+  // PHASE 3: Create window — must happen before bootstrap so UI is visible during startup
+  startupTracker.begin('window_create', 'Create main window')
+  logger.info({ phase: 'window_create_start' }, 'Creating main window')
   createMainWindow()
   createTray()
-  logger.debug({ phase: 'window_create' }, 'Main window created')
+  startupTracker.complete('window_create')
+  logger.info({ phase: 'window_create_done' }, 'Main window created')
 
   setupAutoStart()
   setupAutoUpdater()
   setupPowerMonitor()
 
-  logger.info({ phase: 'bootstrap_start' }, 'Starting provider bootstrap')
-  bootstrap()
-    .then(() => logger.info({ phase: 'bootstrap_complete' }, 'Bootstrap complete'))
+  // PHASE 4: Provider/runtime bootstrap (fire-and-forget, degraded mode on failure)
+  startupTracker.begin('bootstrap', 'Provider & runtime bootstrap')
+  logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeFlag }, 'Starting provider bootstrap')
+  bootstrap(isSafeModeFlag)
+    .then(() => {
+      startupTracker.complete('bootstrap')
+      startupTracker.markComplete()
+      logger.info({ phase: 'bootstrap_complete' }, 'Bootstrap complete')
+    })
     .catch((err: unknown) => {
+      startupTracker.fail('bootstrap', err instanceof Error ? err.message : String(err))
       writeCrashLog('bootstrap_failed', err)
-      log.error({ err, phase: 'bootstrap_failed' }, 'Bootstrap failed — app running in degraded mode')
+      logger.error({ err, phase: 'bootstrap_failed' }, 'Bootstrap failed — app running in degraded mode')
     })
 
   app.on('second-instance', () => {
@@ -95,9 +119,16 @@ app.whenReady().then(async () => {
     showMainWindow()
   })
 
-  log.info('Initialization complete')
+  logger.info({ phase: 'init_complete' }, 'Initialization complete')
 }).catch((error: unknown) => {
+  writeCrashLog('app_init_failed', error)
   log.fatal({ error }, 'Fatal error during app initialization')
+  // Force show window even during fatal init failure so user sees error state
+  try {
+    const { getMainWindow } = require('./window') as typeof import('./window')
+    const w = getMainWindow()
+    if (w && !w.isVisible()) w.show()
+  } catch { /* ignore */ }
   app.quit()
 })
 

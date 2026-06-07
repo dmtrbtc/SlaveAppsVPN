@@ -45,6 +45,7 @@ function Bootstrap({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isBootstrapping && !timedOut) return
     void fetchStatus()
+    void useVpnStore.getState().fetchProxyList()
 
     let unsubVpn = NOOP_UNSUB
     let unsubAuth = NOOP_UNSUB

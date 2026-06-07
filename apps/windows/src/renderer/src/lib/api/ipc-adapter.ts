@@ -1,11 +1,35 @@
-import type { SlaveVPNBridge, UpdateSetChannelPayload } from '@shared/ipc/types'
+import type {
+  SlaveVPNBridge,
+  UpdateSetChannelPayload,
+  VpnSetProxyPayload,
+  BalancerSetEnabledPayload,
+  BalancerSetModePayload,
+  DnsSetProfilePayload,
+  RuleProviderAddPayload,
+  RuleProviderRemovePayload,
+  RuleProviderUpdatePayload,
+  RuleProviderReorderPayload,
+  SplitSetProcessListPayload,
+  BalancerState,
+  SubscriptionAddPayload,
+  SubscriptionRemovePayload,
+  SubscriptionUpdatePayload,
+  SubscriptionRefreshPayload,
+  ProfileCreateInput,
+  ProfileApplyPayload,
+} from '@shared/ipc/types'
 
 const IPC_TIMEOUT_MS = 15_000
 const NOOP_UNSUB = (): void => {}
 
 function requireBridge(): SlaveVPNBridge {
   if (!window.slaveVPN) {
-    throw new Error('[IPC] Bridge not available — preload not initialized')
+    const w = window as unknown as { Capacitor?: { getPlatform?: () => string; isNativePlatform?: () => boolean } }
+    const cap = w.Capacitor
+    const hint = cap
+      ? `Capacitor detected (platform=${cap.getPlatform?.() ?? '?'} native=${cap.isNativePlatform?.() ?? '?'}) but bridge didn't install — check console for [android-bridge] errors`
+      : 'no preload bridge and no Capacitor global — this build is likely loaded in an unsupported shell'
+    throw new Error(`[IPC] Bridge not available — ${hint}`)
   }
   return window.slaveVPN
 }
@@ -58,6 +82,22 @@ export const vpnApi = {
     unwrap(requireBridge().vpn.setMode({ mode })),
   getConnectivity: () =>
     unwrap(requireBridge().vpn.getConnectivity()),
+  setProxy: (payload: VpnSetProxyPayload) =>
+    unwrap(requireBridge().vpn.setProxy(payload)),
+  getProxyList: () =>
+    unwrap(requireBridge().vpn.getProxyList()),
+  getConnections: () =>
+    unwrap(requireBridge().vpn.getConnections()),
+  closeConnection: (id: string) =>
+    unwrap(requireBridge().vpn.closeConnection({ id })),
+  getBalancerState: () =>
+    unwrap(requireBridge().vpn.getBalancerState()),
+  setBalancerEnabled: (payload: BalancerSetEnabledPayload) =>
+    unwrap(requireBridge().vpn.setBalancerEnabled(payload)),
+  setBalancerMode: (payload: BalancerSetModePayload) =>
+    unwrap(requireBridge().vpn.setBalancerMode(payload)),
+  probeAll: () =>
+    unwrap(requireBridge().vpn.probeAll()),
 }
 
 export const subscriptionApi = {
@@ -85,6 +125,10 @@ export const diagnosticsApi = {
     unwrap(requireBridge().diagnostics.getLogs()),
   exportLogs: () =>
     unwrap(requireBridge().diagnostics.exportLogs()),
+  getStartup: () =>
+    unwrap(requireBridge().diagnostics.getStartup()),
+  selfTest: () =>
+    unwrap(requireBridge().diagnostics.selfTest()),
 }
 
 export const providerApi = {
@@ -115,6 +159,95 @@ export const safeModeApi = {
     unwrap(requireBridge().safeMode.getStatus()),
   reset: () =>
     unwrap(requireBridge().safeMode.reset()),
+}
+
+export const runtimeApi = {
+  restart: () =>
+    unwrap(requireBridge().runtime.restart()),
+}
+
+export const cacheApi = {
+  clear: () =>
+    unwrap(requireBridge().cache.clear()),
+}
+
+export const dnsApi = {
+  getProfile: () =>
+    unwrap(requireBridge().dns.getProfile()),
+  setProfile: (payload: DnsSetProfilePayload) =>
+    unwrap(requireBridge().dns.setProfile(payload)),
+  getPresets: () =>
+    unwrap(requireBridge().dns.getPresets()),
+  getStrategies: () =>
+    unwrap(requireBridge().dns.getStrategies()),
+  leakTest: () =>
+    unwrap(requireBridge().dns.leakTest()),
+}
+
+export const rulesApi = {
+  list: () =>
+    unwrap(requireBridge().rules.list()),
+  add: (payload: RuleProviderAddPayload) =>
+    unwrap(requireBridge().rules.add(payload)),
+  remove: (payload: RuleProviderRemovePayload) =>
+    unwrap(requireBridge().rules.remove(payload)),
+  update: (payload: RuleProviderUpdatePayload) =>
+    unwrap(requireBridge().rules.update(payload)),
+  reorder: (payload: RuleProviderReorderPayload) =>
+    unwrap(requireBridge().rules.reorder(payload)),
+  reload: () =>
+    unwrap(requireBridge().rules.reload()),
+}
+
+export const splitApi = {
+  getProcesses: () =>
+    unwrap(requireBridge().split.getProcesses()),
+  getProcessList: () =>
+    unwrap(requireBridge().split.getProcessList()),
+  setProcessList: (payload: SplitSetProcessListPayload) =>
+    unwrap(requireBridge().split.setProcessList(payload)),
+}
+
+export const routingApi = {
+  listScenarios: () =>
+    unwrap(requireBridge().routing.listScenarios()),
+  setEnabledScenarios: (scenarioIds: string[]) =>
+    unwrap(requireBridge().routing.setEnabledScenarios({ scenarioIds })),
+}
+
+export const geoApi = {
+  getState: () => unwrap(requireBridge().geo.getState()),
+  updateAll: () => unwrap(requireBridge().geo.updateAll()),
+  updateOne: (id: string) => unwrap(requireBridge().geo.updateOne({ id })),
+  listSources: () => unwrap(requireBridge().geo.listSources()),
+}
+
+export const profilesApi = {
+  list: () =>
+    unwrap(requireBridge().profiles.list()),
+  saveCurrent: (payload: ProfileCreateInput) =>
+    unwrap(requireBridge().profiles.saveCurrent(payload)),
+  remove: (id: string) =>
+    unwrap(requireBridge().profiles.remove({ id })),
+  apply: (payload: ProfileApplyPayload) =>
+    unwrap(requireBridge().profiles.apply(payload)),
+}
+
+export const subscriptionsApi = {
+  list: () =>
+    unwrap(requireBridge().subscriptions.list()),
+  add: (payload: SubscriptionAddPayload) =>
+    unwrap(requireBridge().subscriptions.add(payload)),
+  remove: (payload: SubscriptionRemovePayload) =>
+    unwrap(requireBridge().subscriptions.remove(payload)),
+  update: (payload: SubscriptionUpdatePayload) =>
+    unwrap(requireBridge().subscriptions.update(payload)),
+  refresh: (payload: SubscriptionRefreshPayload) =>
+    unwrap(requireBridge().subscriptions.refresh(payload)),
+  refreshAll: () =>
+    unwrap(requireBridge().subscriptions.refreshAll()),
+  detectClipboard: () =>
+    unwrap(requireBridge().subscriptions.detectClipboard()),
 }
 
 export const updateApi = {
@@ -153,4 +286,16 @@ export const events = {
     getBridge()?.events.onUpdateProgress(...args) ?? NOOP_UNSUB,
   onNotification: (...args: Parameters<SlaveVPNBridge['events']['onNotification']>) =>
     getBridge()?.events.onNotification(...args) ?? NOOP_UNSUB,
+  onBalancerState: (callback: (state: BalancerState) => void) =>
+    getBridge()?.events.onBalancerState(callback) ?? NOOP_UNSUB,
+  onProxyChanged: (callback: (proxyName: string) => void) =>
+    getBridge()?.events.onProxyChanged(callback) ?? NOOP_UNSUB,
+  onServerLatency: (...args: Parameters<SlaveVPNBridge['events']['onServerLatency']>) =>
+    getBridge()?.events.onServerLatency(...args) ?? NOOP_UNSUB,
+  onSubscriptionsChanged: (...args: Parameters<SlaveVPNBridge['events']['onSubscriptionsChanged']>) =>
+    getBridge()?.events.onSubscriptionsChanged(...args) ?? NOOP_UNSUB,
+  onProfilesChanged: (...args: Parameters<SlaveVPNBridge['events']['onProfilesChanged']>) =>
+    getBridge()?.events.onProfilesChanged(...args) ?? NOOP_UNSUB,
+  onGeoUpdaterState: (...args: Parameters<SlaveVPNBridge['events']['onGeoUpdaterState']>) =>
+    getBridge()?.events.onGeoUpdaterState(...args) ?? NOOP_UNSUB,
 }

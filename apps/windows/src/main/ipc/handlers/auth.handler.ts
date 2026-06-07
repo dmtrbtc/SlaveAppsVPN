@@ -7,7 +7,9 @@ import {
 import { errResult, okResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
 import { getSecureStorage } from '../../security/SecureStorage'
+import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
 import type { AuthService } from '../../services/AuthService'
+import type { RuntimeService } from '../../services/RuntimeService'
 
 export function registerAuthHandlers(): void {
   handleIpc(IpcChannel.AUTH_LOGIN_EMAIL, LoginEmailSchema, async (data) => {
@@ -31,11 +33,22 @@ export function registerAuthHandlers(): void {
   })
 
   handleIpc(IpcChannel.AUTH_LOGOUT, EmptySchema, async () => {
+    // Disconnect VPN first
+    if (services.has('runtime')) {
+      const runtime = services.resolve<RuntimeService>('runtime')
+      const status = runtime.getStatus()
+      if (status.state !== 'disconnected' && status.state !== 'error') {
+        await runtime.disconnect().catch(() => undefined)
+      }
+    }
+    // Clear provider session
     if (services.has('auth')) {
       const auth = services.resolve<AuthService>('auth')
-      await auth.logout()
+      await auth.logout().catch(() => undefined)
     }
+    // Clear all credentials and config
     getSecureStorage().clearTokens()
+    getConfigSourceService().clear()
     return okResult(undefined)
   })
 

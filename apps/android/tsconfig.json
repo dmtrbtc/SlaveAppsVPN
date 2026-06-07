@@ -1,0 +1,14 @@
+{
+  "extends": "@slave-vpn/tsconfig/base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "capacitor.config.ts"],
+  "exclude": ["node_modules", "android", "dist"]
+}

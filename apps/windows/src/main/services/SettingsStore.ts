@@ -1,7 +1,8 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import type { AppSettings } from '../../shared/ipc/types'
+import { getDefaultEnabledScenarios } from '@slave-vpn/routing'
+import type { AppSettings, DnsPresetName, BalancerMode } from '../../shared/ipc/types'
 
 const DEFAULT_SETTINGS: AppSettings = {
   language: 'ru',
@@ -15,6 +16,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME ?? '',
   devMode: false,
   updateChannel: 'stable',
+  selectedEngine: 'mihomo',
+  dnsPreset: 'secure' as DnsPresetName,
+  dnsStrategy: 'prefer_ipv4',
+  customDnsProfile: null,
+  balancerEnabled: false,
+  balancerMode: 'balanced' as BalancerMode,
+  autoSelectProxy: false,
+  selectedProxy: null,
+  splitProcessList: [],
+  ruleProviders: [],
+  enabledScenarios: getDefaultEnabledScenarios() as string[],
+  utlsFingerprint: 'randomized',
 }
 
 class SettingsStore {

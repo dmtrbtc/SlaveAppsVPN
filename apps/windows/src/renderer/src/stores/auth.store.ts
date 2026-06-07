@@ -76,11 +76,13 @@ export const useAuthStore = create<AuthStore>()((set) => ({
 
   logout: async () => {
     await authApi.logout()
-    set(s => ({
+    // Backend clears both tokens and config source
+    set({
       user: null,
       isAuthenticated: false,
-      hasAccess: computeHasAccess(false, s.configSourceMeta),
-    }))
+      configSourceMeta: null,
+      hasAccess: false,
+    })
   },
 
   setConfigSourceMeta: (meta) => {

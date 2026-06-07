@@ -35,6 +35,7 @@ export const DnsProfilePresets = {
         fallbackFilter: FALLBACK_FILTER,
       },
       ipv6: { enabled: false },
+      strategy: 'prefer_ipv4',
       sniffing: {
         enabled: true,
         overrideDestination: true,
@@ -60,10 +61,37 @@ export const DnsProfilePresets = {
         fallbackFilter: FALLBACK_FILTER,
       },
       ipv6: { enabled: false },
+      strategy: 'prefer_ipv4',
       sniffing: {
         enabled: true,
         overrideDestination: false,
         protocols: ['http', 'tls'],
+      },
+    }
+  },
+
+  performance(): DnsProfile {
+    return {
+      mode: 'fake-ip',
+      nameservers: [UDP_GOOGLE, UDP_CLOUDFLARE, UDP_GOOGLE_ALT],
+      fallbackNameservers: [DOH_CLOUDFLARE],
+      bootstrapNameservers: BOOTSTRAP,
+      fakeIp: {
+        enabled: true,
+        range: '198.18.0.1/16',
+        filter: DEFAULT_FAKE_IP_FILTER,
+      },
+      leakPrevention: {
+        enabled: true,
+        useSystemDns: false,
+        fallbackFilter: FALLBACK_FILTER,
+      },
+      ipv6: { enabled: false },
+      strategy: 'prefer_ipv4',
+      sniffing: {
+        enabled: true,
+        overrideDestination: false,
+        protocols: ['tls'],
       },
     }
   },
@@ -82,6 +110,7 @@ export const DnsProfilePresets = {
         useSystemDns: true,
       },
       ipv6: { enabled: false },
+      strategy: 'prefer_ipv4',
       sniffing: {
         enabled: false,
         overrideDestination: false,

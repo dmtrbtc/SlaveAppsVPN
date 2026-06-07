@@ -103,14 +103,29 @@ console.log('Rule 7: renderer must not import @slave-vpn/* packages directly')
 {
   const rendererSrc = join(ROOT, 'apps/windows/src/renderer/src')
   const files = getSourceFiles(rendererSrc)
+  // Renderer-allowed packages: browser-safe shared types/utils, and
+  // the @slave-vpn/config + @slave-vpn/dns + @slave-vpn/routing trio
+  // ONLY inside the apps/windows/src/renderer/src/android/ subfolder —
+  // that folder IS the Android bridge (no IPC to a main process exists
+  // on Android), so it must compile a sing-box config locally.
+  const ALWAYS_ALLOWED = new Set(['@slave-vpn/shared'])
+  const ANDROID_BRIDGE_ALLOWED = new Set([
+    '@slave-vpn/config',
+    '@slave-vpn/dns',
+    '@slave-vpn/routing',
+    '@slave-vpn/shared',
+  ])
   for (const file of files) {
     const content = readFileSync(file, 'utf-8')
+    const relFile = relative(ROOT, file)
+    const inAndroidBridge = relFile.includes('renderer/src/android/') || relFile.includes('renderer\\src\\android\\')
     const matches = [...content.matchAll(/from ['"](@slave-vpn\/[^'"]+)['"]/g)]
     for (const match of matches) {
-      // Allow @slave-vpn/shared types in env.d.ts
       const pkg = match[1]
-      const relFile = relative(ROOT, file)
-      if (relFile.includes('env.d.ts') && pkg === '@slave-vpn/shared') continue
+      // Strip subpath: '@slave-vpn/shared/models' → '@slave-vpn/shared'
+      const rootPkg = pkg.split('/').slice(0, 2).join('/')
+      if (ALWAYS_ALLOWED.has(rootPkg)) continue
+      if (inAndroidBridge && ANDROID_BRIDGE_ALLOWED.has(rootPkg)) continue
       checked++
       fail(`${relFile}: renderer imports ${pkg} directly (use IPC bridge instead)`)
     }

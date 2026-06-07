@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { ShieldCheck, Zap, Minimize2, Check } from 'lucide-react'
+import { ShieldCheck, Zap, Minimize2, Gauge, Check } from 'lucide-react'
 import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
 import { useUIStore } from '../stores/ui.store'
+import { dnsApi, settingsApi } from '../lib/api'
+import { DnsAdvancedSection } from '../components/dns/DnsAdvancedSection'
+import type { DnsPresetName, DnsStrategyName, DnsStrategyInfo } from '@shared/ipc/types'
 
-type DnsProfileKey = 'secure' | 'balanced' | 'minimal'
-
-interface DnsProfile {
-  key: DnsProfileKey
+interface DnsProfileDef {
+  key: DnsPresetName
   Icon: React.ComponentType<{ className?: string }>
   label: string
   sublabel: string
@@ -18,15 +19,15 @@ interface DnsProfile {
   recommended?: boolean
 }
 
-const DNS_PROFILES: DnsProfile[] = [
+const DNS_PROFILES: DnsProfileDef[] = [
   {
     key: 'secure',
     Icon: ShieldCheck,
     label: 'Безопасный',
-    sublabel: 'DNS-over-HTTPS + H3',
-    description: 'Полная защита DNS. Fake-IP режим, DoH с HTTP/3, защита от DNS-leak. Оптимально для обхода блокировок.',
-    features: ['Fake-IP', 'DoH H/3', 'DNS-leak защита', 'DNSSEC'],
-    servers: ['https://dns.cloudflare.com/dns-query', 'https://dns.google/dns-query'],
+    sublabel: 'DoH + H/3 + Fake-IP',
+    description: 'Полная защита DNS. DoH с Fake-IP режимом, защита от DNS-leak. Оптимально для обхода блокировок.',
+    features: ['Fake-IP', 'DNS-over-HTTPS', 'DNS-leak защита', 'No IPv6'],
+    servers: ['https://8.8.8.8/dns-query', 'https://1.1.1.1/dns-query'],
     recommended: true,
   },
   {
@@ -36,36 +37,80 @@ const DNS_PROFILES: DnsProfile[] = [
     sublabel: 'DoH + UDP fallback',
     description: 'Сочетание скорости и безопасности. Fake-IP с fallback на UDP для местных доменов.',
     features: ['Fake-IP', 'DoH primary', 'UDP fallback', 'Кэширование'],
-    servers: ['https://dns.cloudflare.com/dns-query', '8.8.8.8'],
+    servers: ['https://8.8.8.8/dns-query', '8.8.4.4'],
+  },
+  {
+    key: 'performance',
+    Icon: Gauge,
+    label: 'Производительность',
+    sublabel: 'UDP параллельный',
+    description: 'Максимальная скорость разрешения. UDP-запросы параллельно к нескольким серверам.',
+    features: ['Fake-IP', 'UDP параллельный', 'Мин. задержка'],
+    servers: ['8.8.8.8', '1.1.1.1', '9.9.9.9'],
   },
   {
     key: 'minimal',
     Icon: Minimize2,
     label: 'Минимальный',
     sublabel: 'UDP / системный DNS',
-    description: 'Минимальная конфигурация. Redir-host режим, системные DNS-серверы. Максимальная скорость разрешения.',
-    features: ['Redir-Host', 'UDP', 'Системный DNS', 'Без fake-IP'],
+    description: 'Минимальная конфигурация. Redir-host режим, базовые UDP-серверы. Максимальная совместимость.',
+    features: ['Redir-Host', 'UDP', 'Без Fake-IP', 'Системный DNS'],
     servers: ['8.8.8.8', '1.1.1.1'],
   },
 ]
 
 export function DnsPage() {
   const { notify } = useUIStore()
-  const [selected, setSelected] = useState<DnsProfileKey>('secure')
+  const [selected, setSelected] = useState<DnsPresetName>('secure')
+  const [strategy, setStrategy] = useState<DnsStrategyName>('prefer_ipv4')
+  const [strategies, setStrategies] = useState<DnsStrategyInfo[]>([])
   const [isApplying, setIsApplying] = useState(false)
+  const [isStrategyApplying, setIsStrategyApplying] = useState(false)
 
-  const handleSelect = async (key: DnsProfileKey) => {
+  // Load current preset + strategy from settings on mount
+  useEffect(() => {
+    settingsApi.get().then(s => {
+      setSelected(s.dnsPreset ?? 'secure')
+      setStrategy((s.dnsStrategy ?? 'prefer_ipv4') as DnsStrategyName)
+    }).catch(() => {})
+    dnsApi.getStrategies().then(setStrategies).catch(() => {})
+  }, [])
+
+  const handleStrategyChange = async (next: DnsStrategyName) => {
+    if (next === strategy || isStrategyApplying) return
+    setIsStrategyApplying(true)
+    try {
+      await settingsApi.set({ dnsStrategy: next })
+      setStrategy(next)
+      notify({ type: 'success', title: 'Стратегия обновлена', message: next })
+    } catch {
+      notify({ type: 'error', title: 'Ошибка', message: 'Не удалось сохранить стратегию' })
+    } finally {
+      setIsStrategyApplying(false)
+    }
+  }
+
+  const handleSelect = async (key: DnsPresetName) => {
     if (key === selected || isApplying) return
     setIsApplying(true)
     try {
-      await new Promise(r => setTimeout(r, 300))
+      await settingsApi.set({ dnsPreset: key })
+      // Also update the dns profile via IPC (persists for next connect)
+      const profile = await dnsApi.getProfile()
+      if (profile.preset !== key) {
+        await dnsApi.setProfile({ profile: { ...profile, preset: key } })
+      }
       setSelected(key)
-      const profile = DNS_PROFILES.find(p => p.key === key)!
-      notify({ type: 'success', title: 'DNS профиль изменён', message: profile.label })
+      const profileDef = DNS_PROFILES.find(p => p.key === key)!
+      notify({ type: 'success', title: 'DNS профиль изменён', message: profileDef.label })
+    } catch {
+      notify({ type: 'error', title: 'Ошибка', message: 'Не удалось сохранить DNS профиль' })
     } finally {
       setIsApplying(false)
     }
   }
+
+  const selectedProfile = DNS_PROFILES.find(p => p.key === selected)
 
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-bg-base">
@@ -76,8 +121,8 @@ export function DnsPage() {
       </div>
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
-        {/* Profile grid — 3 cards */}
-        <div className="grid grid-cols-3 gap-2.5">
+        {/* Profile grid — 2×2 */}
+        <div className="grid grid-cols-2 gap-2.5">
           {DNS_PROFILES.map((profile, i) => {
             const isSelected = selected === profile.key
             return (
@@ -98,7 +143,7 @@ export function DnsPage() {
                     isApplying && 'pointer-events-none opacity-60'
                   )}
                 >
-                  {/* Icon + selected */}
+                  {/* Icon + selected check */}
                   <div className="flex items-start justify-between mb-3">
                     <div className={cn(
                       'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
@@ -128,7 +173,7 @@ export function DnsPage() {
                     {profile.description}
                   </p>
 
-                  {/* Features */}
+                  {/* Feature badges */}
                   <div className="flex flex-wrap gap-1">
                     {profile.features.map(f => (
                       <Badge key={f} tone="neutral">{f}</Badge>
@@ -140,8 +185,8 @@ export function DnsPage() {
           })}
         </div>
 
-        {/* Servers + info card */}
-        {DNS_PROFILES.find(p => p.key === selected) && (
+        {/* Servers info card */}
+        {selectedProfile && (
           <motion.div
             key={selected}
             initial={{ opacity: 0, y: 6 }}
@@ -150,10 +195,10 @@ export function DnsPage() {
             className="rounded-lg border border-border bg-bg-primary p-4"
           >
             <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-2">
-              DNS-серверы — {DNS_PROFILES.find(p => p.key === selected)!.label}
+              DNS-серверы — {selectedProfile.label}
             </p>
             <div className="flex flex-col gap-1">
-              {DNS_PROFILES.find(p => p.key === selected)!.servers.map(s => (
+              {selectedProfile.servers.map(s => (
                 <code key={s} className="text-[11px] text-text-secondary font-mono break-all">
                   {s}
                 </code>
@@ -164,6 +209,49 @@ export function DnsPage() {
             </p>
           </motion.div>
         )}
+
+        {/* DNS strategy (IPv4 / IPv6 preference) */}
+        {strategies.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, delay: 0.1 }}
+            className="rounded-lg border border-border bg-bg-primary p-4"
+          >
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-3">
+              Стратегия разрешения
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {strategies.map(s => {
+                const active = s.value === strategy
+                return (
+                  <button
+                    key={s.value}
+                    type="button"
+                    onClick={() => void handleStrategyChange(s.value)}
+                    disabled={isStrategyApplying}
+                    className={cn(
+                      'rounded-md border px-3 py-1.5 text-[12px] transition-colors disabled:opacity-50',
+                      active
+                        ? 'border-accent/45 bg-accent/10 text-text-primary'
+                        : 'border-border bg-bg-secondary text-text-secondary hover:border-border-strong',
+                    )}
+                  >
+                    {s.label}
+                  </button>
+                )
+              })}
+            </div>
+            {strategies.find(s => s.value === strategy) && (
+              <p className="text-[11px] text-text-muted leading-relaxed mt-3">
+                {strategies.find(s => s.value === strategy)?.description}
+              </p>
+            )}
+          </motion.div>
+        )}
+
+        {/* G.1 + G.2 + G.4 — Custom resolvers / per-domain rules / prefetch */}
+        <DnsAdvancedSection />
       </div>
     </div>
   )

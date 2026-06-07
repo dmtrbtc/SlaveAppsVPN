@@ -60,6 +60,8 @@ export type SubscriptionRemoveDeviceResult = IpcResult<void>
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
+export type SelectedEngine = 'mihomo' | 'singbox' | 'xray'
+
 export interface AppSettings {
   language: 'ru' | 'en'
   vpnMode: VPNMode
@@ -72,7 +74,36 @@ export interface AppSettings {
   telegramBotUsername: string
   devMode: boolean
   updateChannel: 'stable' | 'beta'
+  selectedEngine: SelectedEngine
+  // New settings fields
+  dnsPreset: DnsPresetName
+  dnsStrategy: DnsStrategyName
+  customDnsProfile: DnsProfileConfig | null
+  balancerEnabled: boolean
+  balancerMode: BalancerMode
+  autoSelectProxy: boolean
+  selectedProxy: string | null
+  splitProcessList: string[]
+  ruleProviders: RuleProvider[]
+  // Routing scenarios (Karing-style recipes; A.3)
+  enabledScenarios: string[]
+  // uTLS fingerprint used by sing-box / Mihomo when establishing TLS to
+  // remote servers. "randomized" rotates the Client Hello on every
+  // handshake — anti-DPI baseline since ТСПУ behavioural filtering (2026).
+  utlsFingerprint: UtlsFingerprintName
 }
+
+export type UtlsFingerprintName =
+  | 'randomized'
+  | 'random'
+  | 'chrome'
+  | 'firefox'
+  | 'safari'
+  | 'edge'
+  | 'ios'
+  | 'android'
+  | '360'
+  | 'qq'
 
 export type SettingsGetResult = IpcResult<AppSettings>
 export type SettingsSetResult = IpcResult<void>
@@ -99,6 +130,45 @@ export interface LogEntry {
 
 export type DiagnosticsCollectResult = IpcResult<SystemInfo>
 export type DiagnosticsExportLogsResult = IpcResult<string>
+
+// ─── Self-test ────────────────────────────────────────────────────────────────
+
+export type SelfTestStatus = 'ok' | 'warning' | 'error' | 'skipped'
+
+export interface SelfTestCheck {
+  id: string
+  label: string
+  status: SelfTestStatus
+  detail: string
+  durationMs: number
+}
+
+export interface SelfTestReport {
+  checks: SelfTestCheck[]
+  overall: SelfTestStatus
+  ranAt: number
+  totalMs: number
+}
+
+export type DiagnosticsSelfTestResult = IpcResult<SelfTestReport>
+
+export interface StartupPhaseEntry {
+  phase: string
+  label: string
+  startedAt: number
+  completedAt: number | null
+  durationMs: number | null
+  error?: string
+}
+
+export interface StartupReport {
+  phases: StartupPhaseEntry[]
+  totalMs: number
+  appStartedAt: number
+  completedAt: number | null
+}
+
+export type DiagnosticsGetStartupResult = IpcResult<StartupReport>
 export type DiagnosticsGetLogsResult = IpcResult<LogEntry[]>
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -171,7 +241,11 @@ export type RuntimeEventKind =
   | 'proxy.dns_error'
   | 'proxy.connection_refused'
   | 'proxy.timeout'
+  | 'proxy.encryption_error'
   | 'proxy.selected'
+  | 'connection.opened'
+  | 'connection.closed'
+  | 'rules.updated'
 
 export interface RuntimeEvent {
   id: string
@@ -241,6 +315,16 @@ export type ConfigSourceClearResult = IpcResult<void>
 // ─── Servers ──────────────────────────────────────────────────────────────────
 
 export type ServersListResult = IpcResult<Server[]>
+export type ServersProbeResult = IpcResult<void>
+
+// ─── Server latency event (main → renderer) ──────────────────────────────────
+
+export interface ServerLatencyPayload {
+  proxyName: string            // matches Server.name / ProxyEntry.name
+  latencyMs: number | null     // null = failed
+  success: boolean
+  score: number                // 0-100 health score
+}
 
 // ─── Connectivity snapshot ───────────────────────────────────────────────────
 
@@ -259,6 +343,8 @@ export interface VPNConnectivityInfo {
   captivePortal?: boolean      // captive portal detected
   quarantinedNodes?: number    // nodes currently quarantined by NodeHealthManager
   suggestion?: string          // actionable hint for degraded state
+  realityStatus?: 'reality' | 'tls' | 'none'  // security type of active proxy
+  apiUrl?: string              // Mihomo API base URL when running
 }
 
 export type VpnGetConnectivityResult = IpcResult<VPNConnectivityInfo | null>
@@ -272,6 +358,14 @@ export interface SafeModeStatus {
 
 export type SafeModeGetStatusResult = IpcResult<SafeModeStatus>
 export type SafeModeResetResult = IpcResult<void>
+
+// ─── Runtime controls ─────────────────────────────────────────────────────────
+
+export type RuntimeRestartResult = IpcResult<void>
+
+// ─── Cache ────────────────────────────────────────────────────────────────────
+
+export type CacheClearResult = IpcResult<void>
 
 // ─── Updates ─────────────────────────────────────────────────────────────────
 
@@ -311,6 +405,417 @@ export interface UpdateProgressPayload {
   total: number
 }
 
+// ─── VPN Extended ────────────────────────────────────────────────────────────
+
+export interface VpnSetProxyPayload {
+  proxyName: string
+}
+
+export interface ProxyEntry {
+  name: string
+  type: string        // vless | vmess | trojan | ss | hysteria2 | tuic
+  server: string
+  port?: number
+  transport?: string  // tcp | ws | grpc | h2
+  security?: string   // reality | tls | none
+  latencyMs?: number | null
+  healthScore?: number
+  countryCode?: string
+  isFavorite?: boolean
+  isAuto?: boolean    // special: AUTO group entry
+  group?: string      // which group this belongs to
+}
+
+export type VpnSetProxyResult = IpcResult<void>
+export type VpnGetProxyListResult = IpcResult<ProxyEntry[]>
+
+// ─── Active connections (Mihomo /connections) ────────────────────────────────
+
+export interface ActiveConnection {
+  id: string
+  host: string             // metadata.host or destinationIP fallback
+  network: string          // tcp | udp
+  type: string             // HTTP / HTTPS / Socks5 / TUN
+  destinationIP: string
+  destinationPort: string
+  sourceIP: string
+  sourcePort: string
+  process?: string         // process basename
+  chain: string            // last hop in chains[]
+  rule: string             // matched rule
+  upload: number           // bytes
+  download: number         // bytes
+  start: string            // ISO timestamp
+}
+
+export interface ActiveConnectionsSnapshot {
+  uploadTotal: number
+  downloadTotal: number
+  count: number
+  connections: ActiveConnection[]
+  fetchedAt: number
+}
+
+export interface ConnectionCloseRequest {
+  id: string
+}
+
+export type VpnGetConnectionsResult = IpcResult<ActiveConnectionsSnapshot | null>
+export type VpnCloseConnectionResult = IpcResult<void>
+
+// ─── Balancer ─────────────────────────────────────────────────────────────────
+
+export type BalancerMode = 'latency' | 'stability' | 'balanced' | 'manual'
+
+export interface NodeScore {
+  name: string
+  latencyMs: number | null
+  jitterMs: number
+  packetLoss: number     // 0.0 - 1.0
+  stabilityScore: number // 0-100
+  compositeScore: number // 0-100
+  probeCount: number
+  lastProbeAt: number | null
+  quarantined: boolean
+}
+
+export interface BalancerState {
+  enabled: boolean
+  mode: BalancerMode
+  currentBest: string | null
+  lastRebalanceAt: number | null
+  probeIntervalMs: number
+  nodes: NodeScore[]
+}
+
+export type BalancerGetStateResult = IpcResult<BalancerState>
+export type BalancerSetEnabledResult = IpcResult<void>
+export type BalancerSetModeResult = IpcResult<void>
+export type BalancerProbeAllResult = IpcResult<void>
+
+export interface BalancerSetEnabledPayload {
+  enabled: boolean
+}
+
+export interface BalancerSetModePayload {
+  mode: BalancerMode
+}
+
+// ─── DNS ─────────────────────────────────────────────────────────────────────
+
+export type DnsPresetName = 'secure' | 'balanced' | 'performance' | 'minimal' | 'custom'
+export type DnsStrategyName = 'prefer_ipv4' | 'ipv4_only' | 'prefer_ipv6' | 'ipv6_only'
+export type DnsResolverKind = 'doh' | 'dot' | 'udp' | 'tcp' | 'doq'
+export type DnsRuleMatchKind = 'domain' | 'domain_suffix' | 'domain_keyword' | 'geosite'
+
+export interface CustomDnsResolver {
+  id: string
+  type: DnsResolverKind
+  url: string
+  preferH3?: boolean
+}
+
+export interface CustomDnsRule {
+  id: string
+  matchType: DnsRuleMatchKind
+  value: string
+  resolverTag: string  // 'primary' | 'fallback' | 'direct' | 'system' | inline URL | custom resolver id
+}
+
+export interface DnsProfileConfig {
+  preset: DnsPresetName
+  primaryDoh: string
+  fallbackDns: string[]
+  fakeIpEnabled: boolean
+  ipv6Enabled: boolean
+  bootstrapDns: string[]
+  strategy?: DnsStrategyName
+  // G.1 — custom resolvers (full DoH/DoT/UDP/TCP/DoQ definitions)
+  customResolvers?: CustomDnsResolver[]
+  // G.2 — per-domain DNS rules
+  customRules?: CustomDnsRule[]
+  // G.4 — domains to pre-resolve at start
+  prefetchDomains?: string[]
+  // legacy field — kept for backward compat
+  customNameservers?: string[]
+}
+
+export interface DnsStrategyInfo {
+  value: DnsStrategyName
+  label: string
+  description: string
+}
+
+export interface DnsPresetInfo {
+  name: DnsPresetName
+  label: string
+  description: string
+  features: string[]
+  nameservers: string[]
+  fakeIp: boolean
+  ipv6: boolean
+}
+
+export type DnsGetProfileResult = IpcResult<DnsProfileConfig>
+export type DnsSetProfileResult = IpcResult<void>
+export type DnsGetPresetsResult = IpcResult<DnsPresetInfo[]>
+export type DnsGetStrategiesResult = IpcResult<DnsStrategyInfo[]>
+
+export interface DnsSetProfilePayload {
+  profile: DnsProfileConfig
+}
+
+export interface DnsLeakResolver {
+  ip: string | null
+  asn: string | null
+  isp: string | null
+  country: string | null
+}
+
+export interface DnsLeakReport {
+  publicIp: string | null
+  publicCountry: string | null
+  publicColo: string | null
+  resolvers: DnsLeakResolver[]
+  expectedResolverHosts: string[]
+  leaked: boolean
+  warning: string | null
+  testedAt: number
+  durationMs: number
+}
+
+export type DnsLeakTestResult = IpcResult<DnsLeakReport>
+
+// ─── Rules ────────────────────────────────────────────────────────────────────
+
+export type RuleProviderType = 'domain-list' | 'ip-cidr-list' | 'clash-yaml' | 'geosite' | 'geoip' | 'mixed'
+export type RuleProviderAction = 'proxy' | 'direct' | 'reject'
+export type RuleSourceKind = 'github' | 'url' | 'builtin'
+
+export interface RuleProvider {
+  id: string
+  name: string
+  enabled: boolean
+  kind: RuleSourceKind
+  url: string
+  type: RuleProviderType
+  action: RuleProviderAction
+  priority: number          // 0-9999; lower = higher priority
+  ruleCount?: number
+  lastUpdatedAt?: number
+  lastError?: string
+  category?: string         // 'russia-bypass' | 'streaming' | 'ai' | 'gaming' | 'privacy' | 'work' | 'custom'
+  isPreset?: boolean        // built-in preset, cannot be deleted
+}
+
+export interface RuleProviderAddPayload {
+  name: string
+  url: string
+  type: RuleProviderType
+  action: RuleProviderAction
+  category?: string
+}
+
+export interface RuleProviderUpdatePayload {
+  id: string
+  enabled?: boolean
+  action?: RuleProviderAction
+  priority?: number
+}
+
+export interface RuleProviderRemovePayload {
+  id: string
+}
+
+export interface RuleProviderReorderPayload {
+  ids: string[]  // ordered list of all provider IDs
+}
+
+export type RulesListResult = IpcResult<RuleProvider[]>
+export type RulesAddResult = IpcResult<RuleProvider>
+export type RulesRemoveResult = IpcResult<void>
+export type RulesUpdateResult = IpcResult<RuleProvider>
+export type RulesReloadResult = IpcResult<void>
+export type RulesReorderResult = IpcResult<void>
+
+// ─── Profiles (quick-switch saved combos) ────────────────────────────────────
+
+export interface AppProfileSnapshot {
+  // What this profile applies when activated. All fields optional —
+  // unset fields keep the current setting.
+  subscriptionId?: string         // null = don't change subscription
+  enabledScenarios?: string[]
+  dnsPreset?: DnsPresetName
+  dnsStrategy?: DnsStrategyName
+  selectedEngine?: SelectedEngine
+  selectedProxy?: string | null
+  vpnMode?: VPNMode
+  balancerEnabled?: boolean
+}
+
+export interface AppProfile {
+  id: string
+  name: string
+  description?: string
+  snapshot: AppProfileSnapshot
+  createdAt: number
+  lastUsedAt: number | null
+}
+
+export interface ProfileCreateInput {
+  name: string
+  description?: string
+}
+
+export interface ProfileApplyPayload {
+  id: string
+  // If true, profile applies even when VPN is connected and triggers hot reload.
+  hotReload?: boolean
+}
+
+export type ProfilesListResult = IpcResult<{ profiles: AppProfile[]; activeProfileId: string | null }>
+export type ProfilesSaveResult = IpcResult<AppProfile>
+export type ProfilesRemoveResult = IpcResult<void>
+export type ProfilesApplyResult = IpcResult<AppProfile>
+
+// ─── Geo auto-updater (J.3) ──────────────────────────────────────────────────
+
+export interface GeoUpdateRecord {
+  id: string
+  label: string
+  filename: string
+  bytes: number
+  sha256: string
+  updatedAt: number
+}
+
+export interface GeoSourceInfo {
+  id: string
+  label: string
+  url: string
+  filename: string
+  category: 'geo-db' | 'domain-list'
+}
+
+export interface GeoUpdaterState {
+  records: GeoUpdateRecord[]
+  lastFullUpdateAt: number | null
+  inProgress: boolean
+  intervalHours: number
+}
+
+export interface GeoUpdateOutcome {
+  id: string
+  status: 'ok' | 'skipped' | 'error'
+  bytes?: number
+  sha256?: string
+  error?: string
+}
+
+export interface GeoUpdateOnePayload {
+  id: string
+}
+
+export type GeoGetStateResult = IpcResult<GeoUpdaterState>
+export type GeoUpdateAllResult = IpcResult<GeoUpdateOutcome[]>
+export type GeoUpdateOneResult = IpcResult<GeoUpdateOutcome>
+export type GeoListSourcesResult = IpcResult<GeoSourceInfo[]>
+
+// ─── Subscriptions (multi-source) ─────────────────────────────────────────────
+// Replaces the single-source ConfigSourceMeta paradigm with a collection of
+// SubscriptionEntry items. Existing ConfigSourceMeta API stays for back-compat.
+
+export type SubscriptionAutoUpdate = 0 | 15 | 60 | 360 | 1440  // minutes; 0 = off
+
+export interface SubscriptionEntry {
+  id: string
+  name: string
+  type: ConfigSourceType
+  enabled: boolean
+  autoUpdateMinutes: SubscriptionAutoUpdate
+  addedAt: number
+  lastFetchedAt: number | null
+  lastError: string | null
+  nodeCount: number | null
+  urlDomain?: string
+  proxyProtocol?: string
+}
+
+export interface SubscriptionAddPayload {
+  name?: string
+  type: ConfigSourceType
+  input: string
+  autoUpdateMinutes?: SubscriptionAutoUpdate
+}
+
+export interface SubscriptionUpdatePayload {
+  id: string
+  name?: string
+  enabled?: boolean
+  autoUpdateMinutes?: SubscriptionAutoUpdate
+}
+
+export interface SubscriptionRemovePayload {
+  id: string
+}
+
+export interface SubscriptionRefreshPayload {
+  id: string
+}
+
+export interface ClipboardDetectResult {
+  found: boolean
+  scheme?: string                // 'vless' | 'vmess' | ...
+  preview?: NodePreview          // single-proxy parse preview
+  input?: string                 // raw URI to forward to add()
+}
+
+export type SubscriptionsListResult = IpcResult<SubscriptionEntry[]>
+export type SubscriptionsAddResult = IpcResult<SubscriptionEntry>
+export type SubscriptionsRemoveResult = IpcResult<void>
+export type SubscriptionsUpdateResult = IpcResult<SubscriptionEntry>
+export type SubscriptionsRefreshResult = IpcResult<SubscriptionEntry>
+export type SubscriptionsRefreshAllResult = IpcResult<SubscriptionEntry[]>
+export type SubscriptionsDetectClipboardResult = IpcResult<ClipboardDetectResult>
+
+// ─── Routing Scenarios ────────────────────────────────────────────────────────
+
+export interface RoutingScenarioInfo {
+  id: string
+  name: string
+  description: string
+  category: string
+  icon: string
+  defaultEnabled: boolean
+  composable: boolean
+  ruleCount: number
+  enabled: boolean
+}
+
+export interface RoutingSetEnabledScenariosPayload {
+  scenarioIds: string[]
+}
+
+export type RoutingListScenariosResult = IpcResult<RoutingScenarioInfo[]>
+export type RoutingSetEnabledScenariosResult = IpcResult<RoutingScenarioInfo[]>
+
+// ─── Split Tunnel ─────────────────────────────────────────────────────────────
+
+export interface RunningProcess {
+  name: string
+  path: string
+  pid: number
+  description?: string
+}
+
+export interface SplitSetProcessListPayload {
+  processList: string[]  // process names e.g. ["chrome.exe", "firefox.exe"]
+}
+
+export type SplitGetProcessesResult = IpcResult<RunningProcess[]>
+export type SplitSetProcessListResult = IpcResult<void>
+export type SplitGetProcessListResult = IpcResult<string[]>
+
 // ─── Feature Flags ────────────────────────────────────────────────────────────
 // App-level feature flags — separate from provider capabilities.
 // Provider capabilities gate business logic; feature flags gate app behavior.
@@ -338,6 +843,14 @@ export interface SlaveVPNBridge {
     getStatus: () => Promise<VpnGetStatusResult>
     setMode: (payload: VpnSetModePayload) => Promise<IpcResult<void>>
     getConnectivity: () => Promise<VpnGetConnectivityResult>
+    setProxy: (payload: VpnSetProxyPayload) => Promise<VpnSetProxyResult>
+    getProxyList: () => Promise<VpnGetProxyListResult>
+    getConnections: () => Promise<VpnGetConnectionsResult>
+    closeConnection: (payload: ConnectionCloseRequest) => Promise<VpnCloseConnectionResult>
+    getBalancerState: () => Promise<BalancerGetStateResult>
+    setBalancerEnabled: (payload: BalancerSetEnabledPayload) => Promise<BalancerSetEnabledResult>
+    setBalancerMode: (payload: BalancerSetModePayload) => Promise<BalancerSetModeResult>
+    probeAll: () => Promise<BalancerProbeAllResult>
   }
   subscription: {
     get: () => Promise<SubscriptionGetResult>
@@ -353,6 +866,8 @@ export interface SlaveVPNBridge {
     collect: () => Promise<DiagnosticsCollectResult>
     exportLogs: () => Promise<DiagnosticsExportLogsResult>
     getLogs: () => Promise<DiagnosticsGetLogsResult>
+    getStartup: () => Promise<DiagnosticsGetStartupResult>
+    selfTest: () => Promise<DiagnosticsSelfTestResult>
   }
   provider: {
     getManifest: () => Promise<ProviderGetManifestResult>
@@ -366,6 +881,7 @@ export interface SlaveVPNBridge {
   }
   servers: {
     list: () => Promise<ServersListResult>
+    probe: () => Promise<ServersProbeResult>
   }
   safeMode: {
     getStatus: () => Promise<SafeModeGetStatusResult>
@@ -377,6 +893,57 @@ export interface SlaveVPNBridge {
     install: () => Promise<UpdateInstallResult>
     getStatus: () => Promise<UpdateGetStatusResult>
     setChannel: (payload: UpdateSetChannelPayload) => Promise<UpdateSetChannelResult>
+  }
+  runtime: {
+    restart: () => Promise<RuntimeRestartResult>
+  }
+  cache: {
+    clear: () => Promise<CacheClearResult>
+  }
+  dns: {
+    getProfile: () => Promise<DnsGetProfileResult>
+    setProfile: (payload: DnsSetProfilePayload) => Promise<DnsSetProfileResult>
+    getPresets: () => Promise<DnsGetPresetsResult>
+    getStrategies: () => Promise<DnsGetStrategiesResult>
+    leakTest: () => Promise<DnsLeakTestResult>
+  }
+  rules: {
+    list: () => Promise<RulesListResult>
+    add: (payload: RuleProviderAddPayload) => Promise<RulesAddResult>
+    remove: (payload: RuleProviderRemovePayload) => Promise<RulesRemoveResult>
+    update: (payload: RuleProviderUpdatePayload) => Promise<RulesUpdateResult>
+    reorder: (payload: RuleProviderReorderPayload) => Promise<RulesReorderResult>
+    reload: () => Promise<RulesReloadResult>
+  }
+  split: {
+    getProcesses: () => Promise<SplitGetProcessesResult>
+    getProcessList: () => Promise<SplitGetProcessListResult>
+    setProcessList: (payload: SplitSetProcessListPayload) => Promise<SplitSetProcessListResult>
+  }
+  routing: {
+    listScenarios: () => Promise<RoutingListScenariosResult>
+    setEnabledScenarios: (payload: RoutingSetEnabledScenariosPayload) => Promise<RoutingSetEnabledScenariosResult>
+  }
+  subscriptions: {
+    list: () => Promise<SubscriptionsListResult>
+    add: (payload: SubscriptionAddPayload) => Promise<SubscriptionsAddResult>
+    remove: (payload: SubscriptionRemovePayload) => Promise<SubscriptionsRemoveResult>
+    update: (payload: SubscriptionUpdatePayload) => Promise<SubscriptionsUpdateResult>
+    refresh: (payload: SubscriptionRefreshPayload) => Promise<SubscriptionsRefreshResult>
+    refreshAll: () => Promise<SubscriptionsRefreshAllResult>
+    detectClipboard: () => Promise<SubscriptionsDetectClipboardResult>
+  }
+  profiles: {
+    list: () => Promise<ProfilesListResult>
+    saveCurrent: (payload: ProfileCreateInput) => Promise<ProfilesSaveResult>
+    remove: (payload: { id: string }) => Promise<ProfilesRemoveResult>
+    apply: (payload: ProfileApplyPayload) => Promise<ProfilesApplyResult>
+  }
+  geo: {
+    getState: () => Promise<GeoGetStateResult>
+    updateAll: () => Promise<GeoUpdateAllResult>
+    updateOne: (payload: GeoUpdateOnePayload) => Promise<GeoUpdateOneResult>
+    listSources: () => Promise<GeoListSourcesResult>
   }
   controls: {
     minimize: () => Promise<void>
@@ -395,5 +962,11 @@ export interface SlaveVPNBridge {
     onUpdateDownloaded: (callback: (payload: UpdateAvailablePayload) => void) => () => void
     onUpdateProgress: (callback: (payload: UpdateProgressPayload) => void) => () => void
     onNotification: (callback: (payload: NotificationPayload) => void) => () => void
+    onServerLatency: (callback: (payload: ServerLatencyPayload) => void) => () => void
+    onBalancerState: (callback: (state: BalancerState) => void) => () => void
+    onProxyChanged: (callback: (proxyName: string) => void) => () => void
+    onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) => () => void
+    onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) => () => void
+    onGeoUpdaterState: (callback: (state: GeoUpdaterState) => void) => () => void
   }
 }

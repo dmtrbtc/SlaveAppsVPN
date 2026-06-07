@@ -27,6 +27,8 @@ export const IpcChannel = {
   DIAGNOSTICS_COLLECT: 'diagnostics:collect',
   DIAGNOSTICS_EXPORT_LOGS: 'diagnostics:exportLogs',
   DIAGNOSTICS_GET_LOGS: 'diagnostics:getLogs',
+  DIAGNOSTICS_GET_STARTUP: 'diagnostics:getStartup',
+  DIAGNOSTICS_SELF_TEST: 'diagnostics:selfTest',
 
   // Provider — request/response
   PROVIDER_GET_MANIFEST: 'provider:getManifest',
@@ -40,6 +42,7 @@ export const IpcChannel = {
 
   // Servers — request/response
   SERVERS_LIST: 'servers:list',
+  SERVERS_PROBE: 'servers:probe',
 
   // Safe mode — request/response
   SAFE_MODE_GET_STATUS: 'safeMode:getStatus',
@@ -51,6 +54,12 @@ export const IpcChannel = {
   UPDATE_INSTALL: 'update:install',
   UPDATE_GET_STATUS: 'update:getStatus',
   UPDATE_SET_CHANNEL: 'update:setChannel',
+
+  // Runtime controls — request/response
+  RUNTIME_RESTART: 'runtime:restart',
+
+  // Cache — request/response
+  CACHE_CLEAR: 'cache:clear',
 
   // Window controls — request/response
   WINDOW_MINIMIZE: 'window:minimize',
@@ -69,6 +78,71 @@ export const IpcChannel = {
   EVENT_UPDATE_DOWNLOADED: 'event:update:downloaded',
   EVENT_UPDATE_PROGRESS: 'event:update:progress',
   EVENT_NOTIFICATION: 'event:notification',
+  EVENT_SERVER_LATENCY: 'event:server:latency',
+
+  // VPN extended
+  VPN_SET_PROXY: 'vpn:setProxy',
+  VPN_GET_PROXY_LIST: 'vpn:getProxyList',
+  VPN_GET_CONNECTIONS: 'vpn:getConnections',
+  VPN_CLOSE_CONNECTION: 'vpn:closeConnection',
+
+  // Balancer
+  VPN_GET_BALANCER_STATE: 'vpn:getBalancerState',
+  VPN_SET_BALANCER_ENABLED: 'vpn:setBalancerEnabled',
+  VPN_SET_BALANCER_MODE: 'vpn:setBalancerMode',
+  VPN_PROBE_ALL: 'vpn:probeAll',
+
+  // DNS
+  DNS_GET_PROFILE: 'dns:getProfile',
+  DNS_SET_PROFILE: 'dns:setProfile',
+  DNS_GET_PRESETS: 'dns:getPresets',
+  DNS_GET_STRATEGIES: 'dns:getStrategies',
+  DNS_LEAK_TEST: 'diag:dnsLeakTest',
+
+  // Rules
+  RULES_LIST: 'rules:list',
+  RULES_ADD: 'rules:add',
+  RULES_REMOVE: 'rules:remove',
+  RULES_REORDER: 'rules:reorder',
+  RULES_UPDATE: 'rules:update',
+  RULES_RELOAD: 'rules:reload',
+
+  // Routing scenarios (Karing-style recipes)
+  ROUTING_LIST_SCENARIOS: 'routing:listScenarios',
+  ROUTING_SET_ENABLED_SCENARIOS: 'routing:setEnabledScenarios',
+
+  // Geo auto-updater (J.3)
+  GEO_GET_STATE: 'geo:getState',
+  GEO_UPDATE_ALL: 'geo:updateAll',
+  GEO_UPDATE_ONE: 'geo:updateOne',
+  GEO_LIST_SOURCES: 'geo:listSources',
+  EVENT_GEO_UPDATER_STATE: 'event:geo:state',
+
+  // Quick-switch profiles (H.1)
+  PROFILES_LIST: 'profiles:list',
+  PROFILES_SAVE_CURRENT: 'profiles:saveCurrent',
+  PROFILES_REMOVE: 'profiles:remove',
+  PROFILES_APPLY: 'profiles:apply',
+  EVENT_PROFILES_CHANGED: 'event:profiles:changed',
+
+  // Multi-subscription manager (B.1)
+  SUBSCRIPTIONS_LIST: 'subscriptions:list',
+  SUBSCRIPTIONS_ADD: 'subscriptions:add',
+  SUBSCRIPTIONS_REMOVE: 'subscriptions:remove',
+  SUBSCRIPTIONS_UPDATE: 'subscriptions:update',
+  SUBSCRIPTIONS_REFRESH: 'subscriptions:refresh',
+  SUBSCRIPTIONS_REFRESH_ALL: 'subscriptions:refreshAll',
+  SUBSCRIPTIONS_DETECT_CLIPBOARD: 'subscriptions:detectClipboard',
+  EVENT_SUBSCRIPTIONS_CHANGED: 'event:subscriptions:changed',
+
+  // Split tunnel
+  SPLIT_GET_PROCESSES: 'split:getProcesses',
+  SPLIT_SET_PROCESS_LIST: 'split:setProcessList',
+  SPLIT_GET_PROCESS_LIST: 'split:getProcessList',
+
+  // Events
+  EVENT_BALANCER_STATE: 'event:balancer:state',
+  EVENT_PROXY_CHANGED: 'event:proxy:changed',
 } as const
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel]
@@ -92,6 +166,8 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DIAGNOSTICS_COLLECT'
   | 'DIAGNOSTICS_EXPORT_LOGS'
   | 'DIAGNOSTICS_GET_LOGS'
+  | 'DIAGNOSTICS_GET_STARTUP'
+  | 'DIAGNOSTICS_SELF_TEST'
   | 'PROVIDER_GET_MANIFEST'
   | 'PROVIDER_GET_CAPABILITIES'
   | 'CONFIG_SOURCE_GET_META'
@@ -99,6 +175,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'CONFIG_SOURCE_VALIDATE'
   | 'CONFIG_SOURCE_CLEAR'
   | 'SERVERS_LIST'
+  | 'SERVERS_PROBE'
   | 'SAFE_MODE_GET_STATUS'
   | 'SAFE_MODE_RESET'
   | 'UPDATE_CHECK'
@@ -106,7 +183,48 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'UPDATE_INSTALL'
   | 'UPDATE_GET_STATUS'
   | 'UPDATE_SET_CHANNEL'
+  | 'RUNTIME_RESTART'
+  | 'CACHE_CLEAR'
   | 'WINDOW_MINIMIZE'
   | 'WINDOW_MAXIMIZE'
   | 'WINDOW_CLOSE'
+  | 'VPN_SET_PROXY'
+  | 'VPN_GET_PROXY_LIST'
+  | 'VPN_GET_CONNECTIONS'
+  | 'VPN_CLOSE_CONNECTION'
+  | 'VPN_GET_BALANCER_STATE'
+  | 'VPN_SET_BALANCER_ENABLED'
+  | 'VPN_SET_BALANCER_MODE'
+  | 'VPN_PROBE_ALL'
+  | 'DNS_GET_PROFILE'
+  | 'DNS_SET_PROFILE'
+  | 'DNS_GET_PRESETS'
+  | 'DNS_GET_STRATEGIES'
+  | 'DNS_LEAK_TEST'
+  | 'RULES_LIST'
+  | 'RULES_ADD'
+  | 'RULES_REMOVE'
+  | 'RULES_REORDER'
+  | 'RULES_UPDATE'
+  | 'RULES_RELOAD'
+  | 'ROUTING_LIST_SCENARIOS'
+  | 'ROUTING_SET_ENABLED_SCENARIOS'
+  | 'GEO_GET_STATE'
+  | 'GEO_UPDATE_ALL'
+  | 'GEO_UPDATE_ONE'
+  | 'GEO_LIST_SOURCES'
+  | 'PROFILES_LIST'
+  | 'PROFILES_SAVE_CURRENT'
+  | 'PROFILES_REMOVE'
+  | 'PROFILES_APPLY'
+  | 'SUBSCRIPTIONS_LIST'
+  | 'SUBSCRIPTIONS_ADD'
+  | 'SUBSCRIPTIONS_REMOVE'
+  | 'SUBSCRIPTIONS_UPDATE'
+  | 'SUBSCRIPTIONS_REFRESH'
+  | 'SUBSCRIPTIONS_REFRESH_ALL'
+  | 'SUBSCRIPTIONS_DETECT_CLIPBOARD'
+  | 'SPLIT_GET_PROCESSES'
+  | 'SPLIT_SET_PROCESS_LIST'
+  | 'SPLIT_GET_PROCESS_LIST'
 ]

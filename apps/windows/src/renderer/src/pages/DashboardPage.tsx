@@ -4,7 +4,12 @@ import { ArrowUp, ArrowDown, Clock, Cpu, AlertTriangle, RefreshCw } from 'lucide
 import { AuroraOrb } from '../components/connection/AuroraOrb'
 import { ConnectionPhaseTracker } from '../components/connection/ConnectionPhaseTracker'
 import { ConnectionQualityBadge } from '../components/connection/ConnectionQualityBadge'
+import { ConnectionTargetSelector } from '../components/connection/ConnectionTargetSelector'
+import { RoutingModeSwitch } from '../components/connection/RoutingModeSwitch'
 import { ReconnectDisplay } from '../components/connection/ReconnectDisplay'
+import { TrafficSparkline } from '../components/traffic/TrafficSparkline'
+import { ActiveConnectionsPanel } from '../components/connections/ActiveConnectionsPanel'
+import { ProfileSwitcher } from '../components/profile/ProfileSwitcher'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { StatTile } from '../components/ui/stat-tile'
@@ -17,7 +22,7 @@ import {
   selectReconnectAttempts,
   selectConnectionStartedAt,
 } from '../stores/vpn.store'
-import { formatSpeed, formatBytes, formatUptime, countryFlagEmoji } from '../lib/utils'
+import { formatSpeed, formatBytes, formatUptime } from '../lib/utils'
 
 const MODE_LABELS: Record<string, string> = {
   full:    'Полный VPN',
@@ -81,6 +86,9 @@ function StatusBar() {
           </Badge>
         )}
       </div>
+      <div className="ml-auto">
+        <ProfileSwitcher />
+      </div>
     </div>
   )
 }
@@ -88,32 +96,19 @@ function StatusBar() {
 // ─── Server hero card ────────────────────────────────────────────────────────
 
 function ServerHeroCard() {
-  const status = useVpnStore(selectVpnStatus)
   const state = useVpnStore(selectConnectionState)
-  const flag = countryFlagEmoji(status.countryCode)
 
   return (
-    <div className="flex flex-col justify-center gap-4 h-full">
-      <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-          Сервер
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">{flag}</span>
-          <span className="text-[18px] font-semibold text-text-primary leading-tight">
-            {status.serverName ?? 'Сервер не выбран'}
-          </span>
-        </div>
-        {status.countryCode && (
-          <div className="text-[12px] text-text-muted">
-            {status.countryCode.toUpperCase()}
-          </div>
-        )}
-      </div>
-
+    <div className="flex flex-col gap-3 h-full min-h-0">
       {state === 'connected' && (
         <ConnectionQualityBadge />
       )}
+      <div className="flex-1 min-h-0">
+        <ConnectionTargetSelector />
+      </div>
+      <div className="shrink-0">
+        <RoutingModeSwitch />
+      </div>
     </div>
   )
 }
@@ -167,7 +162,7 @@ function StatsRow() {
   const isConnected = state === 'connected'
 
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       <StatTile
         label="Загрузка"
         value={isConnected ? formatSpeed(traffic.downloadSpeedBps) : '—'}
@@ -268,10 +263,10 @@ export function DashboardPage() {
       <StatusBar />
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-5">
+      <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 flex flex-col gap-5">
 
-        {/* Hero row — orb + right column */}
-        <div className="grid grid-cols-2 gap-6 min-h-[260px]">
+        {/* Hero row — orb + right column (stacks on narrow/mobile) */}
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:min-h-[260px]">
 
           {/* Left: Orb */}
           <div className="flex items-center justify-center">
@@ -306,6 +301,24 @@ export function DashboardPage() {
           transition={{ delay: 0.15, duration: 0.3 }}
         >
           <StatsRow />
+        </motion.div>
+
+        {/* Live traffic sparkline */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2, duration: 0.3 }}
+        >
+          <TrafficSparkline />
+        </motion.div>
+
+        {/* Active connections */}
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.25, duration: 0.3 }}
+        >
+          <ActiveConnectionsPanel />
         </motion.div>
 
       </div>

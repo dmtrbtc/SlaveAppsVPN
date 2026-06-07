@@ -7,6 +7,7 @@ import { SubscriptionUrlSource } from './sources/SubscriptionUrlSource'
 import { SingleProxySource, parseProxyLink } from './sources/SingleProxySource'
 import { RemnawaveKeySource } from './sources/RemnawaveKeySource'
 import { normalizeSubscriptionContent } from './sources/subscriptionNormalizer'
+import { buildSubscriptionHeaders, getEngineUserAgents } from './sources/subscriptionHeaders'
 
 const STORAGE_KEY = 'config-source'
 
@@ -32,10 +33,10 @@ async function probeUrl(url: string): Promise<ProbeResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    const UAs = ['Mihomo/1.18.7', 'clash.meta', 'ClashX/1.8.0']
+    const UAs = getEngineUserAgents()
     for (const ua of UAs) {
       const res = await fetch(url, {
-        headers: { 'User-Agent': ua, Accept: 'text/plain, application/x-yaml, */*' },
+        headers: buildSubscriptionHeaders(ua),
         signal: controller.signal,
       })
       if (!res.ok) continue
@@ -279,6 +280,7 @@ export interface ServerListEntry {
   id: string
   name: string
   server: string
+  port?: number
   proxyProtocol: string
   transport?: string
   securityType?: string
@@ -292,7 +294,7 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
 
   let inProxies = false
   let currentProxy: Partial<{
-    name: string; server: string; type: string; network: string
+    name: string; server: string; port: number; type: string; network: string
     tls: boolean; realityOpts: boolean
   }> = {}
   let idx = 0
@@ -307,6 +309,7 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
         id: String(++idx),
         name: currentProxy.name,
         server: currentProxy.server,
+        ...(currentProxy.port ? { port: currentProxy.port } : {}),
         proxyProtocol: currentProxy.type ?? 'unknown',
         transport: currentProxy.network ?? 'tcp',
         securityType,
@@ -349,6 +352,9 @@ function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
 
     const serverMatch = trimmed.match(/^server:\s*(.+?)\s*$/)
     if (serverMatch?.[1]) { currentProxy.server = serverMatch[1].trim(); continue }
+
+    const portMatch = trimmed.match(/^port:\s*(\d+)/)
+    if (portMatch?.[1]) { currentProxy.port = parseInt(portMatch[1], 10); continue }
 
     const typeMatch = trimmed.match(/^type:\s*(\S+)/)
     if (typeMatch?.[1]) { currentProxy.type = typeMatch[1].trim(); continue }

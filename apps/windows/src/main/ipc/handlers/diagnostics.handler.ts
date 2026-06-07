@@ -1,7 +1,8 @@
 import { IpcChannel } from '../../../shared/ipc/channels'
 import { EmptySchema } from '../../../shared/ipc/schemas'
-import { okResult } from '../../../shared/ipc/types'
+import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
+import { runSelfTest } from '../../services/SelfTestService'
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
@@ -11,6 +12,7 @@ import os from 'os'
 import type { SystemInfo } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
 import { getSessionId } from '../../logger'
+import { startupTracker } from '../../startup-tracker'
 
 const execFileAsync = promisify(execFile)
 
@@ -73,6 +75,10 @@ export function registerDiagnosticsHandlers(): void {
     return okResult(fallbackPath)
   })
 
+  handleIpc(IpcChannel.DIAGNOSTICS_GET_STARTUP, EmptySchema, async () => {
+    return okResult(startupTracker.getReport())
+  })
+
   handleIpc(IpcChannel.DIAGNOSTICS_GET_LOGS, EmptySchema, async () => {
     const logPath = join(app.getPath('userData'), 'logs', 'main.log')
 
@@ -95,6 +101,15 @@ export function registerDiagnosticsHandlers(): void {
       })
 
     return okResult(lines)
+  })
+
+  handleIpc(IpcChannel.DIAGNOSTICS_SELF_TEST, EmptySchema, async () => {
+    try {
+      const report = await runSelfTest()
+      return okResult(report)
+    } catch (err) {
+      return errResult('SELF_TEST_ERROR', err instanceof Error ? err.message : String(err))
+    }
   })
 }
 
