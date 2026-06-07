@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { Bot, CircleDot, Wifi } from 'lucide-react'
 import { cn, countryFlagEmoji } from '../../lib/utils'
 import { IS_MOBILE } from '../../lib/platform'
+import { vpnApi } from '../../lib/api'
 import {
   useVpnStore,
   selectProxyList,
@@ -49,6 +50,16 @@ export function ConnectionTargetSelector() {
   useEffect(() => {
     void fetchProxyList()
   }, [fetchProxyList])
+
+  // Dashboard ping: once the nodes are loaded, kick a NON-NATIVE latency probe
+  // (CapacitorHttp edge-RTT, not the VPN core) so the ms badges populate on the
+  // dashboard too — not only after opening the Servers tab. Bounded + safe; does
+  // not touch connect/balancer/routing. Android-only (desktop shows balancer ms).
+  const proxyCount = proxyList.length
+  useEffect(() => {
+    if (!IS_MOBILE || proxyCount === 0) return
+    void vpnApi.probeAll().catch(() => undefined)
+  }, [proxyCount])
 
   const getNodeLatency = (name: string): number | null | undefined => {
     // Priority: balancer probe (most recent) → live latency events → static proxy meta.
