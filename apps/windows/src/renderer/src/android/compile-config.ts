@@ -48,8 +48,10 @@ export interface CompiledAndroidConfig {
 
 // RKN-blocked domain list (auto-refreshed daily by mihomo). Public, GitHub-hosted
 // → reliable. Blocked sites get routed THROUGH the VPN (before GEOSITE:RU→DIRECT).
+// NOTE: itdoginfo renamed the lists — `inside-blocked-dist.lst` now 404s; the
+// live plain-domain list is `inside-raw.lst` (verified 200, 1163 domains).
 const BYPASS_DOMAINS_URL =
-  'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-blocked-dist.lst'
+  'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst'
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 
