@@ -205,7 +205,7 @@ Same `"module": "Node16"` / `"moduleResolution": "node16"` conflict with `@slave
 
 **Empty subscription**: Now correctly throws "YAML subscription contains no proxies" before mihomo starts, instead of crashing mihomo with a config parse error.
 
-**Connectivity**: Cannot fully test — test subscription URL `sub.slave-apps.online/x3-1saMxMYm2_-SR` has zero proxy nodes configured server-side. App requires a Remnawave instance with active nodes for end-to-end VPN test.
+**Connectivity**: Cannot fully test — the test subscription URL (token redacted) had zero proxy nodes configured server-side at the time. App requires a Remnawave instance with active nodes for end-to-end VPN test.
 
 ---
 
