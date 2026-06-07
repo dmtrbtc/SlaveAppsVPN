@@ -11,7 +11,8 @@ import {
   type AndroidSubscriptionEntry,
   type AndroidSubscriptionType,
 } from './subscription-store'
-import { buildAggregatedYaml } from './aggregator'
+import { buildAggregatedYaml, buildAggregatedProxies } from './aggregator'
+import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
@@ -119,6 +120,22 @@ const SELECTED_PROXY_LS_KEY = 'slave.settings.selectedProxy.v1'
 // report stable uptime instead of resetting connectedAt on every poll.
 let connectedSince: number | null = null
 
+// ─── Native lifecycle guard (anti-regression) ───────────────────────────────
+// HARD INVARIANT: the native clashbox/gojni core may be touched ONLY once the
+// VPN is actually connected (the core is loaded by the foreground service on
+// Connect). NO polling / diagnostics / UI side-effect may call a core-touching
+// bridge method before then, otherwise it forces an early `System.loadLibrary`
+// (the rc7 regression class). getStatus/getRuleProviders/updateRuleProviders/
+// testDelay are already guarded natively (isRunning) and DON'T load the core;
+// getTraffic + getConnections are NOT — so we gate them here in the renderer.
+//
+// `currentVpnState` is fed by readNativeStatus() (getStatus is core-safe). Only
+// when it reads 'connected' do we let traffic/connections calls through.
+let currentVpnState: string = 'disconnected'
+function coreReady(): boolean {
+  return currentVpnState === 'connected'
+}
+
 // Reads the native partial status and normalizes it into a full VPNStatus.
 // Native returns only { state, mode, protocol, lastError }; the renderer needs
 // every VPNStatus field present and a stable connectedAt.
@@ -126,6 +143,7 @@ async function readNativeStatus(): Promise<VPNStatus> {
   try {
     const { status } = await SlaveVpn.getStatus()
     const state = (status?.state ?? 'disconnected') as VPNStatus['state']
+    currentVpnState = state
     if (state === 'connected') {
       if (connectedSince === null) connectedSince = Date.now()
     } else {
@@ -142,6 +160,7 @@ async function readNativeStatus(): Promise<VPNStatus> {
       ...(status?.activeProxy ? { activeProxy: status.activeProxy } : {}),
     }
   } catch {
+    currentVpnState = 'disconnected'
     return INITIAL_VPN_STATUS
   }
 }
@@ -306,7 +325,10 @@ function startRuntimePolling(): void {
         emitRuntimeEvent({ kind: 'proxy.selected', severity: 'info', message: `Активный узел: ${active}` })
       }
     } catch { /* ignore */ }
-    // Connections diff → open / close events.
+    // Connections diff → open / close events. GUARDED: getConnections touches the
+    // native core (loads gojni), so skip entirely unless actually connected. The
+    // status diff above uses getStatus, which is core-safe.
+    if (!coreReady()) { lastConnIds = new Set(); return }
     try {
       const { snapshot } = await SlaveVpn.getConnections()
       const snap = parseConnectionsSnapshot(snapshot)
@@ -409,6 +431,9 @@ export function installAndroidBridge(): void {
         return servers.map(toProxyEntry)
       }),
       getConnections: () => wrap(async () => {
+        // GUARDED: getConnections loads the native core — never call it before
+        // connected (the ActiveConnectionsPanel polls this).
+        if (!coreReady()) return null
         try {
           const { snapshot } = await SlaveVpn.getConnections()
           return parseConnectionsSnapshot(snapshot)
@@ -421,13 +446,15 @@ export function installAndroidBridge(): void {
       setBalancerEnabled: notImplemented('vpn.setBalancerEnabled'),
       setBalancerMode: notImplemented('vpn.setBalancerMode'),
       probeAll: () => wrap(async () => {
-        // URL-test every node via mihomo and push results to the store's
-        // serverLatency map (drives the ms badges in the server list).
-        const servers = await listAndroidServers()
-        await Promise.all(servers.map(async (s) => {
-          const { delay } = await SlaveVpn.testDelay({ name: s.name, timeout: 5000 }).catch(() => ({ delay: -1 }))
-          serverLatencyCb?.({ proxyName: s.name, latencyMs: delay >= 0 ? delay : null, success: delay >= 0 })
-        }))
+        // Task 1 — NON-NATIVE ping. Measure each node's edge RTT via CapacitorHttp
+        // (OkHttp), NOT the clashbox core, so latency works even disconnected and
+        // never triggers an early native init. Results feed the same serverLatency
+        // map (ms badges) — contract unchanged. Does not affect connect/balancer.
+        const { proxies } = await buildAggregatedProxies()
+        await pingProxies(
+          proxies.map(p => ({ name: p.name, server: p.server, port: p.port })),
+          (r) => serverLatencyCb?.({ proxyName: r.name, latencyMs: r.latencyMs, success: r.latencyMs !== null }),
+        )
       }),
       // T1 «Обновить списки»: force-refresh the RKN bypass rule-providers in the
       // running mihomo core and report per-provider count/errors. Rejects (native)
@@ -532,10 +559,13 @@ export function installAndroidBridge(): void {
       },
       onVpnTraffic: (cb: (s: TrafficStats) => void) => {
         // Native emits no trafficUpdate event → poll getTraffic each second
-        // (mihomo updates the per-second speed internally).
+        // (mihomo updates the per-second speed internally). GUARDED: getTraffic
+        // loads the native core, so while NOT connected we emit zeros and never
+        // touch the core (this is what forced an early gojni load in rc6/rc7).
         let stopped = false
         const tick = async (): Promise<void> => {
           if (stopped) return
+          if (!coreReady()) { cb(EMPTY_TRAFFIC_STATS); return }
           try { const { traffic } = await SlaveVpn.getTraffic(); cb(traffic) } catch { /* ignore */ }
         }
         void tick()
@@ -689,7 +719,17 @@ export function installAndroidBridge(): void {
           return []
         }
       }),
-      probe: async () => ok(undefined),
+      // Task 1 — NON-NATIVE ping (the ServersPage refresh button calls this).
+      // Edge-RTT probe via CapacitorHttp (OkHttp), never the clashbox core, so it
+      // works disconnected and triggers no native init. Pushes live results to
+      // onServerLatency (ms badges). Independent of connect/balancer/routing.
+      probe: () => wrap(async () => {
+        const { proxies } = await buildAggregatedProxies()
+        await pingProxies(
+          proxies.map(p => ({ name: p.name, server: p.server, port: p.port })),
+          (r) => serverLatencyCb?.({ proxyName: r.name, latencyMs: r.latencyMs, success: r.latencyMs !== null }),
+        )
+      }),
     },
     safeMode: {
       getStatus: async () => ok({ inSafeMode: false } as never),
@@ -784,8 +824,9 @@ export function installAndroidBridge(): void {
     if (m === 'smart' || m === 'global' || m === 'direct') currentRoutingMode = m
   } catch { /* swallow */ }
 
-  // Best-effort initial traffic ping so the sparkline doesn't NaN.
-  void SlaveVpn.getTraffic().catch(() => ({ traffic: EMPTY_TRAFFIC_STATS }))
+  // (rc8 guard) Removed the install-time `SlaveVpn.getTraffic()` ping: it forced
+  // the native gojni core to load at app launch. The sparkline reads
+  // EMPTY_TRAFFIC_STATS until connected, then onVpnTraffic feeds real numbers.
 
   // Seed currentMode from local cache if user set one previously
   void getSubscriptionInput('__pref_vpn_mode__').then(v => {
