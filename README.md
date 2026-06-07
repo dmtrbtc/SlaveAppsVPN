@@ -6,7 +6,7 @@
 
 Подключение по подписке (Remnawave), умная маршрутизация «РФ — напрямую, заблокированное — через VPN», поддержка VLESS-Reality с шифрованием, Hysteria2, Trojan и других протоколов.
 
-[![Релиз](https://img.shields.io/badge/релиз-v0.2.0--alpha.1-blue)](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)
+[![Релиз](https://img.shields.io/badge/релиз-v0.2.0--alpha.1-blue)](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.0-alpha.1)
 [![Платформы](https://img.shields.io/badge/платформы-Android%20%7C%20Windows-green)]()
 [![Статус](https://img.shields.io/badge/статус-alpha-orange)]()
 
@@ -16,7 +16,7 @@
 
 ## 📥 Скачать (последняя альфа — v0.2.0-alpha.1)
 
-Все сборки — на странице релиза: **[github.com/dmtrbtc/SlaveAppsVPN/releases/latest](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)**
+Все сборки — на странице релиза: **[github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.0-alpha.1](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.0-alpha.1)**
 
 | Платформа | Файл | Прямая ссылка |
 |---|---|---|
@@ -139,6 +139,6 @@ Android APK собирается в CI — `.github/workflows/android.yml`. Ло
 
 <div align="center">
 
-**[⬇️ Скачать последнюю альфу](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)** · сделано с ❤️ для свободного интернета
+**[⬇️ Скачать последнюю альфу](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.0-alpha.1)** · сделано с ❤️ для свободного интернета
 
 </div>
