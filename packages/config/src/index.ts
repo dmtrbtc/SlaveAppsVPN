@@ -58,4 +58,6 @@ export {
   normalizeSubscriptionContent,
   ConnectionCompatibilityValidator,
   parseProxiesFromYaml,
+  parseXrayConfigArray,
+  isXrayConfigArray,
 } from './subscription'

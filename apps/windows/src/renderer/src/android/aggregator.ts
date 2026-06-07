@@ -2,6 +2,7 @@ import {
   normalizeSubscriptionContent,
   buildClashYaml,
   parseProxiesFromYaml,
+  parseXrayConfigArray,
   type ProxyEntry,
 } from '@slave-vpn/config'
 import {
@@ -15,12 +16,22 @@ import { fetchSubscriptionText, fetchSubscriptionTextUA } from './native-fetch'
 // UDP/QUIC protocols that Remnawave panels usually OMIT from the Clash profile
 // (Clash historically lacked them) — they live in the sing-box format instead.
 const UDP_PROTOCOLS = new Set(['hysteria2', 'hysteria', 'tuic'])
-// Alt formats to pull ONLY to recover those protocols. sing-box JSON carries
-// Hysteria2/TUIC; the VLESS-Reality-encryption nodes stay from the primary
-// Clash fetch (sing-box can't represent enc), so we never replace them.
-const ALT_FORMAT_UAS = ['SFA/1.0', 'sing-box/1.11.0'] as const
+// Alt formats to pull ONLY to recover those protocols. Verified against the real
+// panel: it serves Hysteria2 ONLY in the v2rayN/Xray array format (UA v2rayNG),
+// NOT in clash or sing-box. We still try sing-box as a fallback. VLESS-Reality-
+// encryption nodes stay from the primary Clash fetch, so they're never replaced.
+const ALT_FORMAT_UAS = ['v2rayNG/1.8.5', 'SFA/1.0', 'sing-box/1.11.0'] as const
 
 const nodeKey = (p: ProxyEntry): string => `${p.server}:${p.port}:${p.type}`
+
+// Parse an alt-format body into proxies, handling BOTH the v2rayN/Xray
+// array-of-configs shape (where some panels hide Hysteria2) and the
+// clash/sing-box/base64/URI shapes our normalizer understands.
+function parseAltBody(raw: string): ProxyEntry[] {
+  const xray = parseXrayConfigArray(raw)
+  if (xray.length > 0) return xray
+  try { return parseProxiesFromYaml(normalizeSubscriptionContent(raw).yaml) } catch { return [] }
+}
 
 /**
  * Additively recover Hysteria2/TUIC nodes the Clash profile omitted, by pulling
@@ -35,8 +46,7 @@ async function recoverUdpProtocolNodes(input: string, primary: ProxyEntry[]): Pr
   for (const ua of ALT_FORMAT_UAS) {
     const raw = await fetchSubscriptionTextUA(input, ua)
     if (!raw) continue
-    let alt: ProxyEntry[]
-    try { alt = parseProxiesFromYaml(normalizeSubscriptionContent(raw).yaml) } catch { continue }
+    const alt = parseAltBody(raw)
     for (const p of alt) {
       if (!UDP_PROTOCOLS.has(p.type)) continue // only recover the missing UDP protocols
       const k = nodeKey(p)
