@@ -6,6 +6,7 @@ import {
 } from '@slave-vpn/config'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
+import { resolveDohUrl, getRuleLists } from './runtime-settings'
 
 /**
  * Compile a ready-to-use **mihomo (Clash.Meta) YAML** for the Android clashbox
@@ -46,13 +47,6 @@ export interface CompiledAndroidConfig {
   warnings: string[]
 }
 
-// RKN-blocked domain list (auto-refreshed daily by mihomo). Public, GitHub-hosted
-// → reliable. Blocked sites get routed THROUGH the VPN (before GEOSITE:RU→DIRECT).
-// NOTE: itdoginfo renamed the lists — `inside-blocked-dist.lst` now 404s; the
-// live plain-domain list is `inside-raw.lst` (verified 200, 1163 domains).
-const BYPASS_DOMAINS_URL =
-  'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst'
-
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 
 export async function compileMihomoConfigForAndroid(
@@ -68,13 +62,17 @@ export async function compileMihomoConfigForAndroid(
     proxies.map(p => p.server).filter((s): s is string => !!s && !IPV4_RE.test(s)),
   )]
 
+  // DoH provider + rule lists come from user settings (runtime-settings store).
+  const dohUrl = resolveDohUrl()
+  const enabledLists = getRuleLists().filter(l => l.enabled)
+
   const generatorSettings: GeneratorSettings = {
     // The native SlaveVpnService injects the Android TUN (fd) block; the desktop
     // tun section here would carry the wrong device/auto-route for Android.
     tunEnabled: false,
     tunStack: 'gvisor',
     fakeIpEnabled: true,
-    dnsOverHttps: 'https://dns.cloudflare.com/dns-query',
+    dnsOverHttps: dohUrl,
     fallbackDns: ['8.8.8.8', '1.1.1.1'],
     mixedPort: 7890,
   }
@@ -91,9 +89,14 @@ export async function compileMihomoConfigForAndroid(
       mode: options.routingMode ?? 'smart',
       nodeDomainSuffixes,
       geoEnabled: true,
-      bypassProviders: [
-        { name: 'bypass-domains', behavior: 'domain', url: BYPASS_DOMAINS_URL, path: './rules/bypass-domains.list' },
-      ],
+      // User-managed rule lists (enabled only) → mihomo rule-providers.
+      bypassProviders: enabledLists.map(l => ({
+        name: l.id,
+        behavior: l.behavior,
+        url: l.url,
+        path: `./rules/${l.id}.list`,
+        intervalSeconds: Math.max(3600, Math.round(l.intervalHours * 3600)),
+      })),
     },
   }
 

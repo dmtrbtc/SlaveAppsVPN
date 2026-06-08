@@ -6,6 +6,7 @@ import { cn } from '../lib/utils'
 import { useUIStore } from '../stores/ui.store'
 import { dnsApi, settingsApi } from '../lib/api'
 import { DnsAdvancedSection } from '../components/dns/DnsAdvancedSection'
+import { DnsProviderSelector } from '../components/settings/DnsProviderSelector'
 import type { DnsPresetName, DnsStrategyName, DnsStrategyInfo } from '@shared/ipc/types'
 
 interface DnsProfileDef {
@@ -121,6 +122,10 @@ export function DnsPage() {
       </div>
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
+        {/* Android: DoH provider selector (Cloudflare/Google/Quad9/AdGuard/custom).
+            Self-gates to mobile. */}
+        <DnsProviderSelector />
+
         {/* Profile grid — 2×2 */}
         <div className="grid grid-cols-2 gap-2.5">
           {DNS_PROFILES.map((profile, i) => {

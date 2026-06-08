@@ -14,6 +14,7 @@ import { cn } from '../lib/utils'
 import { useVpnStore } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
 import { rulesApi, routingApi } from '../lib/api'
+import { RuleListsManager } from '../components/settings/RuleListsManager'
 import type { VPNMode } from '@slave-vpn/shared'
 import type { RuleProvider, RuleProviderAddPayload, RoutingScenarioInfo } from '@shared/ipc/types'
 
@@ -593,6 +594,10 @@ export function RoutingPage() {
       </div>
 
       <div className="flex flex-col gap-4 px-6 py-5">
+        {/* Android: full management of rule-provider lists (transparent sources,
+            on/off, interval, add your own). Self-gates to mobile. */}
+        <RuleListsManager />
+
         {/* Mode grid 2×2 */}
         <div className="grid grid-cols-2 gap-2.5">
           {MODES.map((option, i) => {

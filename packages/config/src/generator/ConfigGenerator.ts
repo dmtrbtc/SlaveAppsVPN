@@ -26,6 +26,8 @@ export interface AndroidBypassProvider {
   url: string
   /** relative path under the working dir where mihomo caches the list */
   path: string
+  /** auto-refresh interval in seconds (default 86400 = daily) */
+  intervalSeconds?: number
 }
 
 /**
@@ -340,7 +342,7 @@ function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<st
       behavior: p.behavior,
       url: p.url,
       path: p.path,
-      interval: 86400, // auto-refresh daily
+      interval: p.intervalSeconds && p.intervalSeconds > 0 ? p.intervalSeconds : 86400,
       format: 'text',
     }
   }
