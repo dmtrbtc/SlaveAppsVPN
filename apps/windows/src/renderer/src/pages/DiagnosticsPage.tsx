@@ -17,6 +17,7 @@ import { useSystemInfo, useLogs, useConnectivity, useStartupReport, useConfigSou
 import { useUIStore } from '../stores/ui.store'
 import { useDiagnosticsStore, selectEventLog } from '../stores/diagnostics.store'
 import { IS_MOBILE } from '../lib/platform'
+import { MobileConnectivityPanel } from '../components/diagnostics/MobileConnectivityPanel'
 import type { AndroidRuleProvidersResult } from '../android/bridge'
 import type { RuntimeEvent, RuntimeEventSeverity, VPNConnectivityInfo, StartupPhaseEntry, DnsLeakReport, SelfTestReport, SelfTestStatus, GeoUpdaterState } from '@shared/ipc/types'
 
@@ -837,6 +838,10 @@ export function DiagnosticsPage() {
       </div>
 
       <div className="flex flex-col gap-4 px-6 py-5">
+
+        {/* Mobile connectivity check — non-native (CapacitorHttp): exit IP /
+            country / 204 latency. Self-gates to mobile. */}
+        <MobileConnectivityPanel />
 
         {/* Connectivity panel — vpn.getConnectivity не реализован на Android
             (libbox не отдаёт детальную health-сводку), панель показывала бы
