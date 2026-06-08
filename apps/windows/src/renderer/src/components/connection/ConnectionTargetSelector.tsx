@@ -51,15 +51,16 @@ export function ConnectionTargetSelector() {
     void fetchProxyList()
   }, [fetchProxyList])
 
-  // Dashboard ping: once the nodes are loaded, kick a NON-NATIVE latency probe
-  // (CapacitorHttp edge-RTT, not the VPN core) so the ms badges populate on the
-  // dashboard too — not only after opening the Servers tab. Bounded + safe; does
-  // not touch connect/balancer/routing. Android-only (desktop shows balancer ms).
+  // Dashboard ping (BOTH platforms): kick a latency probe once nodes are loaded
+  // and again when connected, so the ms badges populate on the dashboard — not
+  // only after opening the Servers tab. Android → non-native edge-RTT (works
+  // disconnected); Windows → the mihomo API URLTest via the balancer (latency
+  // appears once connected). Safe: doesn't touch connect/routing.
   const proxyCount = proxyList.length
   useEffect(() => {
-    if (!IS_MOBILE || proxyCount === 0) return
+    if (proxyCount === 0) return
     void vpnApi.probeAll().catch(() => undefined)
-  }, [proxyCount])
+  }, [proxyCount, isConnected])
 
   const getNodeLatency = (name: string): number | null | undefined => {
     // Priority: balancer probe (most recent) → live latency events → static proxy meta.

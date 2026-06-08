@@ -19,7 +19,7 @@ export interface UpdateInfo {
   version: string          // release tag, e.g. v0.2.0-alpha.2
   notes: string
   releaseUrl: string       // html page
-  apkUrl: string | null    // direct .apk asset
+  downloadUrl: string | null  // platform asset (.apk on Android, Setup .exe on Windows)
   publishedAt: number
 }
 
@@ -67,12 +67,17 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     if (!Number.isFinite(publishedAt)) return null
     if (built > 0 && publishedAt <= built + NEWER_BUFFER_MS) return null // we're current
 
-    const apk = latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
+    // Pick the asset for THIS platform: .apk on Android, the Windows installer
+    // (Setup .exe) on desktop.
+    const native = Capacitor.isNativePlatform()
+    const asset = native
+      ? latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
+      : (latest.assets.find(a => /setup.*\.exe$/i.test(a.name)) ?? latest.assets.find(a => a.name.toLowerCase().endsWith('.exe')))
     return {
       version: latest.tag_name || latest.name || 'новая версия',
       notes: latest.body ?? '',
       releaseUrl: latest.html_url,
-      apkUrl: apk?.browser_download_url ?? null,
+      downloadUrl: asset?.browser_download_url ?? null,
       publishedAt,
     }
   } catch {
@@ -86,6 +91,6 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
  * system browser, which downloads the APK; the user then taps to install.
  */
 export function openUpdate(info: UpdateInfo): void {
-  const url = info.apkUrl ?? info.releaseUrl
+  const url = info.downloadUrl ?? info.releaseUrl
   try { window.open(url, '_blank') } catch { /* ignore */ }
 }

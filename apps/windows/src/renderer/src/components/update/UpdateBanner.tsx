@@ -1,21 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Download, X, ArrowUpCircle } from 'lucide-react'
-import { IS_MOBILE } from '../../lib/platform'
 import { checkForUpdate, openUpdate, type UpdateInfo } from '../../android/update-check'
 
 const DISMISS_LS_KEY = 'slave.update.dismissed.v1'
 
 /**
- * Android in-app update banner — "notify + by button". Checks GitHub Releases on
- * mount; if a newer build exists, shows a dismissible banner with a download
- * button (opens the APK in the system browser). Dismissal is remembered per
- * version so it doesn't nag. Android-only (desktop uses electron-updater).
+ * Cross-platform in-app update banner — "notify + by button". Checks GitHub
+ * Releases on mount (works on both Android via CapacitorHttp and Windows via
+ * fetch — GitHub sends permissive CORS); if a newer build exists, shows a
+ * dismissible banner with a download button that opens the platform asset
+ * (.apk on Android / Setup .exe on Windows). Dismissal is remembered per version.
  */
 export function UpdateBanner() {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
 
   useEffect(() => {
-    if (!IS_MOBILE) return
     let cancelled = false
     void (async () => {
       const u = await checkForUpdate()
@@ -28,7 +27,7 @@ export function UpdateBanner() {
     return () => { cancelled = true }
   }, [])
 
-  if (!IS_MOBILE || !info) return null
+  if (!info) return null
 
   const dismiss = () => {
     try { window.localStorage.setItem(DISMISS_LS_KEY, info.version) } catch { /* ignore */ }
