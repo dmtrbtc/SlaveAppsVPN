@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import {
   LogOut, User, CreditCard, Monitor, Bell, Shield, Smartphone, Sun,
-  RefreshCw, Download, RotateCcw, Link, Key, CheckCircle, XCircle,
+  RefreshCw, Download, Link, Key, CheckCircle, XCircle,
   Trash2, Edit3, Server, Clock, Cpu, Bot,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
@@ -18,12 +18,9 @@ import { useVpnStore, selectConnectionState } from '../stores/vpn.store'
 import { useUIStore, type ThemeMode } from '../stores/ui.store'
 import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import { useSubscription } from '../hooks/useSubscription'
-import {
-  useUpdateStatus, useUpdateCheck, useUpdateDownload, useUpdateInstall,
-  useUpdateChannel, useUpdateProgress, useUpdateEvents,
-} from '../hooks/useUpdate'
+import { checkForUpdate, openUpdate, type UpdateInfo } from '../android/update-check'
 import { configSourceApi, cacheApi } from '../lib/api'
-import type { AppSettings, UpdateChannel, ConfigSourceValidateResult, SelectedEngine, BalancerMode, UtlsFingerprintName } from '@shared/ipc/types'
+import type { AppSettings, ConfigSourceValidateResult, SelectedEngine, BalancerMode, UtlsFingerprintName } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
 
 const SUB_STATUS_CONFIG: Record<SubscriptionStatus, { label: string; tone: 'ok' | 'neutral' | 'warn' }> = {
@@ -441,108 +438,53 @@ function AccountSection() {
 
 // ─── Update section ───────────────────────────────────────────────────────────
 
-const UPDATE_STATE_LABEL: Record<string, string> = {
-  idle:            'Актуальная версия',
-  checking:        'Проверяется...',
-  available:       'Доступно обновление',
-  'not-available': 'Актуальная версия',
-  downloading:     'Загружается...',
-  ready:           'Готово к установке',
-  error:           'Ошибка обновления',
-}
-
-const UPDATE_STATE_TONE: Record<string, 'ok' | 'warn' | 'bad' | 'neutral'> = {
-  idle:            'neutral',
-  checking:        'neutral',
-  available:       'warn',
-  'not-available': 'ok',
-  downloading:     'neutral',
-  ready:           'ok',
-  error:           'bad',
-}
-
+// Update check via GitHub Releases (same mechanism as the dashboard banner) —
+// unified across Android & Windows, and free of the electron-updater pitfalls
+// (prerelease channels / latest.yml on the wrong tag / version not bumping).
 function UpdateSection() {
-  const { data: status, isLoading } = useUpdateStatus()
-  const { mutate: check, isPending: isChecking } = useUpdateCheck()
-  const { mutate: download, isPending: isDownloading } = useUpdateDownload()
-  const { mutate: install } = useUpdateInstall()
-  const { mutate: setChannel } = useUpdateChannel()
-  const progress = useUpdateProgress()
-  useUpdateEvents()
+  const [info, setInfo] = useState<UpdateInfo | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [checkedOnce, setCheckedOnce] = useState(false)
 
-  if (isLoading || !status) return <LoadingState />
+  const runCheck = async (): Promise<void> => {
+    setChecking(true)
+    try { setInfo(await checkForUpdate()) }
+    finally { setChecking(false); setCheckedOnce(true) }
+  }
+  useEffect(() => { void runCheck() }, [])
 
-  const state = status.state
-  const tone = UPDATE_STATE_TONE[state] ?? 'neutral'
-  const label = UPDATE_STATE_LABEL[state] ?? state
+  const upToDate = checkedOnce && !info
+  const tone: 'ok' | 'warn' | 'neutral' = info ? 'warn' : upToDate ? 'ok' : 'neutral'
+  const label = checking ? 'Проверяется…' : info ? 'Доступно обновление' : upToDate ? 'Актуальная версия' : '—'
 
   return (
     <CardRow>
       <div className="p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-[13px] font-medium text-text-primary">
-              v{status.currentVersion}
-            </p>
-            {status.availableVersion && status.availableVersion !== status.currentVersion && (
-              <p className="text-[11px] text-text-muted mt-0.5">
-                Доступна v{status.availableVersion}
-              </p>
-            )}
+            <p className="text-[13px] font-medium text-text-primary">v{__APP_VERSION__}</p>
+            <p className="text-[11px] text-text-muted mt-0.5 font-mono">{__APP_COMMIT__}</p>
           </div>
           <Badge tone={tone}>{label}</Badge>
         </div>
 
-        {(state === 'downloading' || (state === 'ready' && status.downloadProgress > 0)) && (
-          <div className="space-y-1">
-            <div className="h-1.5 rounded-full bg-bg-secondary overflow-hidden">
-              <div
-                className="h-full rounded-full bg-connected transition-all duration-300"
-                style={{ width: `${state === 'ready' ? 100 : progress || status.downloadProgress}%` }}
-              />
-            </div>
-            <p className="text-[10px] text-text-muted text-right">
-              {state === 'ready' ? '100' : (progress || status.downloadProgress)}%
-            </p>
-          </div>
-        )}
-
-        {state === 'error' && status.error && (
-          <p className="text-[11px] text-error break-all">{status.error}</p>
+        {info && (
+          <p className="text-[11px] text-text-muted">
+            Доступна <span className="text-text-secondary font-medium">{info.version}</span>
+          </p>
         )}
 
         <div className="flex gap-2">
-          {(state === 'idle' || state === 'not-available' || state === 'error') && (
-            <Button variant="secondary" size="sm" onClick={() => check()} loading={isChecking}>
-              <RefreshCw className="h-3.5 w-3.5" />
-              Проверить
-            </Button>
-          )}
-          {state === 'available' && (
-            <Button variant="secondary" size="sm" onClick={() => download()} loading={isDownloading}>
+          <Button variant="secondary" size="sm" onClick={() => void runCheck()} loading={checking}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Проверить
+          </Button>
+          {info && (
+            <Button variant="primary" size="sm" onClick={() => openUpdate(info)}>
               <Download className="h-3.5 w-3.5" />
-              Загрузить
+              Скачать
             </Button>
           )}
-          {state === 'ready' && (
-            <Button variant="primary" size="sm" onClick={() => install()}>
-              <RotateCcw className="h-3.5 w-3.5" />
-              Перезапустить и установить
-            </Button>
-          )}
-        </div>
-
-        <div className="flex items-center justify-between pt-1 border-t border-border/50">
-          <p className="text-[11px] text-text-muted">Канал обновлений</p>
-          <Segmented<UpdateChannel>
-            options={[
-              { value: 'stable', label: 'Stable' },
-              { value: 'beta',   label: 'Beta' },
-            ]}
-            value={status.channel}
-            onChange={ch => setChannel(ch)}
-            size="sm"
-          />
         </div>
       </div>
     </CardRow>

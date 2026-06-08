@@ -90,10 +90,11 @@ export class UpdateService {
       getLogger().error({ err: error }, 'Auto-updater error')
     })
 
-    // Initial check on startup
-    autoUpdater.checkForUpdates().catch((err: unknown) => {
-      getLogger().warn({ err }, 'Initial update check failed')
-    })
+    // No startup auto-check: the renderer now checks updates via the GitHub
+    // Releases API (unified with Android, and free of the electron-updater
+    // pitfalls — prerelease channels / latest.yml resolving to the wrong tag /
+    // the app version not bumping between alphas). electron-updater remains
+    // available for an explicit in-app download/install if wired later.
   }
 
   async checkForUpdates(): Promise<{ hasUpdate: boolean; version: string | null }> {
