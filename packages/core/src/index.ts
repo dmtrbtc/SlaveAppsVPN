@@ -19,3 +19,6 @@ export type { BuildEngineConfigInput, BuildEngineConfigResult } from './runtime/
 
 // DNS profile model (P0.2b) — preset/strategy resolution shared by both platforms.
 export * from './dns/index.js'
+
+// Subscription aggregation (P0.2c) — unified dedup/merge + fetch orchestration.
+export * from './subscriptions/index.js'
