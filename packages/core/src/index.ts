@@ -10,3 +10,9 @@ export type {
 } from './facade/CoreFacade.js'
 export { createCore } from './createCore.js'
 export { CoreNotReadyError } from './errors.js'
+
+// Orchestration (P0.2) — platform-agnostic domain logic.
+export { composeRoutingPolicy } from './routing/composeRoutingPolicy.js'
+export type { ComposeRoutingResult } from './routing/composeRoutingPolicy.js'
+export { buildEngineConfig } from './runtime/buildEngineConfig.js'
+export type { BuildEngineConfigInput, BuildEngineConfigResult } from './runtime/buildEngineConfig.js'
