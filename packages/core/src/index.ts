@@ -22,3 +22,11 @@ export * from './dns/index.js'
 
 // Subscription aggregation (P0.2c) — unified dedup/merge + fetch orchestration.
 export * from './subscriptions/index.js'
+
+// Settings model + remaining domain models (P0.2d): settings store, rule-provider
+// presets/CRUD, profile snapshot transforms, geo source catalogue. (Balancer
+// policy already lives in @slave-vpn/runtime NodeBalancer — not duplicated.)
+export * from './settings/index.js'
+export * from './rules/index.js'
+export * from './profiles/index.js'
+export * from './geo/index.js'
