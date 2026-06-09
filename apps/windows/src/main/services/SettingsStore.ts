@@ -1,34 +1,19 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import { getDefaultEnabledScenarios } from '@slave-vpn/routing'
-import type { AppSettings, DnsPresetName, BalancerMode } from '../../shared/ipc/types'
+import { createDefaultSettings } from '@slave-vpn/core'
+import type { AppSettings } from '../../shared/ipc/types'
 
-const DEFAULT_SETTINGS: AppSettings = {
-  language: 'ru',
-  vpnMode: 'bypass',
-  autoStart: false,
-  minimizeToTray: true,
-  notificationsEnabled: true,
-  autoConnect: false,
-  killSwitch: false,
-  apiBaseUrl: process.env.VITE_API_URL ?? 'https://change-me.example.com/api',
-  telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME ?? '',
-  devMode: false,
-  updateChannel: 'stable',
-  selectedEngine: 'mihomo',
-  dnsPreset: 'secure' as DnsPresetName,
-  dnsStrategy: 'prefer_ipv4',
-  customDnsProfile: null,
-  balancerEnabled: false,
-  balancerMode: 'balanced' as BalancerMode,
-  autoSelectProxy: false,
-  selectedProxy: null,
-  splitProcessList: [],
-  ruleProviders: [],
-  enabledScenarios: getDefaultEnabledScenarios() as string[],
-  utlsFingerprint: 'randomized',
-}
+// Default settings model + enabled-scenario defaults now come from
+// @slave-vpn/core (createDefaultSettings); only the env-driven fields are
+// injected here (core must not read process.env). The store mechanism stays
+// the existing sync electron userData file.
+const DEFAULT_SETTINGS: AppSettings = createDefaultSettings({
+  ...(process.env.VITE_API_URL ? { apiBaseUrl: process.env.VITE_API_URL } : {}),
+  ...(process.env.VITE_TELEGRAM_BOT_USERNAME
+    ? { telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME }
+    : {}),
+})
 
 class SettingsStore {
   private settings: AppSettings

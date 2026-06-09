@@ -7,6 +7,7 @@ import { getProfileStore } from '../../services/ProfileStore'
 import { getSettingsStore } from '../../services/SettingsStore'
 import { sendToRenderer } from '../../window'
 import { getLogger } from '../../logger'
+import { captureSnapshot, applySnapshot as coreApplySnapshot } from '@slave-vpn/core'
 import type { RuntimeService } from '../../services/RuntimeService'
 import type { AppProfileSnapshot } from '../../../shared/ipc/types'
 
@@ -23,34 +24,18 @@ const ApplySchema = z.object({
 })
 
 // Snapshot the *current* user-facing settings into an AppProfileSnapshot.
-// We deliberately capture only fields that profiles know how to switch.
+// Capture logic now lives in @slave-vpn/core (captureSnapshot).
 function snapshotCurrent(): AppProfileSnapshot {
-  const s = getSettingsStore().getAll()
-  return {
-    enabledScenarios: [...s.enabledScenarios],
-    dnsPreset: s.dnsPreset,
-    dnsStrategy: s.dnsStrategy,
-    selectedEngine: s.selectedEngine,
-    selectedProxy: s.selectedProxy,
-    vpnMode: s.vpnMode,
-    balancerEnabled: s.balancerEnabled,
-    // subscriptionId not yet first-class in settings — placeholder for future
-  }
+  return captureSnapshot(getSettingsStore().getAll())
 }
 
 // Apply a snapshot to settings. Returns true if any field changed.
+// Patch-building delegates to core.applySnapshot; persistence + change
+// detection stay here (Windows sync settings store).
 function applySnapshot(snapshot: AppProfileSnapshot): boolean {
   const store = getSettingsStore()
   const before = store.getAll()
-  const patch: Record<string, unknown> = {}
-
-  if (snapshot.enabledScenarios !== undefined) patch.enabledScenarios = snapshot.enabledScenarios
-  if (snapshot.dnsPreset !== undefined)        patch.dnsPreset = snapshot.dnsPreset
-  if (snapshot.dnsStrategy !== undefined)      patch.dnsStrategy = snapshot.dnsStrategy
-  if (snapshot.selectedEngine !== undefined)   patch.selectedEngine = snapshot.selectedEngine
-  if (snapshot.selectedProxy !== undefined)    patch.selectedProxy = snapshot.selectedProxy
-  if (snapshot.vpnMode !== undefined)          patch.vpnMode = snapshot.vpnMode
-  if (snapshot.balancerEnabled !== undefined)  patch.balancerEnabled = snapshot.balancerEnabled
+  const patch = coreApplySnapshot(snapshot)
 
   if (Object.keys(patch).length === 0) return false
   store.patch(patch)
