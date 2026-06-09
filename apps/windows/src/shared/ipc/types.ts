@@ -503,58 +503,26 @@ export interface BalancerSetModePayload {
 
 // ─── DNS ─────────────────────────────────────────────────────────────────────
 
-export type DnsPresetName = 'secure' | 'balanced' | 'performance' | 'minimal' | 'custom'
-export type DnsStrategyName = 'prefer_ipv4' | 'ipv4_only' | 'prefer_ipv6' | 'ipv6_only'
-export type DnsResolverKind = 'doh' | 'dot' | 'udp' | 'tcp' | 'doq'
-export type DnsRuleMatchKind = 'domain' | 'domain_suffix' | 'domain_keyword' | 'geosite'
-
-export interface CustomDnsResolver {
-  id: string
-  type: DnsResolverKind
-  url: string
-  preferH3?: boolean
-}
-
-export interface CustomDnsRule {
-  id: string
-  matchType: DnsRuleMatchKind
-  value: string
-  resolverTag: string  // 'primary' | 'fallback' | 'direct' | 'system' | inline URL | custom resolver id
-}
-
-export interface DnsProfileConfig {
-  preset: DnsPresetName
-  primaryDoh: string
-  fallbackDns: string[]
-  fakeIpEnabled: boolean
-  ipv6Enabled: boolean
-  bootstrapDns: string[]
-  strategy?: DnsStrategyName
-  // G.1 — custom resolvers (full DoH/DoT/UDP/TCP/DoQ definitions)
-  customResolvers?: CustomDnsResolver[]
-  // G.2 — per-domain DNS rules
-  customRules?: CustomDnsRule[]
-  // G.4 — domains to pre-resolve at start
-  prefetchDomains?: string[]
-  // legacy field — kept for backward compat
-  customNameservers?: string[]
-}
-
-export interface DnsStrategyInfo {
-  value: DnsStrategyName
-  label: string
-  description: string
-}
-
-export interface DnsPresetInfo {
-  name: DnsPresetName
-  label: string
-  description: string
-  features: string[]
-  nameservers: string[]
-  fakeIp: boolean
-  ipv6: boolean
-}
+// DNS config types are now the canonical definitions in @slave-vpn/core
+// (P0.2b/P0.3). Re-exported here so existing app imports keep working unchanged.
+export type {
+  DnsPresetName,
+  DnsStrategyName,
+  DnsResolverKind,
+  DnsRuleMatchKind,
+  CustomDnsResolver,
+  CustomDnsRule,
+  DnsProfileConfig,
+  DnsStrategyInfo,
+  DnsPresetInfo,
+} from '@slave-vpn/core'
+import type {
+  DnsPresetName,
+  DnsStrategyName,
+  DnsProfileConfig,
+  DnsStrategyInfo,
+  DnsPresetInfo,
+} from '@slave-vpn/core'
 
 export type DnsGetProfileResult = IpcResult<DnsProfileConfig>
 export type DnsSetProfileResult = IpcResult<void>

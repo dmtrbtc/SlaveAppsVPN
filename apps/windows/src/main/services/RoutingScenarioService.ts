@@ -1,18 +1,15 @@
 import {
   listScenarioMetadata,
-  composeScenarios,
-  RoutingPipeline,
   type NormalizedPolicy,
   type ScenarioId,
   type ScenarioMetadata,
 } from '@slave-vpn/routing'
+import { composeRoutingPolicy } from '@slave-vpn/core'
 import { getSettingsStore } from './SettingsStore'
 import { getLogger } from '../logger'
 import type { RoutingScenarioInfo } from '../../shared/ipc/types'
 
 export class RoutingScenarioService {
-  private readonly pipeline = new RoutingPipeline()
-
   list(): RoutingScenarioInfo[] {
     const enabled = new Set(this.getEnabledIds())
     return listScenarioMetadata().map(m => this.toInfo(m, enabled.has(m.id)))
@@ -29,21 +26,17 @@ export class RoutingScenarioService {
   // Compose the engine-ready policy from currently enabled scenarios.
   // Returns null when nothing is enabled — caller falls back to vpnMode-based legacy rules.
   composePolicy(): NormalizedPolicy | null {
-    const ids = this.getEnabledIds()
-    if (ids.length === 0) return null
-
-    const { policy, warnings } = composeScenarios(ids)
+    const { policy, warnings, valid, errors } = composeRoutingPolicy(this.getEnabledIds())
     for (const w of warnings) {
       getLogger().warn({ warning: w }, 'Scenario composition warning')
     }
-
-    const result = this.pipeline.process(policy)
-    if (!result.validation.valid) {
-      const messages = result.validation.errors.map(e => e.message).join('; ')
-      getLogger().error({ messages }, 'Composed policy failed validation; falling back to legacy mode')
-      return null
+    if (!valid) {
+      getLogger().error(
+        { messages: errors.join('; ') },
+        'Composed policy failed validation; falling back to legacy mode',
+      )
     }
-    return result.policy
+    return policy
   }
 
   private getEnabledIds(): ScenarioId[] {

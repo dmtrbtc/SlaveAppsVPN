@@ -129,6 +129,9 @@ importers:
       '@slave-vpn/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@slave-vpn/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@slave-vpn/dns':
         specifier: workspace:*
         version: link:../../packages/dns

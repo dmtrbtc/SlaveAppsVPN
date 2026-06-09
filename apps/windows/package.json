@@ -21,6 +21,7 @@
   "dependencies": {
     "@slave-vpn/api": "workspace:*",
     "@slave-vpn/config": "workspace:*",
+    "@slave-vpn/core": "workspace:*",
     "@slave-vpn/dns": "workspace:*",
     "@slave-vpn/localization": "workspace:*",
     "@slave-vpn/provider": "workspace:*",
