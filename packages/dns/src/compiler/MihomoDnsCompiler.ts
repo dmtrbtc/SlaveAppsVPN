@@ -57,6 +57,15 @@ export class MihomoDnsCompiler implements DnsCompiler {
 
     if (!profile.leakPrevention.useSystemDns) {
       config['respect-rules'] = true
+      // mihomo hard-requires a non-empty `proxy-server-nameserver` whenever
+      // `respect-rules` is on (else it fatals at parse time). This pool resolves
+      // the proxy server hostnames themselves and MUST bypass the rule engine to
+      // avoid a chicken-and-egg loop, so it uses the direct bootstrap resolvers
+      // (falling back to the primary nameservers).
+      const proxyServerNs = (profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl)
+      config['proxy-server-nameserver'] = proxyServerNs.length > 0
+        ? proxyServerNs
+        : ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query']
     }
 
     if (profile.sniffing.enabled) {

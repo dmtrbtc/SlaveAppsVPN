@@ -889,6 +889,10 @@ export interface SlaveVPNBridge {
   }
   update: {
     check: () => Promise<UpdateCheckResult>
+    // Fetches the GitHub Releases JSON from the MAIN process (renderer CSP
+    // `connect-src 'none'` blocks api.github.com from the renderer). Returns the
+    // raw release array, or [] on any failure. Never throws.
+    fetchReleases: () => Promise<unknown[]>
     download: () => Promise<UpdateDownloadResult>
     install: () => Promise<UpdateInstallResult>
     getStatus: () => Promise<UpdateGetStatusResult>

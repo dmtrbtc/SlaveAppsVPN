@@ -194,6 +194,9 @@ const bridge: SlaveVPNBridge = {
     check: () =>
       invoke(IpcChannel.UPDATE_CHECK),
 
+    fetchReleases: () =>
+      invoke(IpcChannel.UPDATE_FETCH_RELEASES),
+
     download: () =>
       invoke(IpcChannel.UPDATE_DOWNLOAD),
 

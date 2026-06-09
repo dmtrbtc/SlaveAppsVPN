@@ -50,6 +50,7 @@ export const IpcChannel = {
 
   // Updates — request/response
   UPDATE_CHECK: 'update:check',
+  UPDATE_FETCH_RELEASES: 'update:fetchReleases',
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
   UPDATE_GET_STATUS: 'update:getStatus',
@@ -179,6 +180,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'SAFE_MODE_GET_STATUS'
   | 'SAFE_MODE_RESET'
   | 'UPDATE_CHECK'
+  | 'UPDATE_FETCH_RELEASES'
   | 'UPDATE_DOWNLOAD'
   | 'UPDATE_INSTALL'
   | 'UPDATE_GET_STATUS'

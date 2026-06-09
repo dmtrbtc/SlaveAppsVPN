@@ -37,6 +37,24 @@ export function registerUpdateHandlers(): void {
     }
   })
 
+  // Fetch GitHub Releases from the main process — the renderer's CSP
+  // (`connect-src 'none'`) blocks api.github.com, so the update banner's check
+  // must proxy through here. Raw handle: returns the parsed array directly
+  // (or [] on any error), to match the renderer-side bridge contract.
+  ipcMain.handle(IpcChannel.UPDATE_FETCH_RELEASES, async () => {
+    try {
+      const res = await fetch(
+        'https://api.github.com/repos/dmtrbtc/SlaveAppsVPN/releases?per_page=5',
+        { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'SlaveVPN-update' } },
+      )
+      if (!res.ok) return []
+      const data = await res.json()
+      return Array.isArray(data) ? data : []
+    } catch {
+      return []
+    }
+  })
+
   // INSTALL uses a raw ipcMain.handle because quitAndInstall is fire-and-forget
   ipcMain.handle(IpcChannel.UPDATE_INSTALL, () => {
     try {

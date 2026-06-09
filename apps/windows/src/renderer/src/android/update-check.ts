@@ -48,6 +48,15 @@ async function fetchReleases(): Promise<GhRelease[]> {
     const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
     return Array.isArray(data) ? data as GhRelease[] : []
   }
+  // Electron (Windows): the renderer CSP is `connect-src 'none'`, so a direct
+  // fetch to api.github.com is blocked. Proxy the request through the main
+  // process, which is not bound by the renderer CSP.
+  const bridge = (window as unknown as { slaveVPN?: { update?: { fetchReleases?: () => Promise<unknown[]> } } }).slaveVPN
+  if (bridge?.update?.fetchReleases) {
+    const data = await bridge.update.fetchReleases()
+    return Array.isArray(data) ? data as GhRelease[] : []
+  }
+  // Dev fallback (no preload bridge, e.g. plain browser): try a direct fetch.
   const res = await fetch(RELEASES_API, { headers })
   return res.ok ? (await res.json()) as GhRelease[] : []
 }
