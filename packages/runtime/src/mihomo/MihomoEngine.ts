@@ -232,6 +232,38 @@ export class MihomoEngine implements VPNEngine {
     return path.join(this.initConfig!.workingDir, 'config.yaml')
   }
 
+  // mihomo reads geoip.dat/geosite.dat from its working dir (`-d`). It CANNOT
+  // load them from a `file://` geox-url (its downloader only speaks http/https),
+  // so we physically copy the geo databases from the bundled/overlay rules dir
+  // into the working dir before launch. Without this, a GEOIP/GEOSITE rule makes
+  // mihomo try to "download" the dat from the file:// URL and fatal at parse.
+  // Copy only when the destination is missing or older than the source, so an
+  // auto-updated overlay propagates but we don't re-copy ~20 MB every connect.
+  private async syncGeoFiles(): Promise<void> {
+    const rulesDir = this.initConfig!.rulesDir
+    if (!rulesDir) return
+    const workingDir = this.initConfig!.workingDir
+    for (const name of ['geoip.dat', 'geosite.dat']) {
+      const src = path.join(rulesDir, name)
+      const dst = path.join(workingDir, name)
+      try {
+        const [srcStat, dstStat] = await Promise.all([
+          fs.stat(src),
+          fs.stat(dst).catch(() => null),
+        ])
+        if (dstStat && dstStat.size === srcStat.size && dstStat.mtimeMs >= srcStat.mtimeMs) {
+          continue // up to date
+        }
+        await fs.copyFile(src, dst)
+        console.log(`[MihomoEngine] geo synced: ${name} (${srcStat.size} bytes) -> ${dst}`)
+      } catch (err) {
+        // Source missing or copy failed — log and continue; mihomo will fall
+        // back to its built-in geox-url if the rule genuinely needs the file.
+        console.warn(`[MihomoEngine] geo sync skipped for ${name}:`, err instanceof Error ? err.message : err)
+      }
+    }
+  }
+
   private async writeConfig(profile: ConnectionProfile): Promise<void> {
     const yaml = generateMihomoConfig({
       subscriptionYaml: profile.subscriptionYaml,
@@ -246,6 +278,7 @@ export class MihomoEngine implements VPNEngine {
       ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
     })
     await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
+    await this.syncGeoFiles()
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
 
     // Log generated config for production diagnostics (secret is obfuscated in yaml already)

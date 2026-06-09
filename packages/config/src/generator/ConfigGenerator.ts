@@ -136,13 +136,15 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       'geo-update-interval': 24,
       'geox-url': META_GEOX_URL,
     } : ctx.rulesDir ? {
+      // Desktop: the engine physically copies geoip.dat/geosite.dat from the
+      // rules dir into mihomo's working dir (`-d`), where mihomo loads them
+      // locally. We do NOT point geox-url at a file:// URL — mihomo's geo
+      // downloader only speaks http/https and fatals on `file://`. The http
+      // META_GEOX_URL stays only as a last-resort fallback (used solely if the
+      // local copy is somehow missing); geo-auto-update stays off.
       'geodata-mode': true,
       'geo-auto-update': false,
-      'geox-url': {
-        geoip:   pathToFileUrl(ctx.rulesDir, 'geoip.dat'),
-        geosite: pathToFileUrl(ctx.rulesDir, 'geosite.dat'),
-        mmdb:    pathToFileUrl(ctx.rulesDir, 'geoip.dat'),  // fallback
-      },
+      'geox-url': META_GEOX_URL,
     } : {}),
     proxies: profile.proxies as unknown[],
     'proxy-groups': [
@@ -400,16 +402,6 @@ function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutin
     'nameserver-policy': nameserverPolicy,
     'respect-rules': true,
   }
-}
-
-// Convert OS path to a file:// URL accepted by mihomo's geox-url.
-// On Windows: "E:\path\to\file.dat" → "file:///E:/path/to/file.dat".
-// On POSIX:  "/path/to/file.dat"   → "file:///path/to/file.dat".
-function pathToFileUrl(dir: string, filename: string): string {
-  const normalized = `${dir}/${filename}`.replace(/\\/g, '/')
-  return normalized.startsWith('/')
-    ? `file://${normalized}`
-    : `file:///${normalized}`
 }
 
 export function getAutoSelectGroupName(): string {

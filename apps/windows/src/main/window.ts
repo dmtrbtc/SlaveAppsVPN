@@ -159,7 +159,11 @@ function applyContentSecurityPolicy(): void {
           "style-src 'self' 'unsafe-inline'",
           "img-src 'self' data: blob:",
           "font-src 'self' data:",
-          "connect-src 'none'",
+          // api.github.com is allowed ONLY for the in-app update check (release
+          // list). The check normally proxies through the main process, but we
+          // also permit a direct renderer fetch as a fallback so the update
+          // banner works regardless of bridge timing. No other remote origin.
+          "connect-src 'self' https://api.github.com",
           "worker-src 'none'",
           "object-src 'none'",
           "base-uri 'none'",
