@@ -46,7 +46,29 @@ export function composeScenarios(enabledIds: readonly ScenarioId[]): ComposeResu
     if (idx !== -1) scenarios.splice(idx, 1)
   }
 
-  const allRules: RoutingRule[] = scenarios.flatMap(s => [...s.rules])
+  // Merge rules from every enabled scenario, de-duplicating by rule id.
+  // Multiple scenarios independently emit the same shared rules (notably the
+  // private-network CIDRs `private:192.168.0.0/16` etc.), which previously
+  // collided as DUPLICATE_ID, failed pipeline validation, and silently dropped
+  // the ENTIRE composed policy back to legacy mode (no Russia bypass → RU sites
+  // saw the VPN exit IP). Identical ids are identical rules, so first-wins is
+  // safe; scenarios are processed in enabled order so earlier ones take priority.
+  const seenRuleIds = new Set<string>()
+  const allRules: RoutingRule[] = []
+  let droppedDuplicates = 0
+  for (const s of scenarios) {
+    for (const rule of s.rules) {
+      if (seenRuleIds.has(rule.id)) {
+        droppedDuplicates++
+        continue
+      }
+      seenRuleIds.add(rule.id)
+      allRules.push(rule)
+    }
+  }
+  if (droppedDuplicates > 0) {
+    warnings.push(`Merged ${droppedDuplicates} duplicate rule(s) shared across scenarios`)
+  }
 
   const policy: RoutingPolicy = {
     mode: 'custom',

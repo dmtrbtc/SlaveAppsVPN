@@ -9,6 +9,7 @@ import type { VPNEngine, EngineInitConfig, ConnectionProfile } from '../engine/V
 import { EMPTY_HEALTH, type RuntimeState, type HealthStatus, type StopReason, type HotReloadType } from '../state/RuntimeState'
 import type { TrafficStats } from '@slave-vpn/shared'
 import { ProcessManager } from './ProcessManager'
+import { readGeoSiteCategories } from './geositeCategories'
 import { MihomoApiClient } from './MihomoApiClient'
 import { HealthMonitor } from './HealthMonitor'
 import { TrafficMonitor } from './TrafficMonitor'
@@ -265,6 +266,19 @@ export class MihomoEngine implements VPNEngine {
   }
 
   private async writeConfig(profile: ConnectionProfile): Promise<void> {
+    // Geo files must be in place BEFORE we read available categories and BEFORE
+    // mihomo launches, so sync them first.
+    await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
+    await this.syncGeoFiles()
+
+    // Read the geosite categories actually present so the generator can drop
+    // rules for unknown ones (mihomo fatals on an unknown GEOSITE category).
+    const geositePath = path.join(this.initConfig!.workingDir, 'geosite.dat')
+    const availableGeoSites = [...readGeoSiteCategories(geositePath)]
+    if (availableGeoSites.length > 0) {
+      console.log(`[MihomoEngine] geosite categories available: ${availableGeoSites.length}`)
+    }
+
     const yaml = generateMihomoConfig({
       subscriptionYaml: profile.subscriptionYaml,
       ...(profile.selectedProxy !== undefined ? { selectedProxy: profile.selectedProxy } : {}),
@@ -275,10 +289,9 @@ export class MihomoEngine implements VPNEngine {
       ...(profile.dnsProfile !== undefined ? { dnsProfile: profile.dnsProfile } : {}),
       ...(profile.routingPolicy !== undefined ? { routingPolicy: profile.routingPolicy } : {}),
       ...(this.initConfig!.rulesDir ? { rulesDir: this.initConfig!.rulesDir } : {}),
+      ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
       ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
     })
-    await fs.mkdir(this.initConfig!.workingDir, { recursive: true })
-    await this.syncGeoFiles()
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
 
     // Log generated config for production diagnostics (secret is obfuscated in yaml already)

@@ -61,6 +61,12 @@ export interface ConfigGenerationContext {
   // geoip.db/geosite.db for sing-box). When unset, engines fall back to
   // working dir + may attempt auto-download.
   rulesDir?: string
+  // Lower-cased geosite category names present in the installed geosite.dat.
+  // When provided (Windows engine reads them from the synced geosite.dat), the
+  // generator DROPS any `GEOSITE,<cat>,...` rule whose category is absent — a
+  // missing category otherwise makes mihomo fatal at parse. When unset/empty,
+  // no geosite filtering is applied (Android auto-downloads a known dat).
+  availableGeoSites?: readonly string[]
   // uTLS fingerprint to apply to every TLS-enabled outbound. When unset,
   // generators default to "randomized" (and only override the static "chrome"
   // default — leaving provider-set explicit fingerprints alone). When set
@@ -113,11 +119,18 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     },
   ]
 
-  const rules = ctx.androidRouting
+  const rawRules = ctx.androidRouting
     ? buildAndroidRules(ctx.androidRouting)
     : ctx.routingPolicy
     ? ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules
     : buildLegacyRules(ctx.vpnMode, ctx.settings.splitTunnelProcesses)
+
+  // Drop GEOSITE rules whose category isn't in the installed geosite.dat —
+  // mihomo fatals at parse on an unknown category (e.g. RuNet-specific
+  // `ru-blocked`/`antifilter-community` that live in a separate .dat, or
+  // `torrent`/`twitch-ads` absent from the MetaCubeX build). Only filter when we
+  // actually know the available set; otherwise leave rules untouched.
+  const rules = filterUnknownGeoSiteRules(rawRules, ctx.availableGeoSites)
 
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
@@ -402,6 +415,21 @@ function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutin
     'nameserver-policy': nameserverPolicy,
     'respect-rules': true,
   }
+}
+
+// Remove `GEOSITE,<cat>,...` rules whose category is not in the installed
+// geosite.dat. mihomo aborts the whole config if any geosite rule names an
+// unknown category, so silently dropping the unmatched ones keeps the rest of
+// the (valid) split-routing policy alive. No-op when the available set is
+// unknown/empty — we never strip rules we can't verify.
+function filterUnknownGeoSiteRules(rules: readonly string[], available?: readonly string[]): string[] {
+  if (!available || available.length === 0) return [...rules]
+  const known = new Set(available.map((c) => c.toLowerCase()))
+  return rules.filter((rule) => {
+    const m = /^GEOSITE,([^,]+),/i.exec(rule)
+    if (!m) return true
+    return known.has(m[1]!.toLowerCase())
+  })
 }
 
 export function getAutoSelectGroupName(): string {
