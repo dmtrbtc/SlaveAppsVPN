@@ -8,8 +8,7 @@ import { SingleProxySource } from './impl/sources/SingleProxySource'
 import { RemnawaveKeySource } from './impl/sources/RemnawaveKeySource'
 import { getLogger } from '../logger'
 import type { SubscriptionEntry, ConfigSourceType } from '../../shared/ipc/types'
-
-const SOFT_CAP_NODES = 500
+import { aggregateProxies } from '@slave-vpn/core'
 
 // ─── Source factory ──────────────────────────────────────────────────────────
 
@@ -33,58 +32,8 @@ function createSourceFor(
   }
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-// ─── Dedup ────────────────────────────────────────────────────────────────────
-// Two nodes are duplicates iff they share (type, server, port, identity, flow, sni).
-// Identity is uuid/password depending on protocol. Flow and SNI matter because the
-// same VLESS endpoint with different flow/sni is a genuinely different node.
-
-function pickStringField(extra: Record<string, unknown>, ...keys: string[]): string {
-  for (const k of keys) {
-    const v = extra[k]
-    if (typeof v === 'string' && v.length > 0) return v
-  }
-  return ''
-}
-
-function dedupKey(entry: ProxyEntry): string {
-  const e = entry.extra
-  const identity = pickStringField(e, 'uuid', 'password', 'cipher')
-  const flow = pickStringField(e, 'flow')
-  const sni = pickStringField(e, 'sni', 'servername')
-  const realityOpts = isObject(e['reality-opts']) ? (e['reality-opts'] as Record<string, unknown>) : null
-  const pbk = realityOpts ? pickStringField(realityOpts as Record<string, unknown>, 'public-key') : ''
-  return [entry.type, entry.server, entry.port, identity, flow, sni, pbk].join('|')
-}
-
-function dedupEntries(entries: ProxyEntry[]): ProxyEntry[] {
-  const seen = new Map<string, ProxyEntry>()
-  for (const e of entries) {
-    const key = dedupKey(e)
-    if (!seen.has(key)) {
-      seen.set(key, e)
-    }
-  }
-  return [...seen.values()]
-}
-
-// Ensure all proxy names are unique. Mihomo silently drops dupes otherwise.
-function uniquifyNames(entries: ProxyEntry[]): ProxyEntry[] {
-  const used = new Set<string>()
-  return entries.map(e => {
-    let name = e.name
-    let suffix = 1
-    while (used.has(name)) {
-      suffix++
-      name = `${e.name} #${suffix}`
-    }
-    used.add(name)
-    return name === e.name ? e : { ...e, name }
-  })
-}
+// Dedup + uniquify + source-tag + soft-cap now live in @slave-vpn/core
+// (aggregateProxies) — shared with Android.
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -159,41 +108,15 @@ export class SubscriptionAggregatorService {
       throw new Error('No enabled subscriptions')
     }
 
-    const results = await Promise.all(entries.map(e => this.fetchOne(e).then(r => ({ entry: e, ...r }))))
+    const results = await Promise.all(
+      entries.map(e =>
+        this.fetchOne(e).then(r => ({ entry: { id: e.id, name: e.name }, proxies: r.proxies, error: r.error })),
+      ),
+    )
 
-    const all: ProxyEntry[] = []
-    const perSubscription: Record<string, number> = {}
-    const warnings: string[] = []
-
-    for (const { entry, proxies, error } of results) {
-      if (error) {
-        warnings.push(`${entry.name}: ${error}`)
-      }
-      for (const p of proxies) {
-        // Tag each node with its source subscription so UI can attribute it.
-        const tagged: ProxyEntry = {
-          ...p,
-          extra: { ...p.extra, 'slave-source': entry.id },
-        }
-        all.push(tagged)
-      }
-    }
-
-    if (all.length === 0) {
-      const summary = warnings.length > 0 ? warnings.join('; ') : 'no nodes returned'
-      throw new Error(`Aggregation produced no nodes: ${summary}`)
-    }
-
-    const deduped = uniquifyNames(dedupEntries(all))
-
-    if (deduped.length > SOFT_CAP_NODES) {
-      warnings.push(`Soft cap exceeded: ${deduped.length} nodes (limit ${SOFT_CAP_NODES}). Engine may slow down.`)
-    }
-
-    for (const { entry, proxies } of results) {
-      perSubscription[entry.id] = deduped.filter(d => d.extra['slave-source'] === entry.id).length
-      void proxies
-    }
+    // Shared merge kernel (dedup by type/server/port/identity/flow/sni/pbk,
+    // uniquify names, tag slave-source, soft-cap) lives in @slave-vpn/core.
+    const { proxies: deduped, perSubscription, warnings } = aggregateProxies(results)
 
     const yaml = buildClashYaml(deduped)
     const snapshot: AggregatedSnapshot = {

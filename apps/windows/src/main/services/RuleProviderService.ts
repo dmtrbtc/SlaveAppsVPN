@@ -3,99 +3,21 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
 import { getLogger } from '../logger'
+import {
+  RULE_PROVIDER_PRESETS,
+  mergeWithPresets,
+  persistableProviders,
+  sortByPriority,
+  addProvider,
+  removeProvider,
+  updateProvider,
+  reorderProviders,
+} from '@slave-vpn/core'
 import type { RuleProvider, RuleProviderAddPayload } from '../../shared/ipc/types'
 
-const PRESETS: RuleProvider[] = [
-  {
-    id: 'builtin-russia-bypass',
-    name: 'Russia Bypass',
-    enabled: true,
-    kind: 'builtin',
-    url: '',
-    type: 'domain-list',
-    action: 'direct',
-    priority: 100,
-    category: 'russia-bypass',
-    isPreset: true,
-    ruleCount: 2000,
-  },
-  {
-    id: 'builtin-private',
-    name: 'Private Networks',
-    enabled: true,
-    kind: 'builtin',
-    url: '',
-    type: 'ip-cidr-list',
-    action: 'direct',
-    priority: 50,
-    category: 'system',
-    isPreset: true,
-    ruleCount: 8,
-  },
-  // RuNet Freedom curated lists — auto-refreshable via Rules → Reload.
-  // Action `proxy` because these are sites blocked IN Russia, so we want
-  // them routed through VPN. Users can flip action in the UI.
-  {
-    id: 'preset-runetfreedom-youtube',
-    name: 'RuNet Freedom · YouTube',
-    enabled: false,
-    kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/youtube.txt',
-    type: 'domain-list',
-    action: 'proxy',
-    priority: 510,
-    category: 'streaming',
-    isPreset: true,
-  },
-  {
-    id: 'preset-runetfreedom-discord',
-    name: 'RuNet Freedom · Discord',
-    enabled: false,
-    kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/discord.txt',
-    type: 'domain-list',
-    action: 'proxy',
-    priority: 511,
-    category: 'work',
-    isPreset: true,
-  },
-  {
-    id: 'preset-runetfreedom-ru-blocked',
-    name: 'RuNet Freedom · Заблокированные в РФ',
-    enabled: true,
-    kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/ru-blocked.txt',
-    type: 'domain-list',
-    action: 'proxy',
-    priority: 520,
-    category: 'russia-bypass',
-    isPreset: true,
-  },
-  {
-    id: 'preset-runetfreedom-antifilter',
-    name: 'RuNet Freedom · Antifilter',
-    enabled: false,
-    kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/antifilter-download.txt',
-    type: 'domain-list',
-    action: 'proxy',
-    priority: 530,
-    category: 'russia-bypass',
-    isPreset: true,
-  },
-  {
-    id: 'preset-runetfreedom-refilter',
-    name: 'RuNet Freedom · Refilter',
-    enabled: false,
-    kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/refilter.txt',
-    type: 'domain-list',
-    action: 'proxy',
-    priority: 531,
-    category: 'russia-bypass',
-    isPreset: true,
-  },
-]
+// Presets + the pure CRUD kernel now live in @slave-vpn/core (RULE_PROVIDER_PRESETS
+// + add/remove/update/reorder/merge). This service keeps the Windows fs
+// persistence and the network `reload`.
 
 export class RuleProviderService {
   private providers: RuleProvider[] = []
@@ -113,74 +35,45 @@ export class RuleProviderService {
       if (existsSync(this.storePath)) {
         const raw = readFileSync(this.storePath, 'utf-8')
         const parsed = JSON.parse(raw) as RuleProvider[]
-        // Merge presets
-        const customIds = new Set(parsed.map(p => p.id))
-        this.providers = [
-          ...PRESETS.filter(p => !customIds.has(p.id)),
-          ...parsed,
-        ]
+        this.providers = mergeWithPresets(parsed)
       } else {
-        this.providers = [...PRESETS]
+        this.providers = [...RULE_PROVIDER_PRESETS]
       }
     } catch (err) {
       getLogger().error({ err }, 'Failed to load rule providers, using defaults')
-      this.providers = [...PRESETS]
+      this.providers = [...RULE_PROVIDER_PRESETS]
     }
   }
 
   private save(): void {
-    const custom = this.providers.filter(p => !p.isPreset)
-    writeFileSync(this.storePath, JSON.stringify(custom, null, 2), 'utf-8')
+    writeFileSync(this.storePath, JSON.stringify(persistableProviders(this.providers), null, 2), 'utf-8')
   }
 
   list(): RuleProvider[] {
-    return this.providers.slice().sort((a, b) => a.priority - b.priority)
+    return sortByPriority(this.providers)
   }
 
   add(payload: RuleProviderAddPayload): RuleProvider {
-    const provider: RuleProvider = {
-      id: randomUUID(),
-      name: payload.name,
-      enabled: true,
-      kind: payload.url.includes('github.com') || payload.url.includes('raw.githubusercontent.com')
-        ? 'github' : 'url',
-      url: payload.url,
-      type: payload.type,
-      action: payload.action,
-      priority: 1000 + this.providers.filter(p => !p.isPreset).length * 10,
-      ...(payload.category ? { category: payload.category } : {}),
-    }
-    this.providers.push(provider)
+    const { providers, added } = addProvider(this.providers, payload, randomUUID())
+    this.providers = providers
     this.save()
-    return provider
+    return added
   }
 
   remove(id: string): void {
-    const provider = this.providers.find(p => p.id === id)
-    if (provider?.isPreset) throw new Error('Cannot remove built-in rule provider')
-    this.providers = this.providers.filter(p => p.id !== id)
+    this.providers = removeProvider(this.providers, id)
     this.save()
   }
 
   update(id: string, patch: Partial<Pick<RuleProvider, 'enabled' | 'action' | 'priority'>>): RuleProvider {
-    const idx = this.providers.findIndex(p => p.id === id)
-    if (idx === -1) throw new Error(`Rule provider not found: ${id}`)
-    const current = this.providers[idx]
-    if (!current) throw new Error(`Rule provider vanished: ${id}`)
-    const next: RuleProvider = { ...current, ...patch }
-    this.providers[idx] = next
+    const { providers, updated } = updateProvider(this.providers, id, patch)
+    this.providers = providers
     this.save()
-    return next
+    return updated
   }
 
   reorder(ids: string[]): void {
-    const byId = new Map(this.providers.map(p => [p.id, p]))
-    const ordered = ids.map((id, i) => {
-      const p = byId.get(id)
-      if (!p) throw new Error(`Unknown provider id: ${id}`)
-      return { ...p, priority: (i + 1) * 10 }
-    })
-    this.providers = ordered
+    this.providers = reorderProviders(this.providers, ids)
     this.save()
   }
 
