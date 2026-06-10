@@ -126,6 +126,23 @@ function notImplemented(name: string): () => Promise<IpcErr> {
   return async () => err('NOT_IMPLEMENTED', `${name} not implemented on Android`)
 }
 
+// Parse one raw native/mihomo log line into a {level,time,msg} entry. The ring
+// buffer holds lines like `2026-…T…Z INFO [service] …` or mihomo's
+// `… level=warning msg="…"`, so derive the level (otherwise the level filter and
+// colours in DiagnosticsPage never see anything but "info") and the timestamp.
+function parseNativeLogLine(line: string): { level: string; time: number; msg: string } {
+  const lower = line.toLowerCase()
+  let level = 'info'
+  if (/\b(fatal|panic)\b|level=fatal/.test(lower)) level = 'fatal'
+  else if (/\berror\b|level=error/.test(lower)) level = 'error'
+  else if (/\bwarn(ing)?\b|level=warning/.test(lower)) level = 'warn'
+  else if (/\bdebug\b|level=debug/.test(lower)) level = 'debug'
+  // Leading ISO-8601 timestamp, if present.
+  const iso = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/.exec(line)
+  const time = iso ? Date.parse(iso[1]!) || Date.now() : Date.now()
+  return { level, time, msg: line }
+}
+
 // ─── Subscription entry mapping ───────────────────────────────────────────────
 
 function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
@@ -545,12 +562,8 @@ export function installAndroidBridge(): void {
       collect: notImplemented('diagnostics.collect'),
       exportLogs: notImplemented('diagnostics.exportLogs'),
       getLogs: () => wrap(async () => {
-        try {
-          const { lines } = await SlaveVpn.getLogs({ tail: 500 })
-          return lines.map(l => ({ level: 'info', time: Date.now(), msg: l }))
-        } catch {
-          return []
-        }
+        const { lines } = await SlaveVpn.getLogs({ tail: 500 })
+        return lines.map(parseNativeLogLine)
       }),
       getStartup: async () => ok({ phases: [], totalMs: 0, appStartedAt: Date.now(), completedAt: Date.now() }),
       selfTest: notImplemented('diagnostics.selfTest'),

@@ -20,7 +20,12 @@ export function useLogs() {
   return useQuery({
     queryKey: LOGS_QUERY_KEY,
     queryFn: () => diagnosticsApi.getLogs(),
-    staleTime: 10_000,
+    // Poll while the Diagnostics panel is open so engine/lifecycle lines appear
+    // live (the native log ring buffer fills as mihomo runs; without this the
+    // first — usually empty, pre-connect — fetch stuck and the panel read "Логов
+    // нет" even after connecting). react-query only polls while observed.
+    staleTime: 2_000,
+    refetchInterval: 3_000,
     retry: 1,
   })
 }
