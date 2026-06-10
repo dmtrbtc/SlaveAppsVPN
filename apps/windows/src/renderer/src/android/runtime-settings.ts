@@ -84,14 +84,26 @@ const DEFAULT_RULE_LISTS: RuleListEntry[] = [
   },
   {
     id: 'runet-freedom',
-    name: 'RuNet Freedom (расширенный)',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/domains/all.lst',
+    name: 'Расширенный список (Re-filter)',
+    // Plain-domain list (one domain per line) — mihomo `domain` behavior matches
+    // the domain AND its subdomains (verified). ~80k entries, broad RKN coverage.
+    // The previous runetfreedom `domains/all.lst` path 404s; ru-blocked.txt etc.
+    // are geosite-format (`domain:…`) which a text/domain provider can't parse.
+    url: 'https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst',
     behavior: 'domain',
-    enabled: false,
+    enabled: true,
     intervalHours: 24,
     builtin: true,
   },
 ]
+
+// Built-in list URLs that broke upstream (404 / wrong format) → their working
+// replacement. Applied on load so installs that persisted the old URL self-heal
+// without losing the user's enabled/interval choices.
+const DEAD_URL_FIXES: Record<string, string> = {
+  'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/domains/all.lst':
+    'https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst',
+}
 
 function reviveLists(raw: string): RuleListEntry[] | null {
   try {
@@ -102,7 +114,7 @@ function reviveLists(raw: string): RuleListEntry[] | null {
       .map(e => ({
         id: String(e.id ?? e.url),
         name: String(e.name),
-        url: String(e.url),
+        url: DEAD_URL_FIXES[String(e.url)] ?? String(e.url),
         behavior: e.behavior === 'ipcidr' ? 'ipcidr' : 'domain',
         enabled: e.enabled !== false,
         intervalHours: typeof e.intervalHours === 'number' && e.intervalHours > 0 ? e.intervalHours : 24,

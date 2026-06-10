@@ -3,7 +3,13 @@ import type { RuleProvider } from '../settings/types.js'
 /**
  * Built-in rule-provider presets — ported verbatim from the Windows
  * RuleProviderService so both platforms ship the same catalogue. Presets cannot
- * be deleted (isPreset); the RuNet Freedom lists are auto-refreshable.
+ * be deleted (isPreset); the bypass lists are auto-refreshable.
+ *
+ * All URLs are PLAIN-domain lists (one domain per line) so they parse under a
+ * mihomo `domain`-behavior text rule-provider (which matches the domain and its
+ * subdomains). The previous runetfreedom `*.txt` sources were geosite-format
+ * (`domain:…` / `full:…`) which a text provider can't parse, and `domains/all.lst`
+ * 404s — replaced with itdoginfo (per-service) and Re-filter (comprehensive).
  */
 export const RULE_PROVIDER_PRESETS: RuleProvider[] = [
   {
@@ -34,10 +40,10 @@ export const RULE_PROVIDER_PRESETS: RuleProvider[] = [
   },
   {
     id: 'preset-runetfreedom-youtube',
-    name: 'RuNet Freedom · YouTube',
+    name: 'YouTube (itdoginfo)',
     enabled: false,
     kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/youtube.txt',
+    url: 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/youtube.lst',
     type: 'domain-list',
     action: 'proxy',
     priority: 510,
@@ -46,10 +52,10 @@ export const RULE_PROVIDER_PRESETS: RuleProvider[] = [
   },
   {
     id: 'preset-runetfreedom-discord',
-    name: 'RuNet Freedom · Discord',
+    name: 'Discord (itdoginfo)',
     enabled: false,
     kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/discord.txt',
+    url: 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/discord.lst',
     type: 'domain-list',
     action: 'proxy',
     priority: 511,
@@ -58,10 +64,10 @@ export const RULE_PROVIDER_PRESETS: RuleProvider[] = [
   },
   {
     id: 'preset-runetfreedom-ru-blocked',
-    name: 'RuNet Freedom · Заблокированные в РФ',
+    name: 'Заблокированные в РФ (Re-filter)',
     enabled: true,
     kind: 'github',
-    url: 'https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/ru-blocked.txt',
+    url: 'https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst',
     type: 'domain-list',
     action: 'proxy',
     priority: 520,
