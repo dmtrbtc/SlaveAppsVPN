@@ -3,14 +3,33 @@ import type { RoutingRule, RuleAction } from '../models/RoutingRule'
 import type { RoutingScenario, ScenarioId } from './types'
 import { getScenarioById, listScenarios } from './registry'
 
-// Pick the strongest defaultAction across enabled scenarios.
-// Rule: smart-global wins if present (proxy-everything); otherwise smart-russia-bypass (direct);
-// otherwise fallback to 'direct' so unmatched traffic doesn't accidentally tunnel.
+// Pick the effective default action (the final MATCH rule) from the enabled
+// scenarios that DECLARE one (a non-null defaultAction marks a "base" scenario —
+// e.g. roscomvpn-default 'proxy', smart-russia-bypass 'direct', smart-global
+// 'proxy'). Add-on scenarios (ai-services, gaming, runetfreedom, …) declare null
+// and don't influence the base.
+//
+// Precedence:
+//   1. smart-global forces proxy-everything when present.
+//   2. Otherwise prefer 'proxy' over 'direct': if ANY enabled base scenario wants
+//      proxy-by-default (roscomvpn-default / smart-global), unmatched traffic
+//      tunnels — so blocked sites that aren't in an explicit allow-list still
+//      work, while the scenario's own RU/whitelist rules keep RU traffic DIRECT.
+//   3. Fallback 'direct' only when no base scenario is enabled.
+//
+// Previously this checked ONLY smart-global + smart-russia-bypass, so
+// roscomvpn-default's declared 'proxy' was silently dropped → everything
+// unmatched went DIRECT → RU IP, and RU-blocked sites/Telegram-by-IP failed.
 function resolveDefaultAction(scenarios: readonly RoutingScenario[]): RuleAction {
   const global = scenarios.find(s => s.id === 'smart-global')
   if (global?.defaultAction) return global.defaultAction
-  const ruBypass = scenarios.find(s => s.id === 'smart-russia-bypass')
-  if (ruBypass?.defaultAction) return ruBypass.defaultAction
+
+  const declared = scenarios
+    .map(s => s.defaultAction)
+    .filter((a): a is 'proxy' | 'direct' => a != null)
+
+  if (declared.includes('proxy')) return 'proxy'
+  if (declared.includes('direct')) return 'direct'
   return 'direct'
 }
 
