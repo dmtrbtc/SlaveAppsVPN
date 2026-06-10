@@ -4,9 +4,13 @@ import {
   type ConfigGenerationContext,
   type GeneratorSettings,
 } from '@slave-vpn/config'
+import { composeRoutingPolicy } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
 import { resolveDohUrl, getRuleLists } from './runtime-settings'
+import { androidSettings } from './settings-store'
+import { createAndroidStorageAdapter, createAndroidNetworkAdapter } from './adapters'
+import { getAndroidGeoSiteCategories } from './geosite-categories'
 
 /**
  * Compile a ready-to-use **mihomo (Clash.Meta) YAML** for the Android clashbox
@@ -66,6 +70,22 @@ export async function compileMihomoConfigForAndroid(
   const dohUrl = resolveDohUrl()
   const enabledLists = getRuleLists().filter(l => l.enabled)
 
+  // P1.b.2 — unified routing: compose the SAME engine-ready routingPolicy
+  // Windows uses from the persisted scenario set, so Android routes through the
+  // shared scenario rules (Russia bypass, ad-block, streaming, …) instead of the
+  // old hardcoded smart/global/direct split. When no scenarios are enabled (or
+  // the composition fails validation) `policy` is null and we fall back to the
+  // androidRouting rules below. availableGeoSites lets the generator drop GEOSITE
+  // rules for categories the native dat lacks (mihomo fatals otherwise).
+  const enabledScenarios = androidSettings().enabledScenarios
+  const composed = composeRoutingPolicy(enabledScenarios)
+  const availableGeoSites = composed.policy
+    ? await getAndroidGeoSiteCategories(
+        createAndroidNetworkAdapter(),
+        createAndroidStorageAdapter(),
+      )
+    : []
+
   const generatorSettings: GeneratorSettings = {
     // The native SlaveVpnService injects the Android TUN (fd) block; the desktop
     // tun section here would carry the wrong device/auto-route for Android.
@@ -85,6 +105,11 @@ export async function compileMihomoConfigForAndroid(
     utlsFingerprint: options.utlsFingerprint ?? 'randomized',
     apiPort: 9090,
     apiSecret: randomSecret(),
+    // Scenario rules WIN over androidRouting's smart/global/direct split (the
+    // generator forces mode:'rule' when routingPolicy is present). geo / DNS /
+    // node-domain anti-loop still come from androidRouting below.
+    ...(composed.policy ? { routingPolicy: composed.policy } : {}),
+    ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
     androidRouting: {
       mode: options.routingMode ?? 'smart',
       nodeDomainSuffixes,
@@ -101,5 +126,10 @@ export async function compileMihomoConfigForAndroid(
   }
 
   const config = generateMihomoConfig(ctx)
-  return { config, proxyCount: proxies.length, warnings }
+  const allWarnings = [
+    ...warnings,
+    ...composed.warnings,
+    ...(composed.valid ? [] : composed.errors.map(e => `routing: ${e}`)),
+  ]
+  return { config, proxyCount: proxies.length, warnings: allWarnings }
 }
