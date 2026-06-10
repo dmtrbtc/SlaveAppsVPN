@@ -3,6 +3,7 @@ export type {
   NetworkAdapter,
   NetworkResponse,
   NetworkRequestOptions,
+  NetworkBytesResponse,
 } from './NetworkAdapter.js'
 export type { FsAdapter } from './FsAdapter.js'
 export type { EngineAdapter } from './EngineAdapter.js'

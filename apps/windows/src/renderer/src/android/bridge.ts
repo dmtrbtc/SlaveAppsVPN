@@ -20,6 +20,8 @@ import { getDnsPresets, getDnsStrategies, GEO_SOURCES } from '@slave-vpn/core'
 import type { AppSettings, UtlsFingerprintName } from '@slave-vpn/core'
 import { listScenarioMetadata } from '@slave-vpn/routing'
 import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
+import { createAndroidDataAdapters } from './adapters'
+import { prefetchAndroidGeoSiteCategories } from './geosite-categories'
 
 // Build the RoutingScenarioInfo[] the renderer expects from core scenario
 // metadata + the currently enabled set (persisted in AppSettings.enabledScenarios).
@@ -891,4 +893,14 @@ export function installAndroidBridge(): void {
     currentMode = s.vpnMode
     currentUtlsFingerprint = s.utlsFingerprint
   })()
+
+  // Warm up the geosite category cache (≈4 MB MetaCubeX dat, fetched at most
+  // weekly) so the first scenario-driven connect can drop GEOSITE rules for
+  // categories absent from the native engine's dat (P1.b consumes this).
+  try {
+    const adapters = createAndroidDataAdapters()
+    prefetchAndroidGeoSiteCategories(adapters.network, adapters.storage)
+  } catch {
+    /* non-fatal */
+  }
 }

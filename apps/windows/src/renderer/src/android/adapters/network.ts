@@ -1,6 +1,19 @@
 import { CapacitorHttp, Capacitor } from '@capacitor/core'
-import type { NetworkAdapter, NetworkResponse, NetworkRequestOptions } from '@slave-vpn/core'
+import type {
+  NetworkAdapter,
+  NetworkResponse,
+  NetworkRequestOptions,
+  NetworkBytesResponse,
+} from '@slave-vpn/core'
 import { getDeviceHeaders } from '../device-id'
+
+function base64ToBytes(b64: string): Uint8Array {
+  const clean = b64.includes(',') ? b64.slice(b64.indexOf(',') + 1) : b64
+  const bin = atob(clean)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
 
 /**
  * Android NetworkAdapter — issues requests from native code (OkHttp via
@@ -71,6 +84,34 @@ export function createAndroidNetworkAdapter(): NetworkAdapter {
           resHeaders[k] = v
         })
         return { status: res.status, body, headers: resHeaders }
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+
+    async fetchBytes(url: string, opts: NetworkRequestOptions = {}): Promise<NetworkBytesResponse> {
+      const headers = buildHeaders(opts.headers)
+      const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+
+      if (isNative()) {
+        // CapacitorHttp returns binary payloads base64-encoded in res.data.
+        const res = await CapacitorHttp.get({
+          url,
+          headers,
+          responseType: 'arraybuffer',
+          connectTimeout: timeout,
+          readTimeout: timeout,
+        } as Parameters<typeof CapacitorHttp.get>[0])
+        const b64 = typeof res.data === 'string' ? res.data : ''
+        return { status: res.status, bytes: base64ToBytes(b64) }
+      }
+
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeout)
+      try {
+        const res = await fetch(url, { headers, signal: controller.signal })
+        const bytes = new Uint8Array(await res.arrayBuffer())
+        return { status: res.status, bytes }
       } finally {
         clearTimeout(timer)
       }

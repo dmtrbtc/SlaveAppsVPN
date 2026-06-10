@@ -21,6 +21,13 @@ export interface NetworkRequestOptions {
   timeoutMs?: number
 }
 
+export interface NetworkBytesResponse {
+  status: number
+  bytes: Uint8Array
+}
+
 export interface NetworkAdapter {
   fetch(url: string, opts?: NetworkRequestOptions): Promise<NetworkResponse>
+  /** Binary fetch (geo databases, etc.) — text fetch corrupts binary payloads. */
+  fetchBytes(url: string, opts?: NetworkRequestOptions): Promise<NetworkBytesResponse>
 }
