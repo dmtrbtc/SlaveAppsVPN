@@ -17,6 +17,8 @@ import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
 import { getDnsPresets, getDnsStrategies, GEO_SOURCES } from '@slave-vpn/core'
+import type { AppSettings, UtlsFingerprintName } from '@slave-vpn/core'
+import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
 
@@ -687,10 +689,15 @@ export function installAndroidBridge(): void {
     },
 
     settings: {
-      get: async () => ok({
-        vpnMode: currentMode,
-        utlsFingerprint: currentUtlsFingerprint,
-      } as never),
+      // Full AppSettings now persists durably via core.SettingsStore; the live
+      // cache (currentMode/currentUtlsFingerprint) is overlaid so an in-flight
+      // change is reflected even before the async store write resolves.
+      get: async () =>
+        ok({
+          ...androidSettings(),
+          vpnMode: currentMode,
+          utlsFingerprint: currentUtlsFingerprint as UtlsFingerprintName,
+        } as never),
       set: (payload: Record<string, unknown>) => wrap(async () => {
         if (typeof payload['vpnMode'] === 'string') {
           const m = payload['vpnMode'] as VPNMode
@@ -702,6 +709,8 @@ export function installAndroidBridge(): void {
           currentUtlsFingerprint = payload['utlsFingerprint'] as string
           saveUtlsToLocalStorage(currentUtlsFingerprint)
         }
+        // Persist the whole patch durably (dnsPreset/dnsStrategy/enabledScenarios/…).
+        await patchAndroidSettings(payload as Partial<AppSettings>)
       }),
     },
     provider: {
@@ -841,8 +850,20 @@ export function installAndroidBridge(): void {
   // the native gojni core to load at app launch. The sparkline reads
   // EMPTY_TRAFFIC_STATS until connected, then onVpnTraffic feeds real numbers.
 
-  // Seed currentMode from local cache if user set one previously
-  void getSubscriptionInput('__pref_vpn_mode__').then(v => {
-    if (v === 'full' || v === 'bypass' || v === 'split' || v === 'custom') currentMode = v
-  })
+  // Hydrate the durable core settings store, migrating the legacy per-key prefs
+  // (old vpnMode cache + uTLS) on first run, then adopt the store as the source
+  // of truth for the live cache.
+  void (async () => {
+    const oldMode = await getSubscriptionInput('__pref_vpn_mode__')
+    const seedMode =
+      oldMode === 'full' || oldMode === 'bypass' || oldMode === 'split' || oldMode === 'custom'
+        ? (oldMode as VPNMode)
+        : undefined
+    const s = await initAndroidSettings({
+      ...(seedMode ? { vpnMode: seedMode } : {}),
+      utlsFingerprint: currentUtlsFingerprint as UtlsFingerprintName,
+    })
+    currentMode = s.vpnMode
+    currentUtlsFingerprint = s.utlsFingerprint
+  })()
 }
