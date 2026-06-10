@@ -184,6 +184,13 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
 
   if (ctx.settings.tunEnabled) {
     config['tun'] = buildTunSection(ctx.settings)
+  }
+  // Sniffer recovers the real SNI/Host for connections that hit a raw IP (apps
+  // that bypass the tunnel DNS / hardcode IPs), so domain rules (GEOSITE
+  // category-ru, the RKN bypass lists) still apply. Needed on Android too, where
+  // the native side injects the TUN fd so `tunEnabled` is false but mihomo still
+  // owns the tunnel.
+  if (ctx.settings.tunEnabled || ctx.androidRouting) {
     config['sniffer'] = buildSnifferSection()
   }
 
@@ -449,6 +456,12 @@ function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutin
       '*.lan', '*.local', '*.localdomain', '*.localhost', 'localhost',
       'time.*.com', 'ntp.*.com', '*.msftncsi.com', '*.msftconnecttest.com',
       'connectivitycheck.gstatic.com', 'captive.apple.com',
+      // RU stays on a real IP so GEOIP,RU,DIRECT can catch the .ru long-tail that
+      // isn't in geosite category-ru (a fake-ip never matches GEOIP — the resolved
+      // address is the synthetic 198.18.x.y, so RU domains would otherwise leak
+      // into the tunnel under a proxy-default scenario). category-ru is matched by
+      // the GEOSITE rule on the domain regardless; keeping it real is consistent.
+      '+.ru', '+.рф', 'geosite:category-ru',
       // never fake-ip the node domains — they must resolve to real IPs
       ...opts.nodeDomainSuffixes.map(s => `+.${s}`),
     ],
