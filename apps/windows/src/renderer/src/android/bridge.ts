@@ -16,6 +16,7 @@ import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
+import { getDnsPresets, getDnsStrategies, GEO_SOURCES } from '@slave-vpn/core'
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
 
@@ -751,8 +752,10 @@ export function installAndroidBridge(): void {
     dns: {
       getProfile: async () => ok(null as never),
       setProfile: notImplemented('dns.setProfile'),
-      getPresets: async () => ok([] as never[]),
-      getStrategies: async () => ok([] as never[]),
+      // Preset + strategy catalogues now come from @slave-vpn/core (shared with
+      // Windows) instead of empty stubs, so the DNS screen shows real options.
+      getPresets: async () => ok(getDnsPresets() as never),
+      getStrategies: async () => ok(getDnsStrategies() as never),
       leakTest: notImplemented('dns.leakTest'),
     },
     rules: {
@@ -786,7 +789,17 @@ export function installAndroidBridge(): void {
         ok({ records: [], lastFullUpdateAt: null, inProgress: false, intervalHours: 24 } as never),
       updateAll: notImplemented('geo.updateAll'),
       updateOne: notImplemented('geo.updateOne'),
-      listSources: async () => ok([] as never[]),
+      // Geo source catalogue from @slave-vpn/core (shared with Windows).
+      listSources: async () =>
+        ok(
+          GEO_SOURCES.map((s) => ({
+            id: s.id,
+            label: s.label,
+            url: s.url,
+            filename: s.filename,
+            category: s.category,
+          })) as never,
+        ),
     },
 
     auth: {
