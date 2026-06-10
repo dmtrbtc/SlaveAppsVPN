@@ -89,7 +89,10 @@ export function createSmartRussiaBypassScenario(): RoutingScenario {
     description: 'Заблокированное в РФ — через VPN. Российские сервисы и банки — напрямую.',
     category: 'bypass',
     icon: 'Map',
-    defaultEnabled: true,
+    // Direct-default selective bypass: only RKN-list/AI traffic tunnels, the rest
+    // (incl. blocked sites not in a list) goes DIRECT. roscomvpn-default is the
+    // out-of-box default instead (proxy-default → blocked sites just work).
+    defaultEnabled: false,
     composable: true,
     rules: buildRules(),
     defaultAction: 'direct',

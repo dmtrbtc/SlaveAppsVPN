@@ -109,7 +109,10 @@ export function createRoscomVPNDefaultScenario(): RoutingScenario {
       'РФ домены и банки/игры напрямую, реклама и слежка Windows блокируются. Final → proxy.',
     category: 'bypass',
     icon: 'ShieldCheck',
-    defaultEnabled: false,
+    // The out-of-box default: proxy-everything-not-RU is what users expect from a
+    // RU-bypass VPN (blocked sites tunnel automatically, RU stays on a RU IP).
+    // This is the config validated working on Windows (alpha.7).
+    defaultEnabled: true,
     composable: false, // overrides default — full bypass profile
     rules: buildRules(),
     defaultAction: 'proxy', // everything not matched goes through VPN

@@ -126,7 +126,10 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   // below (P1.b). Pure capability add: the existing Windows-only (routingPolicy)
   // and Android-only (androidRouting) callers are unaffected.
   const rawRules = ctx.routingPolicy
-    ? ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules
+    ? mergeAndroidExtras(
+        ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules,
+        ctx.androidRouting,
+      )
     : ctx.androidRouting
     ? buildAndroidRules(ctx.androidRouting)
     : buildLegacyRules(ctx.vpnMode, ctx.settings.splitTunnelProcesses)
@@ -337,6 +340,39 @@ function androidClashMode(mode: AndroidRoutingMode): 'rule' | 'global' | 'direct
 //   3. private/local → DIRECT
 //   4. GEOSITE,category-ru → DIRECT  +  GEOIP,ru → DIRECT     (РФ напрямую, скорость)
 //   5. MATCH → SLAVE-SELECT
+/**
+ * Merge the Android-specific extras into a composed scenario policy's rules.
+ *
+ * When Android runs the unified `routingPolicy` (P1) the scenario rules drive
+ * routing, but the `androidRouting` block still carries two things the scenario
+ * model doesn't express and that MUST survive — otherwise they're silently lost
+ * (the P1.b regression: rule-providers were declared but no rule referenced
+ * them, so RKN-blocked sites fell through to the catch-all and dialed DIRECT):
+ *
+ *   1. node-domain → DIRECT (anti-loop). Prepended FIRST so the proxy node's own
+ *      hostname is never itself routed through the proxy — critical under a
+ *      proxy-default scenario (roscomvpn-default / smart-global), harmless under
+ *      a direct-default one.
+ *   2. RKN bypass RULE-SET → SLAVE-SELECT. Placed right after the node rules
+ *      (high priority, mirrors the old buildAndroidRules order) so user-managed
+ *      blocked-list domains tunnel even when the active scenario's default is
+ *      DIRECT.
+ *
+ * No-op when there's no androidRouting (pure Windows path) or it carries no
+ * extras, so the composed rules pass through unchanged.
+ */
+function mergeAndroidExtras(policyRules: readonly string[], opts?: AndroidRoutingOptions): string[] {
+  if (!opts) return [...policyRules]
+  const nodeDirect = opts.nodeDomainSuffixes.map((s) => `DOMAIN-SUFFIX,${s},DIRECT`)
+  const bypass = opts.bypassProviders.map((p) =>
+    p.behavior === 'ipcidr'
+      ? `RULE-SET,${p.name},${SLAVE_SELECT_GROUP},no-resolve`
+      : `RULE-SET,${p.name},${SLAVE_SELECT_GROUP}`,
+  )
+  if (nodeDirect.length === 0 && bypass.length === 0) return [...policyRules]
+  return [...nodeDirect, ...bypass, ...policyRules]
+}
+
 function buildAndroidRules(opts: AndroidRoutingOptions): string[] {
   if (opts.mode === 'direct') return ['MATCH,DIRECT']
   if (opts.mode === 'global') return [...PRIVATE_DIRECT_RULES, `MATCH,${SLAVE_SELECT_GROUP}`]
