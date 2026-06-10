@@ -119,10 +119,16 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     },
   ]
 
-  const rawRules = ctx.androidRouting
-    ? buildAndroidRules(ctx.androidRouting)
-    : ctx.routingPolicy
+  // Rules precedence: a composed routingPolicy (scenarios) WINS over the legacy
+  // androidRouting hardcoded rules even when both are present — this lets Android
+  // run the shared scenario routing while androidRouting still drives the
+  // Android-specific geo auto-download, DNS section and node-domain anti-loop
+  // below (P1.b). Pure capability add: the existing Windows-only (routingPolicy)
+  // and Android-only (androidRouting) callers are unaffected.
+  const rawRules = ctx.routingPolicy
     ? ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules
+    : ctx.androidRouting
+    ? buildAndroidRules(ctx.androidRouting)
     : buildLegacyRules(ctx.vpnMode, ctx.settings.splitTunnelProcesses)
 
   // Drop GEOSITE rules whose category isn't in the installed geosite.dat —
@@ -135,7 +141,9 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
     'allow-lan': false,
-    mode: ctx.androidRouting ? androidClashMode(ctx.androidRouting.mode) : 'rule',
+    // A routingPolicy implies rule-based routing; otherwise honor the Android
+    // smart/global/direct mode, else default to 'rule'.
+    mode: ctx.routingPolicy ? 'rule' : ctx.androidRouting ? androidClashMode(ctx.androidRouting.mode) : 'rule',
     'log-level': 'info',
     'unified-delay': true,
     'tcp-concurrent': true,
