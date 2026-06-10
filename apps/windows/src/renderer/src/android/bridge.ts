@@ -18,7 +18,25 @@ import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
 import { getDnsPresets, getDnsStrategies, GEO_SOURCES } from '@slave-vpn/core'
 import type { AppSettings, UtlsFingerprintName } from '@slave-vpn/core'
+import { listScenarioMetadata } from '@slave-vpn/routing'
 import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
+
+// Build the RoutingScenarioInfo[] the renderer expects from core scenario
+// metadata + the currently enabled set (persisted in AppSettings.enabledScenarios).
+function buildScenarioInfo(): unknown[] {
+  const enabled = new Set(androidSettings().enabledScenarios)
+  return listScenarioMetadata().map((m) => ({
+    id: m.id,
+    name: m.name,
+    description: m.description,
+    category: m.category,
+    icon: m.icon,
+    defaultEnabled: m.defaultEnabled,
+    composable: m.composable,
+    ruleCount: m.ruleCount,
+    enabled: enabled.has(m.id),
+  }))
+}
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
 
@@ -781,11 +799,18 @@ export function installAndroidBridge(): void {
       setProcessList: async () => ok(undefined),
     },
     routing: {
-      // Contract is RoutingScenarioInfo[] (an ARRAY). Returning an object here
-      // made RoutingPage do `scenarios.map(...)` on a non-array → render crash
-      // (react-router errorElement) the moment the Маршруты tab opened.
-      listScenarios: async () => ok([] as never[]),
-      setEnabledScenarios: async () => ok([] as never[]),
+      // Real scenario catalogue from @slave-vpn/core (shared with Windows). The
+      // enabled set persists in AppSettings.enabledScenarios. NOTE: the selection
+      // starts driving the actual config in P1 (compile-config switch); for now
+      // it lists + persists so the Маршруты screen is real instead of a stub.
+      listScenarios: async () => ok(buildScenarioInfo() as never),
+      setEnabledScenarios: (payload: { scenarioIds?: string[] }) =>
+        wrap(async () => {
+          const valid = new Set<string>(listScenarioMetadata().map((m) => m.id))
+          const filtered = (payload.scenarioIds ?? []).filter((id) => valid.has(id))
+          await patchAndroidSettings({ enabledScenarios: filtered })
+          return buildScenarioInfo() as never
+        }),
     },
     profiles: {
       list: async () => ok({ profiles: [], activeProfileId: null } as never),
