@@ -16,8 +16,12 @@ import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
-import { getDnsPresets, getDnsStrategies, GEO_SOURCES } from '@slave-vpn/core'
+import { getDnsPresets, getDnsStrategies, GEO_SOURCES, captureSnapshot, applySnapshot } from '@slave-vpn/core'
 import type { AppSettings, UtlsFingerprintName } from '@slave-vpn/core'
+import {
+  loadProfiles, listProfiles, subscribeProfiles, getProfile,
+  createProfile, removeProfile, markProfileApplied,
+} from './profiles-store'
 import { listScenarioMetadata } from '@slave-vpn/routing'
 import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
 import { createAndroidDataAdapters } from './adapters'
@@ -653,7 +657,8 @@ export function installAndroidBridge(): void {
       },
       onBalancerState: () => () => undefined,
       onSubscriptionsChanged: () => () => undefined,
-      onProfilesChanged: () => () => undefined,
+      onProfilesChanged: (cb: (s: { profiles: unknown[]; activeProfileId: string | null }) => void) =>
+        subscribeProfiles(cb as (s: ReturnType<typeof listProfiles>) => void),
       onGeoUpdaterState: () => () => undefined,
     },
 
@@ -828,10 +833,30 @@ export function installAndroidBridge(): void {
         }),
     },
     profiles: {
-      list: async () => ok({ profiles: [], activeProfileId: null } as never),
-      saveCurrent: notImplemented('profiles.saveCurrent'),
-      remove: notImplemented('profiles.remove'),
-      apply: notImplemented('profiles.apply'),
+      // Quick-switch profiles over the durable Android store + core snapshot
+      // transforms. apply() persists the settings slice; it takes effect on the
+      // next connect (no live hot-reload of the running tunnel on Android yet).
+      list: () => wrap(async () => {
+        await loadProfiles()
+        return listProfiles() as never
+      }),
+      saveCurrent: (payload: { name: string; description?: string }) => wrap(async () => {
+        await loadProfiles()
+        const snapshot = captureSnapshot(androidSettings())
+        return (await createProfile(payload, snapshot)) as never
+      }),
+      remove: (payload: { id: string }) => wrap(async () => {
+        await loadProfiles()
+        await removeProfile(payload.id)
+        return undefined as never
+      }),
+      apply: (payload: { id: string; hotReload?: boolean }) => wrap(async () => {
+        await loadProfiles()
+        const profile = getProfile(payload.id)
+        if (!profile) throw new Error('Профиль не найден')
+        await patchAndroidSettings(applySnapshot(profile.snapshot))
+        return ((await markProfileApplied(payload.id)) ?? profile) as never
+      }),
     },
     geo: {
       getState: async () =>
