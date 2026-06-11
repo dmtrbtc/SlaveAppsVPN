@@ -914,8 +914,8 @@ export function DiagnosticsPage() {
         </motion.div>
         )}
 
-        {/* System info grid — diagnostics.collect не реализован на Android. */}
-        {!IS_MOBILE && (
+        {/* System info grid — both platforms (Android collect returns a subset). */}
+        {(
         <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.2 }}>
           <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted mb-3">Система</p>
           {sysLoading ? (
@@ -923,14 +923,21 @@ export function DiagnosticsPage() {
           ) : sysError ? (
             <ErrorState error={sysError} retry={() => void refetchSys()} />
           ) : sysInfo ? (
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <InfoTile icon={<Info className="h-3 w-3" />} label="Платформа" value={`${sysInfo.platform} ${sysInfo.arch}`} />
               <InfoTile icon={<Info className="h-3 w-3" />} label="ОС" value={sysInfo.osVersion} />
               <InfoTile icon={<Cpu className="h-3 w-3" />} label="Приложение" value={`v${sysInfo.appVersion}`} />
               <InfoTile icon={<Cpu className="h-3 w-3" />} label="Mihomo" value={sysInfo.mihomoVersion ?? 'N/A'} />
-              <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ всего" value={formatMemoryMb(sysInfo.totalMemoryMb)} />
-              <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ свободно" value={formatMemoryMb(sysInfo.freeMemoryMb)} />
-              <InfoTile icon={<Info className="h-3 w-3" />} label="Аптайм системы" value={formatUptime(Date.now() - sysInfo.uptime * 1000)} />
+              {sysInfo.totalMemoryMb > 0 && (
+                <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ всего" value={formatMemoryMb(sysInfo.totalMemoryMb)} />
+              )}
+              {/* free mem + system uptime aren't available in the Android WebView */}
+              {!IS_MOBILE && (
+                <InfoTile icon={<MemoryStick className="h-3 w-3" />} label="ОЗУ свободно" value={formatMemoryMb(sysInfo.freeMemoryMb)} />
+              )}
+              {!IS_MOBILE && (
+                <InfoTile icon={<Info className="h-3 w-3" />} label="Аптайм системы" value={formatUptime(Date.now() - sysInfo.uptime * 1000)} />
+              )}
               {configSourceMeta && (
                 <InfoTile
                   icon={<Database className="h-3 w-3" />}

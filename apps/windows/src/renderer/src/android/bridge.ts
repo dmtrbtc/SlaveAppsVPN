@@ -563,7 +563,31 @@ export function installAndroidBridge(): void {
     },
 
     diagnostics: {
-      collect: notImplemented('diagnostics.collect'),
+      // System info from the WebView (no Node). Memory-free/system-uptime aren't
+      // available on Android — the DiagnosticsPage hides those tiles on mobile.
+      collect: () => wrap(async () => {
+        const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+        const osMatch = /Android\s+([\d.]+)/i.exec(ua)
+        const archMatch = /(arm64|aarch64|armv8|armv7|x86_64|x86)/i.exec(ua)
+        const arch = (archMatch?.[1] ?? 'arm64').toLowerCase().replace(/aarch64|armv8/, 'arm64')
+        const deviceMem = (navigator as unknown as { deviceMemory?: number }).deviceMemory
+        let mihomoVersion: string | null = null
+        try {
+          mihomoVersion = ((await readNativeStatus()) as { engineVersion?: string | null }).engineVersion ?? null
+        } catch {
+          /* not connected yet */
+        }
+        return {
+          platform: 'android',
+          arch,
+          osVersion: osMatch ? `Android ${osMatch[1]}` : 'Android',
+          appVersion: __APP_VERSION__,
+          mihomoVersion,
+          totalMemoryMb: typeof deviceMem === 'number' ? Math.round(deviceMem * 1024) : 0,
+          freeMemoryMb: 0,
+          uptime: Math.floor((typeof performance !== 'undefined' ? performance.now() : 0) / 1000),
+        } as never
+      }),
       exportLogs: notImplemented('diagnostics.exportLogs'),
       getLogs: () => wrap(async () => {
         const { lines } = await SlaveVpn.getLogs({ tail: 500 })
