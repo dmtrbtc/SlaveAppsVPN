@@ -103,13 +103,16 @@ console.log('Rule 7: renderer must not import @slave-vpn/* packages directly')
 {
   const rendererSrc = join(ROOT, 'apps/windows/src/renderer/src')
   const files = getSourceFiles(rendererSrc)
-  // Renderer-allowed packages: browser-safe shared types/utils, and
-  // the @slave-vpn/config + @slave-vpn/dns + @slave-vpn/routing trio
-  // ONLY inside the apps/windows/src/renderer/src/android/ subfolder —
-  // that folder IS the Android bridge (no IPC to a main process exists
-  // on Android), so it must compile a sing-box config locally.
+  // Renderer-allowed packages: browser-safe shared types/utils, and the
+  // platform-agnostic domain packages ONLY inside the
+  // apps/windows/src/renderer/src/android/ subfolder — that folder IS the Android
+  // bridge: there's no main process on Android, so it runs @slave-vpn/core
+  // (over Capacitor StorageAdapter/NetworkAdapter/FsAdapter) and compiles the
+  // engine config locally via config/dns/routing. This is the core-unification
+  // architecture (docs/ARCHITECTURE_UNIFICATION.md), not a boundary leak.
   const ALWAYS_ALLOWED = new Set(['@slave-vpn/shared'])
   const ANDROID_BRIDGE_ALLOWED = new Set([
+    '@slave-vpn/core',
     '@slave-vpn/config',
     '@slave-vpn/dns',
     '@slave-vpn/routing',
