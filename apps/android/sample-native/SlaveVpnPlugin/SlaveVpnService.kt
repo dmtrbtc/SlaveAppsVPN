@@ -42,6 +42,8 @@ class SlaveVpnService : VpnService() {
         const val ACTION_STOP  = "com.slavevpn.STOP"
         const val EXTRA_CONFIG = "config"
         const val EXTRA_SELECTED = "selectedProxy"
+        const val EXTRA_SPLIT_MODE = "splitMode"   // off | include | exclude
+        const val EXTRA_SPLIT_APPS = "splitApps"    // package names
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
         const val TUN_MTU      = 9000
@@ -106,14 +108,24 @@ class SlaveVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                startVpn(config, intent.getStringExtra(EXTRA_SELECTED))
+                startVpn(
+                    config,
+                    intent.getStringExtra(EXTRA_SELECTED),
+                    intent.getStringExtra(EXTRA_SPLIT_MODE) ?: "off",
+                    intent.getStringArrayExtra(EXTRA_SPLIT_APPS)?.toList() ?: emptyList(),
+                )
             }
             ACTION_STOP -> stopVpn()
         }
         return START_STICKY
     }
 
-    private fun startVpn(configYaml: String, selectedProxy: String?) {
+    private fun startVpn(
+        configYaml: String,
+        selectedProxy: String?,
+        splitMode: String = "off",
+        splitApps: List<String> = emptyList(),
+    ) {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
         currentError = null  // fresh attempt — clear any prior failure reason
@@ -133,8 +145,9 @@ class SlaveVpnService : VpnService() {
                 .setMtu(TUN_MTU)
                 .setBlocking(true)
 
-            // TODO: per-app routing for currentMode == "split"
-            //   builder.addDisallowedApplication(...)
+            // Per-app split tunnel. include → ONLY these apps go through the VPN;
+            // exclude → all apps EXCEPT these. Empty list / "off" ⇒ all apps tunnel.
+            applySplitTunnel(builder, splitMode, splitApps)
 
             val pfd = builder.establish()
                 ?: throw RuntimeException("VpnService.Builder.establish() returned null")
@@ -193,6 +206,29 @@ class SlaveVpnService : VpnService() {
             cleanupTun()
             stopSelf()
         }
+    }
+
+    /**
+     * Apply per-app split tunnel to the VpnService.Builder. A package that's no
+     * longer installed throws NameNotFoundException — skip it rather than abort.
+     * If nothing is applicable the tunnel covers all apps (the safe default).
+     */
+    private fun applySplitTunnel(builder: Builder, mode: String, apps: List<String>) {
+        if (mode == "off" || apps.isEmpty()) return
+        var applied = 0
+        for (pkg in apps) {
+            try {
+                when (mode) {
+                    "include" -> builder.addAllowedApplication(pkg)
+                    "exclude" -> builder.addDisallowedApplication(pkg)
+                    else -> {}
+                }
+                applied++
+            } catch (e: Exception) {
+                appendLog("[service] split: skip $pkg (${e.message})")
+            }
+        }
+        appendLog("[service] split-tunnel mode=$mode apps=$applied")
     }
 
     /**

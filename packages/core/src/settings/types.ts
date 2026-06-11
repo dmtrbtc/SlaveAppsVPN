@@ -118,7 +118,13 @@ export interface AppSettings {
   autoSelectProxy: boolean
   selectedProxy: string | null
   splitProcessList: string[]
+  // Split tunnel (per-app on Android; the splitProcessList carries the package
+  // names there). 'off' = all traffic tunnels; 'include' = ONLY the listed apps
+  // tunnel; 'exclude' = all apps EXCEPT the listed ones tunnel.
+  splitTunnelMode: SplitTunnelMode
   ruleProviders: RuleProvider[]
   enabledScenarios: string[]
   utlsFingerprint: UtlsFingerprintName
 }
+
+export type SplitTunnelMode = 'off' | 'include' | 'exclude'

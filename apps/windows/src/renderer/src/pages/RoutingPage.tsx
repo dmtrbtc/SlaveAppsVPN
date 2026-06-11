@@ -15,6 +15,7 @@ import { useVpnStore } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
 import { rulesApi, routingApi } from '../lib/api'
 import { RuleListsManager } from '../components/settings/RuleListsManager'
+import { AndroidSplitTunnel } from '../components/split/AndroidSplitTunnel'
 import type { VPNMode } from '@slave-vpn/shared'
 import type { RuleProvider, RuleProviderAddPayload, RoutingScenarioInfo } from '@shared/ipc/types'
 
@@ -597,6 +598,10 @@ export function RoutingPage() {
         {/* Android: full management of rule-provider lists (transparent sources,
             on/off, interval, add your own). Self-gates to mobile. */}
         <RuleListsManager />
+
+        {/* Android: per-app split tunnel (which apps go through the VPN).
+            Self-gates to mobile. */}
+        <AndroidSplitTunnel />
 
         {/* Mode grid 2×2 */}
         <div className="grid grid-cols-2 gap-2.5">

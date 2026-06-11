@@ -84,6 +84,7 @@ export interface AppSettings {
   autoSelectProxy: boolean
   selectedProxy: string | null
   splitProcessList: string[]
+  splitTunnelMode: SplitTunnelMode
   ruleProviders: RuleProvider[]
   // Routing scenarios (Karing-style recipes; A.3)
   enabledScenarios: string[]
@@ -784,6 +785,19 @@ export type SplitGetProcessesResult = IpcResult<RunningProcess[]>
 export type SplitSetProcessListResult = IpcResult<void>
 export type SplitGetProcessListResult = IpcResult<string[]>
 
+// Split tunnel mode (per-app on Android; the splitProcessList carries the
+// package names there). off = all tunnels; include = only listed; exclude = all
+// except listed.
+export type SplitTunnelMode = 'off' | 'include' | 'exclude'
+
+// Android per-app split tunnel: an installed app the user can route in/out.
+export interface SplitAppInfo {
+  packageName: string
+  label: string
+  system: boolean
+}
+export type SplitListAppsResult = IpcResult<SplitAppInfo[]>
+
 // ─── Feature Flags ────────────────────────────────────────────────────────────
 // App-level feature flags — separate from provider capabilities.
 // Provider capabilities gate business logic; feature flags gate app behavior.
@@ -891,6 +905,9 @@ export interface SlaveVPNBridge {
     getProcesses: () => Promise<SplitGetProcessesResult>
     getProcessList: () => Promise<SplitGetProcessListResult>
     setProcessList: (payload: SplitSetProcessListPayload) => Promise<SplitSetProcessListResult>
+    // Android per-app VPN — list installed apps. Optional: desktop split is
+    // process-based and doesn't implement it.
+    listApps?: () => Promise<SplitListAppsResult>
   }
   routing: {
     listScenarios: () => Promise<RoutingListScenariosResult>

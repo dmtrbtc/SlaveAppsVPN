@@ -45,6 +45,8 @@ class SlaveVpnPlugin : Plugin() {
     private var pendingConnectCall: PluginCall? = null
     private var pendingConfig: String? = null
     private var pendingSelected: String? = null
+    private var pendingSplitMode: String = "off"
+    private var pendingSplitApps: List<String> = emptyList()
 
     @PluginMethod
     fun checkPermission(call: PluginCall) {
@@ -100,6 +102,10 @@ class SlaveVpnPlugin : Plugin() {
         }
         pendingConfig = config
         pendingSelected = call.getString("selectedProxy")
+        pendingSplitMode = call.getString("splitMode") ?: "off"
+        pendingSplitApps = call.getArray("splitApps")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i -> try { arr.getString(i) } catch (_: Exception) { null } }
+        } ?: emptyList()
 
         val intent = VpnService.prepare(context)
         if (intent != null) {
@@ -115,8 +121,12 @@ class SlaveVpnPlugin : Plugin() {
     private fun startVpnService(call: PluginCall) {
         val config = pendingConfig
         val selected = pendingSelected
+        val splitMode = pendingSplitMode
+        val splitApps = pendingSplitApps
         pendingConfig = null
         pendingSelected = null
+        pendingSplitMode = "off"
+        pendingSplitApps = emptyList()
         if (config.isNullOrBlank()) {
             call.reject("Missing config when starting VPN")
             return
@@ -125,6 +135,8 @@ class SlaveVpnPlugin : Plugin() {
             action = SlaveVpnService.ACTION_START
             putExtra(SlaveVpnService.EXTRA_CONFIG, config)
             if (!selected.isNullOrBlank()) putExtra(SlaveVpnService.EXTRA_SELECTED, selected)
+            putExtra(SlaveVpnService.EXTRA_SPLIT_MODE, splitMode)
+            if (splitApps.isNotEmpty()) putExtra(SlaveVpnService.EXTRA_SPLIT_APPS, splitApps.toTypedArray())
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -289,6 +301,37 @@ class SlaveVpnPlugin : Plugin() {
         val line = call.getString("line")
         if (!line.isNullOrBlank()) SlaveVpnService.appendLog(line)
         call.resolve()
+    }
+
+    /**
+     * List installed apps that hold INTERNET permission (the only ones whose
+     * traffic the VPN routes) for the per-app split-tunnel picker. Returns
+     * [{packageName, label, system}]. Our own package is omitted.
+     */
+    @PluginMethod
+    fun listApps(call: PluginCall) {
+        val pm = context.packageManager
+        val apps = org.json.JSONArray()
+        try {
+            for (ai in pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)) {
+                if (ai.packageName == context.packageName) continue
+                val hasInternet = pm.checkPermission(Manifest.permission.INTERNET, ai.packageName) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                if (!hasInternet) continue
+                val isSystem = (ai.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                val label = try { pm.getApplicationLabel(ai).toString() } catch (_: Exception) { ai.packageName }
+                apps.put(
+                    JSObject()
+                        .put("packageName", ai.packageName)
+                        .put("label", label)
+                        .put("system", isSystem),
+                )
+            }
+        } catch (e: Exception) {
+            call.reject("listApps failed: ${e.message}")
+            return
+        }
+        call.resolve(JSObject().put("apps", apps))
     }
 
     @PluginMethod

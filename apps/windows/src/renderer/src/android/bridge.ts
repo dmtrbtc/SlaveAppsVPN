@@ -49,7 +49,8 @@ function buildScenarioInfo(): unknown[] {
 interface NativeSlaveVpn {
   checkPermission(): Promise<{ granted: boolean }>
   requestPermission(): Promise<{ granted: boolean }>
-  connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode }): Promise<void>
+  connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode; splitMode?: string; splitApps?: string[] }): Promise<void>
+  listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean }[] }>
   disconnect(): Promise<void>
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
@@ -434,10 +435,14 @@ export function installAndroidBridge(): void {
           utlsFingerprint: currentUtlsFingerprint,
           routingMode: currentRoutingMode,
         })
+        const s = androidSettings()
         await SlaveVpn.connect({
           config: compiled.config,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           vpnMode: currentMode,
+          // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
+          splitMode: s.splitTunnelMode ?? 'off',
+          splitApps: s.splitProcessList ?? [],
         })
       }),
       disconnect: () => wrap(() => SlaveVpn.disconnect()),
@@ -839,8 +844,17 @@ export function installAndroidBridge(): void {
     },
     split: {
       getProcesses: async () => ok([] as never[]),
-      getProcessList: async () => ok([] as never[]),
-      setProcessList: async () => ok(undefined),
+      // Android split = per-app VPN. The package list + mode live in AppSettings
+      // (splitProcessList / splitTunnelMode), applied natively at connect.
+      getProcessList: () => wrap(async () => (androidSettings().splitProcessList ?? []) as never),
+      setProcessList: (payload: { processList: string[] }) => wrap(async () => {
+        await patchAndroidSettings({ splitProcessList: payload.processList ?? [] })
+        return undefined as never
+      }),
+      listApps: () => wrap(async () => {
+        const { apps } = await SlaveVpn.listApps()
+        return apps as never
+      }),
     },
     routing: {
       // Real scenario catalogue from @slave-vpn/core (shared with Windows). The

@@ -28,6 +28,7 @@ export function createDefaultSettings(overrides: Partial<AppSettings> = {}): App
     autoSelectProxy: false,
     selectedProxy: null,
     splitProcessList: [],
+    splitTunnelMode: 'off',
     ruleProviders: [],
     enabledScenarios: getDefaultEnabledScenarios() as string[],
     utlsFingerprint: 'randomized',

@@ -206,6 +206,11 @@ export const splitApi = {
     unwrap(requireBridge().split.getProcessList()),
   setProcessList: (payload: SplitSetProcessListPayload) =>
     unwrap(requireBridge().split.setProcessList(payload)),
+  // Android-only (per-app VPN). Resolves to [] where unsupported (desktop).
+  listApps: () => {
+    const split = requireBridge().split
+    return split.listApps ? unwrap(split.listApps()) : Promise.resolve([])
+  },
 }
 
 export const routingApi = {
