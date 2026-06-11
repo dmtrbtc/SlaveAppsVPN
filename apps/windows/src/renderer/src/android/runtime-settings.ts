@@ -3,6 +3,8 @@
 // localStorage-backed (durable on the Capacitor WebView), mirrors the existing
 // `slave.settings.*.v1` key convention used elsewhere in the bridge.
 
+import { getBypassRuleListDefaults } from '@slave-vpn/core'
+
 const DNS_PROVIDER_LS_KEY = 'slave.settings.dnsProvider.v1'
 const RULE_LISTS_LS_KEY = 'slave.settings.ruleLists.v1'
 
@@ -70,32 +72,14 @@ export interface RuleListEntry {
   builtin?: boolean
 }
 
-// Default = the RKN-blocked domains list shipped before, now a manageable entry,
-// plus a popular optional preset (disabled by default).
-const DEFAULT_RULE_LISTS: RuleListEntry[] = [
-  {
-    id: 'inside-raw',
-    name: 'Базовый список доменов',
-    url: 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst',
-    behavior: 'domain',
-    enabled: true,
-    intervalHours: 24,
-    builtin: true,
-  },
-  {
-    id: 'runet-freedom',
-    name: 'Расширенный список (Re-filter)',
-    // Plain-domain list (one domain per line) — mihomo `domain` behavior matches
-    // the domain AND its subdomains (verified). ~80k entries, broad RKN coverage.
-    // The previous runetfreedom `domains/all.lst` path 404s; ru-blocked.txt etc.
-    // are geosite-format (`domain:…`) which a text/domain provider can't parse.
-    url: 'https://raw.githubusercontent.com/1andrevich/Re-filter-lists/main/domains_all.lst',
-    behavior: 'domain',
-    enabled: true,
-    intervalHours: 24,
-    builtin: true,
-  },
-]
+// Defaults are PROJECTED from the shared core catalogue (RULE_PROVIDER_PRESETS)
+// so the bypass lists are not a second hardcoded source — P3 unification. The
+// proxy-action domain/ip-cidr presets become the Android builtin lists; their
+// `enabled` flags decide which ship on by default (inside-raw + Re-filter).
+const DEFAULT_RULE_LISTS: RuleListEntry[] = getBypassRuleListDefaults().map((e) => ({
+  ...e,
+  builtin: true,
+}))
 
 // Built-in list URLs that broke upstream (404 / wrong format) → their working
 // replacement. Applied on load so installs that persisted the old URL self-heal

@@ -24,6 +24,38 @@ export function sortByPriority(providers: readonly RuleProvider[]): RuleProvider
   return [...providers].sort((a, b) => a.priority - b.priority)
 }
 
+/**
+ * A bypass list in the shape the Android client tracks (mihomo rule-provider →
+ * SLAVE-SELECT). Projection of the shared RULE_PROVIDER_PRESETS catalogue so the
+ * Android default lists are NOT a second hardcoded source (P3 unification).
+ */
+export interface BypassRuleListDefault {
+  id: string
+  name: string
+  url: string
+  behavior: 'domain' | 'ipcidr'
+  enabled: boolean
+  intervalHours: number
+}
+
+/**
+ * The proxy-action domain/ip-cidr presets, projected to the Android bypass-list
+ * shape. These are exactly the lists whose matched domains should tunnel
+ * (action 'proxy'); direct/reject presets and the urlless builtins are excluded.
+ */
+export function getBypassRuleListDefaults(): BypassRuleListDefault[] {
+  return RULE_PROVIDER_PRESETS
+    .filter((p) => p.action === 'proxy' && (p.type === 'domain-list' || p.type === 'ip-cidr-list') && !!p.url)
+    .map((p) => ({
+      id: p.id,
+      name: p.name,
+      url: p.url,
+      behavior: p.type === 'ip-cidr-list' ? 'ipcidr' : 'domain',
+      enabled: p.enabled,
+      intervalHours: 24,
+    }))
+}
+
 function isGithub(url: string): boolean {
   return url.includes('github.com') || url.includes('raw.githubusercontent.com')
 }

@@ -39,6 +39,19 @@ export const RULE_PROVIDER_PRESETS: RuleProvider[] = [
     ruleCount: 8,
   },
   {
+    id: 'inside-raw',
+    name: 'Базовый список (itdoginfo)',
+    enabled: true,
+    kind: 'github',
+    // Curated RKN-blocked domains (~1.2k), plain-domain. The Android base list.
+    url: 'https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst',
+    type: 'domain-list',
+    action: 'proxy',
+    priority: 500,
+    category: 'russia-bypass',
+    isPreset: true,
+  },
+  {
     id: 'preset-runetfreedom-youtube',
     name: 'YouTube (itdoginfo)',
     enabled: false,

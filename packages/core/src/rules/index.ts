@@ -8,4 +8,6 @@ export {
   removeProvider,
   updateProvider,
   reorderProviders,
+  getBypassRuleListDefaults,
 } from './ruleProviders.js'
+export type { BypassRuleListDefault } from './ruleProviders.js'
