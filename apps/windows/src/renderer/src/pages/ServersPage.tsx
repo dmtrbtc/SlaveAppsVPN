@@ -139,18 +139,17 @@ function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnec
         </div>
       </div>
 
-      {/* Latency */}
-      <div className="w-[60px] flex justify-end">
+      {/* Latency + status — stacked on mobile (narrow column, leaves room for the
+          name), inline on desktop. */}
+      <div className="flex shrink-0 flex-col items-end gap-1 sm:w-[150px] sm:flex-row sm:items-center sm:justify-end sm:gap-3">
         <LatencyDisplay ms={displayLatency} probing={isProbing} />
-      </div>
-
-      {/* Status badge */}
-      <div className="w-[90px] flex justify-center">
-        <Badge tone={avail.variant}>{avail.label}</Badge>
+        <div className="flex sm:w-[90px] sm:justify-center">
+          <Badge tone={avail.variant}>{avail.label}</Badge>
+        </div>
       </div>
 
       {/* Fav / spinner */}
-      <div className="w-8 flex justify-center">
+      <div className="w-7 flex justify-center shrink-0">
         {isConnecting ? (
           <div className="h-4 w-4 rounded-full border-2 border-accent/30 border-t-accent animate-spin" />
         ) : (

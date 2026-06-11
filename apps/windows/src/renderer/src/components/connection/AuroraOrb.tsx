@@ -61,15 +61,15 @@ export function AuroraOrb({ state, onToggle, size = 240, className }: AuroraOrbP
       className={cn('relative flex flex-col items-center gap-5', className)}
       style={{ width: size }}
     >
-      {/* Blur halo */}
+      {/* Blur halo — concentric with the orb disc below */}
       <div
         className="absolute pointer-events-none"
         style={{
           width: haloSize,
           height: haloSize,
-          top: '50%',
+          top: size / 2,
           left: '50%',
-          transform: 'translate(-50%, -50%) translateY(-20px)',
+          transform: 'translate(-50%, -50%)',
           borderRadius: '50%',
           background: glow,
           filter: 'blur(40px)',
@@ -84,11 +84,10 @@ export function AuroraOrb({ state, onToggle, size = 240, className }: AuroraOrbP
         style={{
           width: ringSize,
           height: ringSize,
-          top: '50%',
+          top: size / 2,
           left: '50%',
           x: '-50%',
           y: '-50%',
-          translateY: -20,
           borderRadius: '50%',
           background: RING_GRADIENT[state],
           mask: `radial-gradient(farthest-side, transparent calc(100% - 3px), black calc(100% - 3px))`,
