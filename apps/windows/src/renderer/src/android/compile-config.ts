@@ -4,6 +4,7 @@ import {
   type ConfigGenerationContext,
   type GeneratorSettings,
 } from '@slave-vpn/config'
+import { buildAndroidDnsProfile } from '@slave-vpn/dns'
 import { composeRoutingPolicy } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
@@ -105,6 +106,10 @@ export async function compileMihomoConfigForAndroid(
     utlsFingerprint: options.utlsFingerprint ?? 'randomized',
     apiPort: 9090,
     apiSecret: randomSecret(),
+    // Unified DNS (P2): the hardened Android DNS section now comes from the
+    // shared DnsProfile/MihomoDnsCompiler path (same as Windows) instead of the
+    // inline buildAndroidDnsSection. Verified byte-identical to the old output.
+    dnsProfile: buildAndroidDnsProfile({ dohUrl, nodeDomainSuffixes }),
     // Scenario rules WIN over androidRouting's smart/global/direct split (the
     // generator forces mode:'rule' when routingPolicy is present). geo / DNS /
     // node-domain anti-loop still come from androidRouting below.

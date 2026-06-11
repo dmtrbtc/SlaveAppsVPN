@@ -194,9 +194,12 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     config['sniffer'] = buildSnifferSection()
   }
 
-  config['dns'] = ctx.androidRouting
-    ? buildAndroidDnsSection(ctx.settings, ctx.androidRouting)
-    : ctx.dnsProfile
+  // DNS: a dnsProfile (Windows presets OR the unified Android profile from
+  // buildAndroidDnsProfile) is compiled through the shared MihomoDnsCompiler.
+  // Android now always supplies one (P2 — replaces the old inline
+  // buildAndroidDnsSection, verified byte-identical), so both platforms share one
+  // DNS path. buildLegacyDnsSection remains only for callers that pass neither.
+  config['dns'] = ctx.dnsProfile
     ? dnsCompiler.compile(ctx.dnsProfile).config
     : buildLegacyDnsSection(ctx.settings)
 
@@ -415,64 +418,9 @@ function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<st
   return out
 }
 
-// Hardened DNS — final polish (issue #9). Design (verified by real device logs):
-//   - main `nameserver` pool is DoH-ONLY (Cloudflare + Google), encrypted and
-//     carried THROUGH the tunnel (respect-rules) — no plaintext udp leak for
-//     general traffic.
-//   - `default-nameserver` is the sole plaintext entry; it ONLY bootstraps the
-//     DoH hostnames (dns.cloudflare.com / dns.google) and the direct lookups.
-//   - nameserver-policy overrides (intentional, direct, fast):
-//       * +.ru / +.рф / geosite:category-ru → Yandex 77.88.8.8 + Google 8.8.8.8
-//       * the proxy NODE domains → system + 8.8.8.8, so they resolve to REAL IPs
-//         BEFORE the tunnel exists (avoids the chicken-and-egg at connect time).
-//   - prefer-h3:false so DoH stays on HTTP/2 (TCP/443); h3 (QUIC/udp) is DPI-prone.
-function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutingOptions): Record<string, unknown> {
-  const primaryDoh = settings.dnsOverHttps || 'https://dns.cloudflare.com/dns-query'
-  // DoH pool: primary (Cloudflare) + Google, deduped. Both reach through tunnel.
-  const dohPool = Array.from(new Set([primaryDoh, 'https://dns.google/dns-query']))
-  // RU + node direct resolvers (plaintext is OK here — intentional, direct).
-  const ruDirect = ['77.88.8.8', '8.8.8.8']
-  const nodeDirect = ['system', '8.8.8.8']
-
-  const nameserverPolicy: Record<string, unknown> = {
-    // RU TLDs + RU geosite → fast RU/Google DNS, resolved directly (no VPN hop)
-    '+.ru': ruDirect,
-    '+.рф': ruDirect,
-    'geosite:category-ru': ruDirect,
-    'geosite:private': 'system',
-  }
-  // Each proxy node domain → resolved DIRECTLY (before the tunnel) to real IPs.
-  for (const s of opts.nodeDomainSuffixes) nameserverPolicy[`+.${s}`] = nodeDirect
-
-  return {
-    enable: true,
-    listen: '0.0.0.0:1053',
-    ipv6: false,
-    'prefer-h3': false,
-    'use-system-hosts': false,
-    'enhanced-mode': 'fake-ip',
-    'fake-ip-range': '198.18.0.1/16',
-    'fake-ip-filter': [
-      '*.lan', '*.local', '*.localdomain', '*.localhost', 'localhost',
-      'time.*.com', 'ntp.*.com', '*.msftncsi.com', '*.msftconnecttest.com',
-      'connectivitycheck.gstatic.com', 'captive.apple.com',
-      // RU stays on a real IP so GEOIP,RU,DIRECT can catch the .ru long-tail that
-      // isn't in geosite category-ru (a fake-ip never matches GEOIP — the resolved
-      // address is the synthetic 198.18.x.y, so RU domains would otherwise leak
-      // into the tunnel under a proxy-default scenario). category-ru is matched by
-      // the GEOSITE rule on the domain regardless; keeping it real is consistent.
-      '+.ru', '+.рф', 'geosite:category-ru',
-      // never fake-ip the node domains — they must resolve to real IPs
-      ...opts.nodeDomainSuffixes.map(s => `+.${s}`),
-    ],
-    // plaintext bootstrap ONLY (resolves the DoH hostnames + direct lookups)
-    'default-nameserver': ['223.5.5.5', '77.88.8.8'],
-    nameserver: dohPool,
-    'proxy-server-nameserver': dohPool,
-    'nameserver-policy': nameserverPolicy,
-    'respect-rules': true,
-  }
-}
+// The hardened Android DNS section now lives in the shared dns package
+// (buildAndroidDnsProfile → MihomoDnsCompiler), so both platforms compile DNS
+// through one path. See packages/dns/src/profiles/AndroidDnsProfile.ts.
 
 // Remove `GEOSITE,<cat>,...` rules whose category is not in the installed
 // geosite.dat. mihomo aborts the whole config if any geosite rule names an

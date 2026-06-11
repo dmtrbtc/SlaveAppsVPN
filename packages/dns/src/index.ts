@@ -13,6 +13,8 @@ export type {
 } from './profiles/DnsProfile'
 export { DEFAULT_FAKE_IP_FILTER } from './profiles/FakeIpFilter'
 export { DnsProfilePresets } from './profiles/DnsProfilePresets'
+export { buildAndroidDnsProfile } from './profiles/AndroidDnsProfile'
+export type { AndroidDnsProfileOptions } from './profiles/AndroidDnsProfile'
 
 export type { DnsCompiler, CompiledDnsOutput, DnsCompilationMetadata } from './compiler/DnsCompiler'
 export { MihomoDnsCompiler } from './compiler/MihomoDnsCompiler'
