@@ -10,8 +10,8 @@ import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
 import { resolveDohUrl, getRuleLists } from './runtime-settings'
 import { androidSettings } from './settings-store'
-import { createAndroidStorageAdapter, createAndroidNetworkAdapter } from './adapters'
-import { getAndroidGeoSiteCategories } from './geosite-categories'
+import { createAndroidStorageAdapter } from './adapters'
+import { getCachedGeoSiteCategories } from './geosite-categories'
 
 /**
  * Compile a ready-to-use **mihomo (Clash.Meta) YAML** for the Android clashbox
@@ -80,11 +80,12 @@ export async function compileMihomoConfigForAndroid(
   // rules for categories the native dat lacks (mihomo fatals otherwise).
   const enabledScenarios = androidSettings().enabledScenarios
   const composed = composeRoutingPolicy(enabledScenarios)
+  // Cache-ONLY read — must NOT fetch the ~4MB geosite.dat here, or a cold first
+  // connect blocks past the 15s IPC timeout («[IPC] request time out», works on
+  // the 2nd try once warm). The startup prefetch fills the cache; [] is safe
+  // (no GEOSITE filter; default scenarios only use category-ru, always present).
   const availableGeoSites = composed.policy
-    ? await getAndroidGeoSiteCategories(
-        createAndroidNetworkAdapter(),
-        createAndroidStorageAdapter(),
-      )
+    ? await getCachedGeoSiteCategories(createAndroidStorageAdapter())
     : []
 
   const generatorSettings: GeneratorSettings = {

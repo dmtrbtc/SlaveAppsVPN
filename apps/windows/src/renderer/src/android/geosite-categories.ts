@@ -1,5 +1,6 @@
 import { parseGeoSiteCategories } from '@slave-vpn/core'
 import type { NetworkAdapter, StorageAdapter } from '@slave-vpn/core'
+import { GEOSITE_CATEGORIES_BUNDLED } from './geosite-categories-bundled'
 
 /**
  * Provides the geosite categories that the Android native engine actually has,
@@ -33,6 +34,27 @@ async function fetchAndParse(network: NetworkAdapter): Promise<string[]> {
   const res = await network.fetchBytes(GEOSITE_URL, { timeoutMs: 40_000 })
   if (res.status < 200 || res.status >= 300) return []
   return [...parseGeoSiteCategories(res.bytes)]
+}
+
+/**
+ * Cache-ONLY read — never touches the network. Used on the connect path so the
+ * 15s-IPC-timed connect call never blocks on the ~4MB geosite.dat download (that
+ * cold-cache fetch was the «[IPC] request time out» on the FIRST connect).
+ *
+ * Falls back to the BUNDLED category list (not []) on a cold cache: the filter is
+ * REQUIRED — roscomvpn-default references categories absent from the MetaCubeX dat
+ * (twitch-ads/whitelist/win-spy/…), and without filtering mihomo FATALS on them.
+ * The bundled list ships the full allowlist so the filter works instantly; the
+ * fire-and-forget warm-up refreshes the cache for future dat changes.
+ */
+export async function getCachedGeoSiteCategories(storage: StorageAdapter): Promise<string[]> {
+  try {
+    const cached = await storage.get<Cached>(CACHE_KEY)
+    if (cached && cached.cats.length >= MIN_CATS) return cached.cats
+  } catch {
+    /* ignore */
+  }
+  return [...GEOSITE_CATEGORIES_BUNDLED]
 }
 
 export async function getAndroidGeoSiteCategories(
