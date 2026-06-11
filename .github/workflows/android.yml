@@ -135,6 +135,19 @@ jobs:
             echo "WARNING: apps/android/libs/*.aar missing — APK will lack the VPN engine"
           fi
 
+      - name: Bundle geo databases (geoip/geosite) into the APK
+        working-directory: apps/android
+        run: |
+          # Ship the geo .dat in assets so the native core loads them locally and
+          # does NOT download ~23 MB via geox-url on the first connect (that cold
+          # download was the occasional first-connect timeout). Non-fatal: if the
+          # download fails the core still falls back to geox-url at runtime.
+          mkdir -p android/app/src/main/assets/geo
+          base="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest"
+          curl -fsSL -o android/app/src/main/assets/geo/geoip.dat   "$base/geoip.dat"   || echo "WARN: geoip.dat download failed"
+          curl -fsSL -o android/app/src/main/assets/geo/geosite.dat "$base/geosite.dat" || echo "WARN: geosite.dat download failed"
+          ls -la android/app/src/main/assets/geo/ || true
+
       - name: Patch AndroidManifest with VPN permissions + service
         working-directory: apps/android/android/app/src/main
         run: |

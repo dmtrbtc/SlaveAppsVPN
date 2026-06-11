@@ -165,6 +165,7 @@ class SlaveVpnService : VpnService() {
 
             coreJob = scope.launch {
                 try {
+                    ensureGeoFiles()
                     ClashBridge.start(
                         configYaml = config,
                         protect = { fd -> protect(fd) },
@@ -205,6 +206,28 @@ class SlaveVpnService : VpnService() {
             notify("Ошибка: $msg")
             cleanupTun()
             stopSelf()
+        }
+    }
+
+    /**
+     * Copy the geo databases bundled in the APK (assets/geo/) into mihomo's
+     * working dir (filesDir) once, so the core loads them locally instead of
+     * downloading ~23 MB via geox-url on the FIRST connect — that cold download
+     * was the occasional first-connect timeout. If a bundled copy is missing the
+     * core falls back to its geox-url download (previous behaviour).
+     */
+    private fun ensureGeoFiles() {
+        for (name in listOf("geoip.dat", "geosite.dat")) {
+            val dest = java.io.File(filesDir, name)
+            if (dest.exists() && dest.length() > 0L) continue
+            try {
+                assets.open("geo/$name").use { input ->
+                    dest.outputStream().use { out -> input.copyTo(out) }
+                }
+                appendLog("[service] geo: bundled $name (${dest.length()} bytes)")
+            } catch (e: Exception) {
+                appendLog("[service] geo: no bundled $name (${e.message})")
+            }
         }
     }
 
