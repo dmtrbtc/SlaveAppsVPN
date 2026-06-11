@@ -7,6 +7,7 @@ import {
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { ListSkeleton, EmptyState } from '../components/ui/states'
 import { cn } from '../lib/utils'
 import { useSubscriptionsStore } from '../stores/subscriptions.store'
 import { useUIStore } from '../stores/ui.store'
@@ -374,6 +375,11 @@ export function SubscriptionsPage() {
     [entries],
   )
 
+  const totalNodes = useMemo(
+    () => entries.reduce((sum, e) => sum + (e.nodeCount ?? 0), 0),
+    [entries],
+  )
+
   const handleRefreshAll = () => {
     void refreshAll()
   }
@@ -385,7 +391,9 @@ export function SubscriptionsPage() {
           <div>
             <h2 className="text-[15px] font-semibold text-text-primary">Подписки</h2>
             <p className="text-[12px] text-text-muted mt-0.5">
-              Источники нод. Включённые объединяются и дедуплицируются автоматически.
+              {entries.length > 0
+                ? `${entries.length} источника · ${totalNodes} нод суммарно`
+                : 'Источники нод для подключения'}
             </p>
           </div>
           <div className="flex gap-2">
@@ -408,23 +416,26 @@ export function SubscriptionsPage() {
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
         {loading && entries.length === 0 ? (
-          <div className="flex items-center justify-center py-12 text-[12px] text-text-muted">
-            Загрузка...
-          </div>
+          <ListSkeleton rows={3} />
         ) : entries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-12">
-            <ScanLine className="h-8 w-8 text-text-muted opacity-50" />
-            <p className="text-[13px] text-text-secondary">Нет подписок</p>
-            <p className="text-[11px] text-text-muted max-w-sm text-center">
-              Добавьте URL-подписку, ноду VLESS/VMess или ключ Remnawave чтобы начать.
-            </p>
-            <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)} className="mt-1">
-              <Plus className="h-3.5 w-3.5" />
-              Добавить первую
-            </Button>
-          </div>
+          <EmptyState
+            icon={<ScanLine className="h-11 w-11" />}
+            label="Подписок пока нет"
+            description="Добавьте URL-подписку, ноду VLESS/VMess или ключ Remnawave, чтобы начать."
+            action={
+              <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)} className="mt-1">
+                <Plus className="h-3.5 w-3.5" />
+                Добавить подписку
+              </Button>
+            }
+          />
         ) : (
-          sorted.map(entry => <EntryRow key={entry.id} entry={entry} />)
+          <>
+            {sorted.map(entry => <EntryRow key={entry.id} entry={entry} />)}
+            <p className="mt-1 px-1 text-[11px] text-text-muted">
+              Включённые подписки объединяются и дедуплицируются; приоритет нод — по порядку в списке.
+            </p>
+          </>
         )}
       </div>
 

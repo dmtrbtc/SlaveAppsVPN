@@ -1,11 +1,15 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Link2, Key, Shield, CheckCircle, AlertCircle, Mail, Lock, Send, Server } from 'lucide-react'
+import {
+  Link2, Key, Shield, CheckCircle, AlertCircle, Mail, Lock, Send, Server,
+  Zap, User, Check, ArrowRight,
+} from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Input } from '../components/ui/input'
 import { Segmented } from '../components/ui/segmented'
+import { cn } from '../lib/utils'
 import { useAuthStore } from '../stores/auth.store'
 import { useConfigSourceStore } from '../stores/config-source.store'
 import { useUIStore } from '../stores/ui.store'
@@ -14,12 +18,64 @@ import type { ConfigSourceValidateResult } from '@shared/ipc/types'
 
 type OnboardingTab = 'subscription-url' | 'single-proxy' | 'remnawave-key' | 'provider'
 
-const TAB_OPTIONS: { value: OnboardingTab; label: string }[] = [
-  { value: 'subscription-url', label: 'Подписка' },
-  { value: 'single-proxy',     label: 'Ссылка' },
-  { value: 'remnawave-key',    label: 'Ключ' },
-  { value: 'provider',         label: 'Аккаунт' },
+// Aurora v1.1 onboarding — radio MethodCards (left column) instead of segmented.
+const METHODS: {
+  id: OnboardingTab
+  icon: React.ReactNode
+  title: string
+  sub: string
+  recommended?: boolean
+}[] = [
+  { id: 'subscription-url', icon: <Link2 className="h-4 w-4" />, title: 'Подписка-URL', sub: 'https-ссылка, авто-обновление нод', recommended: true },
+  { id: 'single-proxy',     icon: <Zap className="h-4 w-4" />,   title: 'Одиночная ссылка', sub: 'vless:// · vmess:// · trojan://' },
+  { id: 'remnawave-key',    icon: <Key className="h-4 w-4" />,   title: 'Ключ Remnawave', sub: 'короткий ключ доступа' },
+  { id: 'provider',         icon: <User className="h-4 w-4" />,  title: 'Аккаунт SLAVE', sub: 'вход по email или Telegram' },
 ]
+
+const METHOD_TITLE: Record<OnboardingTab, string> = {
+  'subscription-url': 'Подписка-URL',
+  'single-proxy': 'Одиночная ссылка',
+  'remnawave-key': 'Ключ Remnawave',
+  'provider': 'Вход в аккаунт',
+}
+
+function MethodCard({
+  icon, title, sub, recommended, active, onSelect,
+}: {
+  icon: React.ReactNode; title: string; sub: string; recommended?: boolean
+  active: boolean; onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-all',
+        active ? 'border-accent bg-accent/12' : 'border-border bg-bg-primary hover:border-border-strong',
+      )}
+    >
+      <span className={cn(
+        'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-colors',
+        active ? 'bg-accent text-white' : 'bg-bg-secondary text-text-secondary',
+      )}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="text-[13px] font-semibold text-text-primary">{title}</span>
+          {recommended && <Badge tone="accent" className="text-[9px]">Рекомендуем</Badge>}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] text-text-muted">{sub}</span>
+      </span>
+      <span className={cn(
+        'flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border-2 transition-colors',
+        active ? 'border-accent bg-accent' : 'border-border-strong',
+      )}>
+        {active && <Check className="h-2.5 w-2.5 text-white" />}
+      </span>
+    </button>
+  )
+}
 
 type AuthTab = 'email' | 'telegram'
 
@@ -443,8 +499,12 @@ export function OnboardingPage() {
     void navigate('/dashboard')
   }
 
+  const handleSkip = () => {
+    void navigate('/dashboard')
+  }
+
   return (
-    <div className="relative flex h-full flex-col bg-bg-base overflow-hidden">
+    <div className="relative flex h-full flex-col overflow-hidden bg-bg-base">
       <TitleBar />
 
       {/* Decorative blobs */}
@@ -457,37 +517,60 @@ export function OnboardingPage() {
         style={{ background: 'radial-gradient(circle, rgba(91,141,239,0.18) 0%, transparent 70%)', filter: 'blur(40px)' }}
       />
 
-      <div className="flex flex-1 items-center justify-center overflow-y-auto py-4">
+      {/* Split layout: methods (left) · selected method content (right) */}
+      <div className="relative flex flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
+
+        {/* Left column — brand + method picker */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-          className="w-full max-w-[380px] px-6 flex flex-col items-center gap-6"
+          className="flex shrink-0 flex-col justify-center gap-5 px-6 py-6 md:w-[420px] md:px-8"
         >
-          {/* Brand block */}
-          <div className="flex flex-col items-center gap-3">
+          <div className="flex items-center gap-3">
             <div
-              className="relative flex h-14 w-14 items-center justify-center rounded-2xl"
+              className="flex h-12 w-12 items-center justify-center rounded-2xl"
               style={{
                 background: 'linear-gradient(135deg, #ff7a59 0%, #5b8def 100%)',
                 boxShadow: '0 8px 24px rgba(255,122,89,0.35)',
               }}
             >
-              <Shield className="h-7 w-7 text-white" />
+              <Shield className="h-6 w-6 text-white" />
             </div>
-            <div className="text-center">
-              <h1 className="text-[22px] font-bold tracking-tight text-text-primary leading-tight">
-                SLAVE VPN
-              </h1>
-              <p className="text-[13px] text-text-muted mt-0.5">Выберите способ подключения</p>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">Шаг 1 из 2</p>
+              <h1 className="text-[18px] font-bold tracking-tight text-text-primary">SLAVE VPN</h1>
             </div>
           </div>
 
-          {/* Mode card */}
-          <div className="w-full rounded-lg border border-border bg-bg-primary p-5 shadow-card flex flex-col gap-4">
-            <div className="flex justify-center">
-              <Segmented options={TAB_OPTIONS} value={tab} onChange={handleTabChange} size="sm" />
-            </div>
+          <h2 className="text-[22px] font-bold leading-tight tracking-tight text-text-primary">
+            Откуда взять серверы?
+          </h2>
+
+          <div className="flex flex-col gap-2">
+            {METHODS.map(m => (
+              <MethodCard
+                key={m.id}
+                icon={m.icon}
+                title={m.title}
+                sub={m.sub}
+                recommended={!!m.recommended}
+                active={tab === m.id}
+                onSelect={() => handleTabChange(m.id)}
+              />
+            ))}
+          </div>
+        </motion.div>
+
+        {/* Right column — selected method content */}
+        <div className="flex flex-1 flex-col justify-center border-t border-border bg-bg-primary/60 px-6 py-6 md:overflow-y-auto md:border-l md:border-t-0 md:px-10">
+          <motion.div
+            initial={{ opacity: 0, x: 16 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+            className="mx-auto flex w-full max-w-[440px] flex-col gap-4"
+          >
+            <h3 className="text-[15px] font-semibold text-text-primary">{METHOD_TITLE[tab]}</h3>
 
             <AnimatePresence mode="wait">
               <motion.div
@@ -503,12 +586,17 @@ export function OnboardingPage() {
                 {tab === 'provider'         && <ProviderLoginTab onSuccess={handleSuccess} />}
               </motion.div>
             </AnimatePresence>
-          </div>
 
-          <p className="text-center text-[11px] text-text-muted pb-2">
-            SLAVE VPN · Engine-neutral platform
-          </p>
-        </motion.div>
+            <button
+              type="button"
+              onClick={handleSkip}
+              className="mt-1 inline-flex items-center gap-1 self-start text-[12px] text-text-muted transition-colors hover:text-text-secondary"
+            >
+              Пропустить
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </motion.div>
+        </div>
       </div>
     </div>
   )
