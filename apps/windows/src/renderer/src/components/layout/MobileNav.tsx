@@ -1,22 +1,23 @@
 import { NavLink } from 'react-router-dom'
-import {
-  Shield, Globe, Route, Layers, Activity, Settings, ScanLine,
-} from 'lucide-react'
+import { Power, Server, Layers, Route, Shield, Activity, Settings } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
+// Aurora Android bottom tab bar — 7 tabs (07-SCREENS-ANDROID.md). Routes are
+// unchanged; only the icons/labels/active style match the spec.
 const NAV_ITEMS = [
-  { to: '/dashboard', icon: Shield, label: 'VPN' },
-  { to: '/servers', icon: Globe, label: 'Серверы' },
-  { to: '/subscriptions', icon: ScanLine, label: 'Ключи' },
-  { to: '/routing', icon: Route, label: 'Маршруты' },
-  { to: '/dns', icon: Layers, label: 'DNS' },
-  { to: '/diagnostics', icon: Activity, label: 'Диагн.' },
-  { to: '/settings', icon: Settings, label: 'Ещё' },
+  { to: '/dashboard',     icon: Power,    label: 'Главная' },
+  { to: '/servers',       icon: Server,   label: 'Серверы' },
+  { to: '/subscriptions', icon: Layers,   label: 'Подписки' },
+  { to: '/routing',       icon: Route,    label: 'Маршрут' },
+  { to: '/dns',           icon: Shield,   label: 'DNS' },
+  { to: '/diagnostics',   icon: Activity, label: 'Диагн.' },
+  { to: '/settings',      icon: Settings, label: 'Ещё' },
 ] as const
 
 /**
- * Bottom tab bar for the Capacitor Android shell. Replaces the desktop
- * Sidebar. Honours the device safe-area (gesture nav bar) via padding.
+ * Bottom tab bar for the Capacitor Android shell. Replaces the desktop Sidebar.
+ * Active tab → `accentSoft` pill behind the icon, accent icon (stroke 2.2) +
+ * label (weight 600). Honours the device safe-area (gesture nav) via padding.
  */
 export function MobileNav() {
   return (
@@ -26,20 +27,27 @@ export function MobileNav() {
     >
       <div className="flex items-stretch justify-around px-1">
         {NAV_ITEMS.map(({ to, icon: Icon, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className="flex-1 min-w-0"
-          >
+          <NavLink key={to} to={to} className="min-w-0 flex-1">
             {({ isActive }) => (
-              <div
-                className={cn(
-                  'flex flex-col items-center justify-center gap-0.5 py-2 px-0.5 transition-colors',
-                  isActive ? 'text-text-accent' : 'text-text-muted'
-                )}
-              >
-                <Icon className={cn('h-5 w-5 shrink-0', isActive && 'drop-shadow-[0_0_6px_rgba(255,122,89,0.5)]')} />
-                <span className="text-[10px] font-medium leading-none truncate max-w-full">
+              <div className="flex flex-col items-center justify-center gap-1 pt-2 pb-1.5">
+                {/* Pill behind the icon (44×26) — only on the active tab */}
+                <span
+                  className={cn(
+                    'flex h-[26px] w-11 items-center justify-center rounded-full transition-colors',
+                    isActive ? 'bg-accent/12' : 'bg-transparent',
+                  )}
+                >
+                  <Icon
+                    className={cn('h-[18px] w-[18px] shrink-0 transition-colors', isActive ? 'text-accent' : 'text-text-muted')}
+                    strokeWidth={isActive ? 2.2 : 2}
+                  />
+                </span>
+                <span
+                  className={cn(
+                    'max-w-full truncate text-[10px] leading-none transition-colors',
+                    isActive ? 'font-semibold text-accent' : 'font-medium text-text-muted',
+                  )}
+                >
                   {label}
                 </span>
               </div>
