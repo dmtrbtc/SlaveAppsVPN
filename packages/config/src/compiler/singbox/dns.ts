@@ -99,10 +99,13 @@ export function compileDns(profile: DnsProfile | undefined): SingboxDnsConfig | 
 
   if (profile.rules && profile.rules.length > 0) {
     for (const rule of profile.rules) {
-      const serverTag = singboxResolverTag(rule.resolverTag, profile, () => {
+      // sing-box maps a domain to ONE server; mihomo-only array policies (e.g.
+      // RU → [77.88.8.8, 8.8.8.8]) collapse to their first entry here.
+      const ruleTag = Array.isArray(rule.resolverTag) ? rule.resolverTag[0] ?? '' : rule.resolverTag as string
+      const serverTag = singboxResolverTag(ruleTag, profile, () => {
         const tag = `dns_custom_${adhocCounter++}`
         // Inline URL form — push a server entry
-        servers.push({ tag, address: rule.resolverTag })
+        servers.push({ tag, address: ruleTag })
         return tag
       })
       if (!serverTag) continue

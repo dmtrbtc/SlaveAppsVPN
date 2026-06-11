@@ -29,10 +29,12 @@ export class MihomoDnsCompiler implements DnsCompiler {
       listen: '0.0.0.0:1053',
       ipv6: resolveIPv6Enabled(profile),
       'use-system-hosts': false,
-      'default-nameserver': (profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl),
+      'default-nameserver': (profile.defaultNameservers ?? profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl),
       'enhanced-mode': profile.mode,
       nameserver: profile.nameservers.map(resolverUrl),
     }
+
+    if (profile.preferH3 !== undefined) config['prefer-h3'] = profile.preferH3
 
     applyStrategy(config, profile.strategy)
 
@@ -62,7 +64,7 @@ export class MihomoDnsCompiler implements DnsCompiler {
       // the proxy server hostnames themselves and MUST bypass the rule engine to
       // avoid a chicken-and-egg loop, so it uses the direct bootstrap resolvers
       // (falling back to the primary nameservers).
-      const proxyServerNs = (profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl)
+      const proxyServerNs = (profile.proxyServerNameservers ?? profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl)
       config['proxy-server-nameserver'] = proxyServerNs.length > 0
         ? proxyServerNs
         : ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query']
@@ -76,10 +78,10 @@ export class MihomoDnsCompiler implements DnsCompiler {
     // Resolver tags: 'primary' → first nameserver; 'fallback' → first fallback;
     // anything starting with https://, tls://, quic:// → used as-is.
     if (profile.rules && profile.rules.length > 0) {
-      const policy: Record<string, string> = {}
+      const policy: Record<string, string | string[]> = {}
       for (const rule of profile.rules) {
         const key = mihomoRuleKey(rule.matchType, rule.value)
-        const value = resolveRuleTarget(rule.resolverTag, profile)
+        const value = resolveRuleTargets(rule.resolverTag, profile)
         if (key && value) policy[key] = value
       }
       if (Object.keys(policy).length > 0) {
@@ -115,6 +117,23 @@ function mihomoRuleKey(matchType: import('../profiles/DnsProfile').DnsRuleMatchT
   }
 }
 
+// Resolve a rule's target(s) to mihomo nameserver-policy value(s). A single
+// target collapses to a string; multiple targets emit an array (e.g. RU →
+// [77.88.8.8, 8.8.8.8]). Unresolvable entries are dropped.
+function resolveRuleTargets(
+  tag: string | readonly string[],
+  profile: import('../profiles/DnsProfile').DnsProfile,
+): string | string[] | null {
+  const tags = Array.isArray(tag) ? tag : [tag as string]
+  const out: string[] = []
+  for (const t of tags) {
+    const r = resolveRuleTarget(t, profile)
+    if (r) out.push(r)
+  }
+  if (out.length === 0) return null
+  return out.length === 1 ? out[0]! : out
+}
+
 function resolveRuleTarget(tag: string, profile: import('../profiles/DnsProfile').DnsProfile): string | null {
   if (!tag) return null
   if (tag === 'direct' || tag === 'system') return 'system'
@@ -124,6 +143,8 @@ function resolveRuleTarget(tag: string, profile: import('../profiles/DnsProfile'
   }
   // Inline absolute URL — pass through
   if (/^(https?|tls|tcp|quic):\/\//.test(tag)) return tag
+  // Plain IPv4 (optionally :port) or bracketed IPv6 / udp:// resolver — pass through
+  if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(tag) || /^(udp:\/\/|\[)/.test(tag)) return tag
   return null
 }
 

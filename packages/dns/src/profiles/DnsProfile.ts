@@ -11,7 +11,10 @@ export interface DnsRule {
   readonly id: string
   readonly matchType: DnsRuleMatchType
   readonly value: string
-  readonly resolverTag: string  // 'primary' | 'fallback' | 'direct' | 'system' | custom tag
+  // 'primary' | 'fallback' | 'direct' | 'system' | inline URL | plain IP
+  // (e.g. '77.88.8.8'). An array emits a mihomo nameserver-policy list, e.g.
+  // `+.ru: [77.88.8.8, 8.8.8.8]` — used by the Android RU/node-domain policies.
+  readonly resolverTag: string | readonly string[]
 }
 
 export interface DnsResolver {
@@ -64,4 +67,19 @@ export interface DnsProfile {
 
   // Domains to pre-resolve at start. Reduces first-hit latency for hot paths.
   readonly prefetchDomains?: readonly string[]
+
+  // Emit `prefer-h3: false` to keep DoH on HTTP/2 (TCP/443); h3 (QUIC/udp) is
+  // DPI-prone. Omitted → mihomo default. (Android hardening; harmless on desktop.)
+  readonly preferH3?: boolean
+
+  // Override the plaintext bootstrap pool (mihomo `default-nameserver`) that
+  // resolves the DoH hostnames + direct lookups. Defaults to
+  // bootstrapNameservers ?? nameservers.
+  readonly defaultNameservers?: readonly DnsResolver[]
+
+  // Override the pool that resolves the proxy server hostnames
+  // (`proxy-server-nameserver`, required when respect-rules is on). Defaults to
+  // bootstrapNameservers ?? nameservers. Android points this at the DoH pool so
+  // node lookups stay encrypted.
+  readonly proxyServerNameservers?: readonly DnsResolver[]
 }
