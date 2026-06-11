@@ -88,12 +88,33 @@ const COUNTRY_KEYWORDS: [string, CountryInfo][] = [
   ['-hk-', { code: 'HK', name: 'Гонконг', flag: '🇭🇰' }],
 ]
 
+// 2-letter ISO code → country info, derived once from the keyword table.
+const CODE_TO_INFO: Record<string, CountryInfo> = (() => {
+  const m: Record<string, CountryInfo> = {}
+  for (const [, info] of COUNTRY_KEYWORDS) if (!m[info.code]) m[info.code] = info
+  return m
+})()
+const CODE_ALIASES: Record<string, string> = { UK: 'GB' }
+
+// Scan a string for a bare 2-letter country code at a word boundary — handles
+// names like "Slave-NL 35", "PL-vless", "Slave-EE" that the dash-wrapped keyword
+// table misses.
+function codeFromTokens(text: string): CountryInfo | null {
+  for (const tok of text.toUpperCase().split(/[^A-Z]+/)) {
+    if (tok.length !== 2) continue
+    const code = CODE_ALIASES[tok] ?? tok
+    if (CODE_TO_INFO[code]) return CODE_TO_INFO[code]
+  }
+  return null
+}
+
 function detectCountry(name: string, server: string): CountryInfo {
   const haystack = `${name} ${server}`.toLowerCase()
   for (const [keyword, info] of COUNTRY_KEYWORDS) {
     if (haystack.includes(keyword)) return info
   }
-  return { code: 'UN', name: 'Неизвестно', flag: '🌐' }
+  // Prefer the human name over the server hostname (fewer false positives).
+  return codeFromTokens(name) ?? codeFromTokens(server) ?? { code: 'UN', name: 'Неизвестно', flag: '🌐' }
 }
 
 function toServer(proxy: ProxyEntry, idx: number): Server {
