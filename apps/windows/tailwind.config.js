@@ -18,7 +18,7 @@ export default {
           'primary-dark': '#1a1530',
           secondary: '#f9f6f1',
           'secondary-dark': '#221c3d',
-          tertiary: '#ede9e1',
+          tertiary: '#f4f1ec',
           'tertiary-dark': '#2a2349',
           elevated: '#ffffff',
           'elevated-dark': '#221c3d',
