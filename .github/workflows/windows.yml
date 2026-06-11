@@ -52,6 +52,8 @@ jobs:
           mkdir artifacts
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe artifacts/
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Portable-*.exe artifacts/
+          # electron-updater metadata (generated even with --publish never).
+          Copy-Item apps/windows/release/*/latest.yml artifacts/ -ErrorAction SilentlyContinue
         shell: pwsh
 
       - uses: actions/upload-artifact@v4

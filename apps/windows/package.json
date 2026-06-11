@@ -15,7 +15,7 @@
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "pack": "pnpm build && electron-builder --dir",
-    "dist": "pnpm build && electron-builder",
+    "dist": "pnpm build && electron-builder --publish never",
     "clean": "rimraf out dist release"
   },
   "dependencies": {
