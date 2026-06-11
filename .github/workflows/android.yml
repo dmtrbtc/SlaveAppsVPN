@@ -172,6 +172,14 @@ jobs:
             sed -i 's|android {|android {\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging = false\n            pickFirsts += ["**/libc++_shared.so"]\n        }\n        resources {\n            excludes += ["META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt"]\n        }\n    }|' build.gradle
           fi
 
+      - name: Set app version (name from package.json, code from run number)
+        working-directory: apps/android/android/app
+        run: |
+          VER=$(node -p "require('${{ github.workspace }}/apps/windows/package.json').version")
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$VER\"/" build.gradle
+          sed -i "s/versionCode [0-9][0-9]*/versionCode ${{ github.run_number }}/" build.gradle
+          grep -E "versionName|versionCode" build.gradle
+
       - name: Capacitor sync
         working-directory: apps/android
         run: |
