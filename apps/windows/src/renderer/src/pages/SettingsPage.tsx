@@ -3,8 +3,9 @@ import { motion } from 'framer-motion'
 import {
   LogOut, User, CreditCard, Monitor, Bell, Shield, Smartphone, Sun,
   RefreshCw, Download, Link, Key, CheckCircle, XCircle,
-  Trash2, Edit3, Server, Clock, Cpu, Bot,
+  Trash2, Edit3, Server, Clock, Cpu, Bot, ChevronRight,
 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Section } from '../components/ui/section'
@@ -524,6 +525,7 @@ export function SettingsPage() {
   const { notify, themeMode, setThemeMode } = useUIStore()
   const [loggingOut, setLoggingOut] = useState(false)
 
+  const navigate = useNavigate()
   const { data: settings, isLoading: settingsLoading, error: settingsError, refetch: refetchSettings } = useSettings()
   const { mutate: updateSetting, isPending, variables: pendingVars } = useSettingsMutation()
 
@@ -563,6 +565,19 @@ export function SettingsPage() {
       </div>
 
       <div className="flex flex-col gap-5 px-6 py-5">
+
+        {/* Personal cabinet — primary mobile entry point ("Ещё" tab) */}
+        <Section label="Личный кабинет" icon={<User className="h-3.5 w-3.5" />}>
+          <CardRow>
+            <button
+              onClick={() => navigate('/cabinet')}
+              className="w-full p-4 flex items-center justify-between text-left hover:bg-bg-tertiary transition-colors"
+            >
+              <span className="text-[13px] text-text-primary">Аккаунт, подписка и вход</span>
+              <ChevronRight className="h-4 w-4 text-text-muted" />
+            </button>
+          </CardRow>
+        </Section>
 
         {/* Config source — subscription management */}
         <Section label="Конфигурация подписки" icon={<Link className="h-3.5 w-3.5" />}>

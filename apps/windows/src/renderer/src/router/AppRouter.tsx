@@ -8,6 +8,7 @@ import { DnsPage } from '../pages/DnsPage'
 import { DiagnosticsPage } from '../pages/DiagnosticsPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { SubscriptionsPage } from '../pages/SubscriptionsPage'
+import { CabinetPage } from '../pages/CabinetPage'
 import { useAuthStore } from '../stores/auth.store'
 
 function ProtectedShell() {
@@ -27,6 +28,12 @@ const router = createHashRouter([
     element: <Navigate to="/onboarding" replace />,
   },
   {
+    // Standalone cabinet login — reachable from onboarding BEFORE the user has
+    // any access (so they can sign in and auto-import their subscription).
+    path: '/cabinet-login',
+    element: <CabinetPage />,
+  },
+  {
     element: <ProtectedShell />,
     children: [
       { index: true, element: <Navigate to="/dashboard" replace /> },
@@ -36,6 +43,7 @@ const router = createHashRouter([
       { path: '/routing', element: <RoutingPage /> },
       { path: '/dns', element: <DnsPage /> },
       { path: '/diagnostics', element: <DiagnosticsPage /> },
+      { path: '/cabinet', element: <CabinetPage /> },
       { path: '/settings', element: <SettingsPage /> },
     ],
   },

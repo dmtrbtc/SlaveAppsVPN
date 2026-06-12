@@ -587,14 +587,23 @@ export function OnboardingPage() {
               </motion.div>
             </AnimatePresence>
 
-            <button
-              type="button"
-              onClick={handleSkip}
-              className="mt-1 inline-flex items-center gap-1 self-start text-[12px] text-text-muted transition-colors hover:text-text-secondary"
-            >
-              Пропустить
-              <ArrowRight className="h-3 w-3" />
-            </button>
+            <div className="mt-1 flex items-center gap-4">
+              <button
+                type="button"
+                onClick={handleSkip}
+                className="inline-flex items-center gap-1 text-[12px] text-text-muted transition-colors hover:text-text-secondary"
+              >
+                Пропустить
+                <ArrowRight className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void navigate('/cabinet-login')}
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-accent transition-colors hover:opacity-80"
+              >
+                Войти в личный кабинет
+              </button>
+            </div>
           </motion.div>
         </div>
       </div>
