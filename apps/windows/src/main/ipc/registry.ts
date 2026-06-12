@@ -51,6 +51,10 @@ export async function registerAllHandlers(): Promise<void> {
       registerAuthHandlers()
       log.debug('Auth IPC handlers registered')
     }),
+    import('./handlers/cabinet.handler').then(({ registerCabinetHandlers }) => {
+      registerCabinetHandlers()
+      log.debug('Cabinet IPC handlers registered')
+    }),
     import('./handlers/vpn.handler').then(({ registerVpnHandlers }) => {
       registerVpnHandlers()
       log.debug('VPN IPC handlers registered')

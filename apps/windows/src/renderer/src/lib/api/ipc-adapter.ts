@@ -71,6 +71,25 @@ export const authApi = {
     unwrap(requireBridge().auth.refresh()),
 }
 
+export const cabinetApi = {
+  getAuthState: () =>
+    unwrap(requireBridge().cabinet.getAuthState()),
+  requestDeepLink: () =>
+    unwrap(requireBridge().cabinet.requestDeepLink()),
+  pollDeepLink: (token: string) =>
+    unwrap(requireBridge().cabinet.pollDeepLink({ token })),
+  loginEmail: (email: string, password: string) =>
+    unwrap(requireBridge().cabinet.loginEmail({ email, password })),
+  getMe: () =>
+    unwrap(requireBridge().cabinet.getMe()),
+  getSubscription: () =>
+    unwrap(requireBridge().cabinet.getSubscription()),
+  importSubscription: () =>
+    unwrap(requireBridge().cabinet.importSubscription()),
+  logout: () =>
+    unwrap(requireBridge().cabinet.logout()),
+}
+
 export const vpnApi = {
   connect: () =>
     unwrap(requireBridge().vpn.connect()),

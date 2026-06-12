@@ -30,3 +30,6 @@ export * from './settings/index.js'
 export * from './rules/index.js'
 export * from './profiles/index.js'
 export * from './geo/index.js'
+
+// Personal cabinet (bedolaga) — account/auth/subscription over adapters.
+export * from './cabinet/index.js'

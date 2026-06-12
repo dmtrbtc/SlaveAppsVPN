@@ -6,6 +6,16 @@ export const IpcChannel = {
   AUTH_ME: 'auth:me',
   AUTH_REFRESH: 'auth:refresh',
 
+  // Personal cabinet — request/response
+  CABINET_AUTH_STATE: 'cabinet:getAuthState',
+  CABINET_REQUEST_DEEPLINK: 'cabinet:requestDeepLink',
+  CABINET_POLL_DEEPLINK: 'cabinet:pollDeepLink',
+  CABINET_LOGIN_EMAIL: 'cabinet:loginEmail',
+  CABINET_GET_ME: 'cabinet:getMe',
+  CABINET_GET_SUBSCRIPTION: 'cabinet:getSubscription',
+  CABINET_IMPORT_SUBSCRIPTION: 'cabinet:importSubscription',
+  CABINET_LOGOUT: 'cabinet:logout',
+
   // VPN — request/response
   VPN_CONNECT: 'vpn:connect',
   VPN_DISCONNECT: 'vpn:disconnect',
@@ -153,6 +163,14 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'AUTH_LOGOUT'
   | 'AUTH_ME'
   | 'AUTH_REFRESH'
+  | 'CABINET_AUTH_STATE'
+  | 'CABINET_REQUEST_DEEPLINK'
+  | 'CABINET_POLL_DEEPLINK'
+  | 'CABINET_LOGIN_EMAIL'
+  | 'CABINET_GET_ME'
+  | 'CABINET_GET_SUBSCRIPTION'
+  | 'CABINET_IMPORT_SUBSCRIPTION'
+  | 'CABINET_LOGOUT'
   | 'VPN_CONNECT'
   | 'VPN_DISCONNECT'
   | 'VPN_GET_STATUS'

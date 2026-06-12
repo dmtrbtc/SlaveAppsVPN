@@ -9,6 +9,16 @@ export const LoginTelegramSchema = z.object({
   initData: z.string().min(1).max(4096),
 })
 
+// ─── Personal cabinet ───────────────────────────────────────────────────────
+export const CabinetPollSchema = z.object({
+  token: z.string().min(1).max(512),
+})
+
+export const CabinetLoginEmailSchema = z.object({
+  email: z.string().email().max(254),
+  password: z.string().min(1).max(256),
+})
+
 export const VpnSetModeSchema = z.object({
   mode: z.enum(['full', 'bypass', 'split', 'custom']),
 })

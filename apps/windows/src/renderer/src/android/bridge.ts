@@ -16,8 +16,8 @@ import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
-import { getDnsPresets, getDnsStrategies, GEO_SOURCES, captureSnapshot, applySnapshot } from '@slave-vpn/core'
-import type { AppSettings, UtlsFingerprintName } from '@slave-vpn/core'
+import { getDnsPresets, getDnsStrategies, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import type { AppSettings, UtlsFingerprintName, CabinetUser, CabinetSubscription } from '@slave-vpn/core'
 import {
   loadProfiles, listProfiles, subscribeProfiles, getProfile,
   createProfile, removeProfile, markProfileApplied,
@@ -129,6 +129,51 @@ async function wrap<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
 
 function notImplemented(name: string): () => Promise<IpcErr> {
   return async () => err('NOT_IMPLEMENTED', `${name} not implemented on Android`)
+}
+
+// ─── Personal cabinet ─────────────────────────────────────────────────────────
+// Same platform-agnostic CabinetClient as Windows, over the Android adapters
+// (CapacitorHttp = no CORS/UA loss; Capacitor Preferences for token storage).
+let _cabinetClient: CabinetClient | null = null
+function cabinetClient(): CabinetClient {
+  if (!_cabinetClient) {
+    const a = createAndroidDataAdapters()
+    _cabinetClient = new CabinetClient(a.network, a.storage)
+  }
+  return _cabinetClient
+}
+
+/** wrap() variant that preserves CabinetError codes (INVALID_CREDENTIALS, …). */
+async function wrapCabinet<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
+  try {
+    return ok(await fn())
+  } catch (e: unknown) {
+    if (e instanceof CabinetError) return err(e.code, e.message)
+    return err('CABINET_ERROR', e instanceof Error ? e.message : String(e))
+  }
+}
+
+function cabUserInfo(u: CabinetUser) {
+  return {
+    id: u.id, telegramId: u.telegramId, username: u.username,
+    firstName: u.firstName, lastName: u.lastName, email: u.email,
+    emailVerified: u.emailVerified, balanceKopeks: u.balanceKopeks,
+    balanceRubles: u.balanceRubles, referralCode: u.referralCode,
+    language: u.language, createdAt: u.createdAt, authType: u.authType,
+  }
+}
+
+// SECURITY: drops subscriptionUrl — never expose the raw URL to the UI.
+function cabSubInfo(s: CabinetSubscription) {
+  return {
+    id: s.id, status: s.status, isTrial: s.isTrial, startDate: s.startDate,
+    endDate: s.endDate, daysLeft: s.daysLeft, hoursLeft: s.hoursLeft,
+    minutesLeft: s.minutesLeft, timeLeftDisplay: s.timeLeftDisplay,
+    trafficLimitGb: s.trafficLimitGb, trafficUsedGb: s.trafficUsedGb,
+    trafficUsedPercent: s.trafficUsedPercent, deviceLimit: s.deviceLimit,
+    autopayEnabled: s.autopayEnabled, isActive: s.isActive,
+    isExpired: s.isExpired, isLimited: s.isLimited, tariffName: s.tariffName,
+  }
 }
 
 // Parse one raw native/mihomo log line into a {level,time,msg} entry. The ring
@@ -920,6 +965,32 @@ export function installAndroidBridge(): void {
       logout: async () => ok(undefined),
       getMe: notImplemented('auth.getMe'),
       refresh: notImplemented('auth.refresh'),
+    },
+    cabinet: {
+      getAuthState: () => wrapCabinet(async () => ({ authenticated: await cabinetClient().isAuthenticated() })),
+      requestDeepLink: () => wrapCabinet(() => cabinetClient().requestDeepLink()),
+      pollDeepLink: (payload: { token: string }) => wrapCabinet(async () => {
+        const r = await cabinetClient().pollDeepLink(payload.token)
+        return r.status === 'confirmed' ? { status: 'confirmed' as const, user: cabUserInfo(r.user) } : r
+      }),
+      loginEmail: (payload: { email: string; password: string }) =>
+        wrapCabinet(async () => cabUserInfo(await cabinetClient().loginEmail(payload.email, payload.password))),
+      getMe: () => wrapCabinet(async () => cabUserInfo(await cabinetClient().getMe())),
+      getSubscription: () => wrapCabinet(async () => {
+        const st = await cabinetClient().getSubscriptionStatus()
+        return { hasSubscription: st.hasSubscription, subscription: st.subscription ? cabSubInfo(st.subscription) : null }
+      }),
+      // Auto-import: fetch the cabinet's subscription URL and persist it through
+      // the same durable subscription store the Подписки tab uses. The URL stays
+      // inside the bridge — only a boolean crosses to the UI.
+      importSubscription: () => wrapCabinet(async () => {
+        const url = await cabinetClient().getSubscriptionUrl()
+        if (!url) return { imported: false }
+        await addSubscription({ type: 'subscription-url', input: url })
+        invalidateServerCache()
+        return { imported: true }
+      }),
+      logout: () => wrapCabinet(() => cabinetClient().logout()),
     },
     controls: {
       minimize: async () => undefined,

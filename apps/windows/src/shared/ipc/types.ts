@@ -38,6 +38,78 @@ export type AuthLoginResult = IpcResult<AuthTokens>
 export type AuthMeResult = IpcResult<User>
 export type AuthLogoutResult = IpcResult<void>
 
+// ─── Personal cabinet (bedolaga) ────────────────────────────────────────────
+// Renderer-facing DTOs. Structurally mirror @slave-vpn/core CabinetUser /
+// CabinetSubscription so the bridge impls can return core objects directly.
+// SECURITY: the raw subscription URL is NEVER exposed here — auto-import keeps
+// it in the main process / bridge only.
+
+export interface CabinetUserInfo {
+  id: number
+  telegramId: number | null
+  username: string | null
+  firstName: string | null
+  lastName: string | null
+  email: string | null
+  emailVerified: boolean
+  balanceKopeks: number
+  balanceRubles: number
+  referralCode: string | null
+  language: string
+  createdAt: string
+  authType: string
+}
+
+export interface CabinetSubscriptionInfo {
+  id: number
+  status: string
+  isTrial: boolean
+  startDate: string
+  endDate: string
+  daysLeft: number
+  hoursLeft: number
+  minutesLeft: number
+  timeLeftDisplay: string
+  trafficLimitGb: number
+  trafficUsedGb: number
+  trafficUsedPercent: number
+  deviceLimit: number
+  autopayEnabled: boolean
+  isActive: boolean
+  isExpired: boolean
+  isLimited: boolean
+  tariffName: string | null
+}
+
+export interface CabinetSubscriptionStatusInfo {
+  hasSubscription: boolean
+  subscription: CabinetSubscriptionInfo | null
+}
+
+export interface CabinetDeepLinkInfo {
+  token: string
+  botUsername: string
+  expiresIn: number
+  tgLink: string
+}
+
+export type CabinetPollOutcome =
+  | { status: 'pending' }
+  | { status: 'confirmed'; user: CabinetUserInfo }
+  | { status: 'expired' }
+
+export interface CabinetPollPayload { token: string }
+export interface CabinetLoginEmailPayload { email: string; password: string }
+
+export type CabinetAuthStateResult = IpcResult<{ authenticated: boolean }>
+export type CabinetRequestDeepLinkResult = IpcResult<CabinetDeepLinkInfo>
+export type CabinetPollDeepLinkResult = IpcResult<CabinetPollOutcome>
+export type CabinetLoginEmailResult = IpcResult<CabinetUserInfo>
+export type CabinetGetMeResult = IpcResult<CabinetUserInfo>
+export type CabinetGetSubscriptionResult = IpcResult<CabinetSubscriptionStatusInfo>
+export type CabinetImportSubscriptionResult = IpcResult<{ imported: boolean }>
+export type CabinetLogoutResult = IpcResult<void>
+
 // ─── VPN ─────────────────────────────────────────────────────────────────────
 
 export interface VpnSetModePayload {
@@ -818,6 +890,18 @@ export interface SlaveVPNBridge {
     logout: () => Promise<AuthLogoutResult>
     getMe: () => Promise<AuthMeResult>
     refresh: () => Promise<AuthLoginResult>
+  }
+  cabinet: {
+    getAuthState: () => Promise<CabinetAuthStateResult>
+    requestDeepLink: () => Promise<CabinetRequestDeepLinkResult>
+    pollDeepLink: (payload: CabinetPollPayload) => Promise<CabinetPollDeepLinkResult>
+    loginEmail: (payload: CabinetLoginEmailPayload) => Promise<CabinetLoginEmailResult>
+    getMe: () => Promise<CabinetGetMeResult>
+    getSubscription: () => Promise<CabinetGetSubscriptionResult>
+    // Auto-import the cabinet's subscription URL as the active config source.
+    // The URL never crosses to the renderer — only a boolean outcome.
+    importSubscription: () => Promise<CabinetImportSubscriptionResult>
+    logout: () => Promise<CabinetLogoutResult>
   }
   vpn: {
     connect: () => Promise<VpnConnectResult>
