@@ -442,16 +442,23 @@ function AccountSection() {
 // unified across Android & Windows, and free of the electron-updater pitfalls
 // (prerelease channels / latest.yml on the wrong tag / version not bumping).
 function UpdateSection() {
+  const { data: settings } = useSettings()
+  const { mutate: updateSetting } = useSettingsMutation()
+  const channel: 'stable' | 'beta' = settings?.updateChannel ?? 'stable'
+
   const [info, setInfo] = useState<UpdateInfo | null>(null)
   const [checking, setChecking] = useState(false)
   const [checkedOnce, setCheckedOnce] = useState(false)
 
-  const runCheck = async (): Promise<void> => {
+  const runCheck = async (ch: 'stable' | 'beta'): Promise<void> => {
     setChecking(true)
-    try { setInfo(await checkForUpdate()) }
+    try { setInfo(await checkForUpdate(ch)) }
     finally { setChecking(false); setCheckedOnce(true) }
   }
-  useEffect(() => { void runCheck() }, [])
+  // Re-check whenever the channel changes (a Dev user should immediately see a
+  // newer prerelease; switching back to Stable should clear a prerelease-only
+  // banner on the next check).
+  useEffect(() => { void runCheck(channel) }, [channel])
 
   const upToDate = checkedOnce && !info
   const tone: 'ok' | 'warn' | 'neutral' = info ? 'warn' : upToDate ? 'ok' : 'neutral'
@@ -468,6 +475,25 @@ function UpdateSection() {
           <Badge tone={tone}>{label}</Badge>
         </div>
 
+        {/* Channel selector — Stable (final releases only) vs Dev (also
+            prereleases: alpha/beta/rc/dev). */}
+        <div className="flex flex-col gap-1.5">
+          <Segmented<'stable' | 'beta'>
+            options={[
+              { value: 'stable', label: 'Стабильная' },
+              { value: 'beta',   label: 'Dev' },
+            ]}
+            value={channel}
+            onChange={(ch) => updateSetting({ updateChannel: ch })}
+            size="sm"
+          />
+          <p className="text-[11px] text-text-muted">
+            {channel === 'beta'
+              ? 'Dev-канал: ранние тестовые сборки (alpha/rc), могут быть нестабильны'
+              : 'Только стабильные релизы'}
+          </p>
+        </div>
+
         {info && (
           <p className="text-[11px] text-text-muted">
             Доступна <span className="text-text-secondary font-medium">{info.version}</span>
@@ -475,7 +501,7 @@ function UpdateSection() {
         )}
 
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => void runCheck()} loading={checking}>
+          <Button variant="secondary" size="sm" onClick={() => void runCheck(channel)} loading={checking}>
             <RefreshCw className="h-3.5 w-3.5" />
             Проверить
           </Button>

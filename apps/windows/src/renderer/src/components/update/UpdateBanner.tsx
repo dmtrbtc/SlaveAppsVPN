@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Download, X, ArrowUpCircle } from 'lucide-react'
 import { checkForUpdate, openUpdate, type UpdateInfo } from '../../android/update-check'
+import { useSettings } from '../../hooks/useSettings'
 
 const DISMISS_LS_KEY = 'slave.update.dismissed.v1'
 
@@ -13,11 +14,13 @@ const DISMISS_LS_KEY = 'slave.update.dismissed.v1'
  */
 export function UpdateBanner() {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
+  const { data: settings } = useSettings()
+  const channel = settings?.updateChannel ?? 'stable'
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const u = await checkForUpdate()
+      const u = await checkForUpdate(channel)
       if (cancelled || !u) return
       try {
         if (window.localStorage.getItem(DISMISS_LS_KEY) === u.version) return // dismissed this version
@@ -25,7 +28,7 @@ export function UpdateBanner() {
       setInfo(u)
     })()
     return () => { cancelled = true }
-  }, [])
+  }, [channel])
 
   if (!info) return null
 

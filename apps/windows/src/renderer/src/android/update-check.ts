@@ -30,9 +30,18 @@ interface GhRelease {
   body: string | null
   html_url: string
   draft: boolean
+  prerelease: boolean
   published_at: string
   assets: GhAsset[]
 }
+
+/**
+ * Update channel. 'stable' = only final releases; 'beta' = the "Dev" channel,
+ * which also surfaces prereleases (alpha/beta/rc/dev tags, marked
+ * `prerelease: true` on GitHub). The stored value stays 'beta' for backward
+ * compatibility; the UI labels it "Dev".
+ */
+export type UpdateChannel = 'stable' | 'beta'
 
 function buildTimestampMs(): number {
   try {
@@ -62,14 +71,21 @@ async function fetchReleases(): Promise<GhRelease[]> {
 }
 
 /**
- * Returns the newest release if it's newer than this build, else null.
- * Never throws.
+ * Returns the newest release in the chosen channel if it's newer than this
+ * build, else null. Never throws.
+ *
+ * Channel filtering: 'stable' considers only final releases (`prerelease:false`);
+ * 'beta' (the "Dev" channel) also considers prereleases. A stable user therefore
+ * never sees a -dev/-rc build; a Dev user gets whichever is newest.
  */
-export async function checkForUpdate(): Promise<UpdateInfo | null> {
+export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise<UpdateInfo | null> {
   try {
-    const releases = (await fetchReleases()).filter(r => !r.draft)
+    const releases = (await fetchReleases())
+      .filter(r => !r.draft)
+      .filter(r => channel === 'beta' || !r.prerelease)
     if (releases.length === 0) return null
-    // API returns newest first.
+    // API returns newest first; after channel filtering [0] is the newest
+    // release this channel is allowed to offer.
     const latest = releases[0]!
     const publishedAt = new Date(latest.published_at).getTime()
     const built = buildTimestampMs()
