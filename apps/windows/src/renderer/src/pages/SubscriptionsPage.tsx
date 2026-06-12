@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { ListSkeleton, EmptyState } from '../components/ui/states'
+import { CabinetPanel } from '../components/cabinet/CabinetPanel'
 import { cn } from '../lib/utils'
 import { useSubscriptionsStore } from '../stores/subscriptions.store'
 import { useUIStore } from '../stores/ui.store'
@@ -415,6 +416,10 @@ export function SubscriptionsPage() {
       </div>
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
+        {/* Personal cabinet — sign in here; the cabinet subscription imports
+            automatically after login. */}
+        <CabinetPanel />
+
         {loading && entries.length === 0 ? (
           <ListSkeleton rows={3} />
         ) : entries.length === 0 ? (

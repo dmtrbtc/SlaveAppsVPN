@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 import {
-  Shield, Globe, Route, Layers, Activity, Settings, User,
+  Shield, Globe, Route, Layers, Activity, Settings,
   ChevronLeft, ChevronRight, ScanLine,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -72,33 +72,6 @@ export function Sidebar() {
 
       <div className="px-1.5 mt-auto flex flex-col gap-0.5">
         <StatusDot state={connectionState} collapsed={sidebarCollapsed} />
-
-        <NavLink to="/cabinet">
-          {({ isActive }) => (
-            <div
-              className={cn(
-                'flex h-10 items-center gap-3 rounded-xl px-3 text-sm font-medium transition-all duration-150 cursor-default',
-                isActive
-                  ? 'bg-accent/15 text-text-accent'
-                  : 'text-text-muted hover:bg-bg-tertiary hover:text-text-secondary'
-              )}
-            >
-              <User className="h-4 w-4 shrink-0" />
-              <AnimatePresence mode="wait">
-                {!sidebarCollapsed && (
-                  <motion.span
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    Кабинет
-                  </motion.span>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
-        </NavLink>
 
         <NavLink to="/settings">
           {({ isActive }) => (

@@ -43,7 +43,8 @@ const router = createHashRouter([
       { path: '/routing', element: <RoutingPage /> },
       { path: '/dns', element: <DnsPage /> },
       { path: '/diagnostics', element: <DiagnosticsPage /> },
-      { path: '/cabinet', element: <CabinetPage /> },
+      // Cabinet lives inside the Подписки tab now; keep the old path working.
+      { path: '/cabinet', element: <Navigate to="/subscriptions" replace /> },
       { path: '/settings', element: <SettingsPage /> },
     ],
   },

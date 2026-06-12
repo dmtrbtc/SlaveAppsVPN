@@ -566,14 +566,14 @@ export function SettingsPage() {
 
       <div className="flex flex-col gap-5 px-6 py-5">
 
-        {/* Personal cabinet — primary mobile entry point ("Ещё" tab) */}
+        {/* Personal cabinet lives in the Подписки tab */}
         <Section label="Личный кабинет" icon={<User className="h-3.5 w-3.5" />}>
           <CardRow>
             <button
-              onClick={() => navigate('/cabinet')}
+              onClick={() => navigate('/subscriptions')}
               className="w-full p-4 flex items-center justify-between text-left hover:bg-bg-tertiary transition-colors"
             >
-              <span className="text-[13px] text-text-primary">Аккаунт, подписка и вход</span>
+              <span className="text-[13px] text-text-primary">Аккаунт и подписка — на вкладке «Подписки»</span>
               <ChevronRight className="h-4 w-4 text-text-muted" />
             </button>
           </CardRow>
