@@ -63,15 +63,17 @@ export function CabinetPage() {
 
 type TgState =
   | { kind: 'idle' }
-  | { kind: 'waiting'; token: string; bot: string; httpLink: string }
+  | { kind: 'waiting'; token: string; bot: string; startParam: string; httpLink: string }
   | { kind: 'expired' }
   | { kind: 'error'; message: string }
 
 // Native Telegram URL scheme — opens the installed Telegram app directly with
 // the start payload, BYPASSING the (RKN-blocked) t.me web domain. This is the
 // only reliable way to deliver the login token when t.me won't load.
-function tgScheme(bot: string, token: string): string {
-  return `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(token)}`
+// startParam must be the bot's expected `webauth_<token>` form — a bare token
+// is silently ignored by the bot's /start handler.
+function tgScheme(bot: string, startParam: string): string {
+  return `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(startParam)}`
 }
 
 function openExternal(url: string): void {
@@ -98,8 +100,8 @@ function CabinetLogin() {
     try {
       const dl = await cabinetApi.requestDeepLink()
       deadlineRef.current = Date.now() + dl.expiresIn * 1000
-      setTg({ kind: 'waiting', token: dl.token, bot: dl.botUsername, httpLink: dl.tgLink })
-      openExternal(tgScheme(dl.botUsername, dl.token)) // native app first
+      setTg({ kind: 'waiting', token: dl.token, bot: dl.botUsername, startParam: dl.startParam, httpLink: dl.tgLink })
+      openExternal(tgScheme(dl.botUsername, dl.startParam)) // native app first
       stopPolling()
       pollRef.current = setInterval(() => { void pollOnce(dl.token) }, 2500)
     } catch (e) {
@@ -137,11 +139,12 @@ function CabinetLogin() {
                   Ожидаем подтверждения в Telegram…
                 </div>
                 <p className="text-[11px] text-text-muted">
-                  В Telegram нажмите <span className="text-text-secondary font-medium">Start</span> (Запустить).
-                  Если Telegram заблокирован — сначала включите любой VPN, затем откройте бота.
+                  В Telegram нажмите <span className="text-text-secondary font-medium">Start</span>, затем
+                  кнопку <span className="text-text-secondary font-medium">«✅ Да, войти»</span> в боте.
+                  Нужен аккаунт, уже знакомый боту (хотя бы раз запускали @{tg.bot}).
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="primary" size="sm" onClick={() => openExternal(tgScheme(tg.bot, tg.token))}>
+                  <Button variant="primary" size="sm" onClick={() => openExternal(tgScheme(tg.bot, tg.startParam))}>
                     <Send className="h-3.5 w-3.5" /> Открыть Telegram
                   </Button>
                   <Button variant="secondary" size="sm" loading={checking} onClick={() => void pollOnce(tg.token, true)}>
@@ -156,7 +159,8 @@ function CabinetLogin() {
                   <button className="text-accent underline" onClick={() => openExternal(tg.httpLink)}>
                     открыть по ссылке t.me
                   </button>
-                  {' '}— <span className="text-text-secondary">{tg.httpLink}</span>
+                  {' '}или отправьте боту команду вручную:{' '}
+                  <span className="font-mono text-text-secondary select-all">/start {tg.startParam}</span>
                 </p>
               </>
             ) : (

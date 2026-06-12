@@ -63,7 +63,13 @@ export interface CabinetDeepLink {
   botUsername: string
   /** Seconds until the token expires. */
   expiresIn: number
-  /** Convenience deep link: https://t.me/<botUsername>?start=<token>. */
+  /**
+   * The /start payload the bot expects: `webauth_<token>`. The bot's start
+   * handler ONLY treats `webauth_`-prefixed parameters as a cabinet login
+   * (bare tokens are silently ignored as campaign/referral codes).
+   */
+  startParam: string
+  /** Convenience deep link: https://t.me/<botUsername>?start=webauth_<token>. */
   tgLink: string
 }
 

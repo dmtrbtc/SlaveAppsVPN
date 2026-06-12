@@ -90,6 +90,8 @@ export interface CabinetDeepLinkInfo {
   token: string
   botUsername: string
   expiresIn: number
+  /** The bot's expected /start payload: `webauth_<token>`. */
+  startParam: string
   tgLink: string
 }
 

@@ -65,11 +65,16 @@ export class CabinetClient {
     }
     const d = this.parse<{ token: string; bot_username: string; expires_in: number }>(res.body)
     const botUsername = d.bot_username
+    // The bot's /start handler matches `webauth_<token>` ONLY (verified in
+    // bedolaga bot start.py + the cabinet frontend's TelegramLoginButton); a
+    // bare token is treated as a campaign code and never confirms the login.
+    const startParam = `webauth_${d.token}`
     return {
       token: d.token,
       botUsername,
       expiresIn: d.expires_in,
-      tgLink: `https://t.me/${botUsername}?start=${encodeURIComponent(d.token)}`,
+      startParam,
+      tgLink: `https://t.me/${botUsername}?start=${encodeURIComponent(startParam)}`,
     }
   }
 
