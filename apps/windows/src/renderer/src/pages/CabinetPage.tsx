@@ -63,14 +63,28 @@ export function CabinetPage() {
 
 type TgState =
   | { kind: 'idle' }
-  | { kind: 'waiting'; link: string }
+  | { kind: 'waiting'; token: string; bot: string; httpLink: string }
   | { kind: 'expired' }
   | { kind: 'error'; message: string }
+
+// Native Telegram URL scheme — opens the installed Telegram app directly with
+// the start payload, BYPASSING the (RKN-blocked) t.me web domain. This is the
+// only reliable way to deliver the login token when t.me won't load.
+function tgScheme(bot: string, token: string): string {
+  return `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(token)}`
+}
+
+function openExternal(url: string): void {
+  // '_system' routes to the OS so a custom scheme (tg://) hits Android's intent
+  // resolver / the Telegram app instead of the in-app WebView.
+  try { window.open(url, '_system') } catch { try { window.open(url, '_blank') } catch { /* ignore */ } }
+}
 
 function CabinetLogin() {
   const invalidate = useCabinetInvalidate()
   const { notify } = useUIStore()
   const [tg, setTg] = useState<TgState>({ kind: 'idle' })
+  const [checking, setChecking] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const deadlineRef = useRef<number>(0)
 
@@ -84,8 +98,8 @@ function CabinetLogin() {
     try {
       const dl = await cabinetApi.requestDeepLink()
       deadlineRef.current = Date.now() + dl.expiresIn * 1000
-      setTg({ kind: 'waiting', link: dl.tgLink })
-      try { window.open(dl.tgLink, '_blank') } catch { /* ignore */ }
+      setTg({ kind: 'waiting', token: dl.token, bot: dl.botUsername, httpLink: dl.tgLink })
+      openExternal(tgScheme(dl.botUsername, dl.token)) // native app first
       stopPolling()
       pollRef.current = setInterval(() => { void pollOnce(dl.token) }, 2500)
     } catch (e) {
@@ -93,8 +107,9 @@ function CabinetLogin() {
     }
   }
 
-  const pollOnce = async (token: string) => {
-    if (Date.now() > deadlineRef.current) { stopPolling(); setTg({ kind: 'expired' }); return }
+  const pollOnce = async (token: string, manual = false): Promise<void> => {
+    if (!manual && Date.now() > deadlineRef.current) { stopPolling(); setTg({ kind: 'expired' }); return }
+    if (manual) setChecking(true)
     try {
       const r = await cabinetApi.pollDeepLink(token)
       if (r.status === 'confirmed') {
@@ -103,8 +118,11 @@ function CabinetLogin() {
         notify({ type: 'success', title: 'Готово', message: 'Вход через Telegram выполнен' })
       } else if (r.status === 'expired') {
         stopPolling(); setTg({ kind: 'expired' })
+      } else if (manual) {
+        notify({ type: 'info', title: 'Ещё не подтверждено', message: 'Нажмите Start в боте, затем проверьте снова' })
       }
     } catch { /* keep polling until deadline */ }
+    finally { if (manual) setChecking(false) }
   }
 
   return (
@@ -112,24 +130,47 @@ function CabinetLogin() {
       <Section label="Вход через Telegram" icon={<Send className="h-3.5 w-3.5" />}>
         <Card>
           <div className="p-4 flex flex-col gap-3">
-            <p className="text-[12px] text-text-muted">
-              Откройте бота <span className="text-text-secondary font-medium">@Slavevpnbot</span> и
-              подтвердите вход — приложение само подхватит сессию.
-            </p>
             {tg.kind === 'waiting' ? (
-              <div className="flex items-center gap-2 text-[12px] text-text-secondary">
-                <Spinner className="h-4 w-4" />
-                Ожидаем подтверждения в Telegram…
-                <button className="text-accent underline" onClick={() => { try { window.open(tg.link, '_blank') } catch { /* */ } }}>
-                  открыть ещё раз
-                </button>
-              </div>
+              <>
+                <div className="flex items-center gap-2 text-[12px] text-text-secondary">
+                  <Spinner className="h-4 w-4" />
+                  Ожидаем подтверждения в Telegram…
+                </div>
+                <p className="text-[11px] text-text-muted">
+                  В Telegram нажмите <span className="text-text-secondary font-medium">Start</span> (Запустить).
+                  Если Telegram заблокирован — сначала включите любой VPN, затем откройте бота.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="primary" size="sm" onClick={() => openExternal(tgScheme(tg.bot, tg.token))}>
+                    <Send className="h-3.5 w-3.5" /> Открыть Telegram
+                  </Button>
+                  <Button variant="secondary" size="sm" loading={checking} onClick={() => void pollOnce(tg.token, true)}>
+                    Я подтвердил — проверить
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => void startTelegram()}>
+                    Новая ссылка
+                  </Button>
+                </div>
+                <p className="text-[10px] text-text-muted break-all">
+                  Не открылось?{' '}
+                  <button className="text-accent underline" onClick={() => openExternal(tg.httpLink)}>
+                    открыть по ссылке t.me
+                  </button>
+                  {' '}— <span className="text-text-secondary">{tg.httpLink}</span>
+                </p>
+              </>
             ) : (
-              <Button variant="primary" size="sm" onClick={() => void startTelegram()} className="self-start">
-                <Send className="h-3.5 w-3.5" /> Войти через Telegram
-              </Button>
+              <>
+                <p className="text-[12px] text-text-muted">
+                  Войдите через бота <span className="text-text-secondary font-medium">@Slavevpnbot</span> —
+                  приложение само подхватит сессию.
+                </p>
+                <Button variant="primary" size="sm" onClick={() => void startTelegram()} className="self-start">
+                  <Send className="h-3.5 w-3.5" /> Войти через Telegram
+                </Button>
+              </>
             )}
-            {tg.kind === 'expired' && <p className="text-[11px] text-error">Ссылка истекла — попробуйте снова.</p>}
+            {tg.kind === 'expired' && <p className="text-[11px] text-error">Ссылка истекла — нажмите «Войти через Telegram» снова.</p>}
             {tg.kind === 'error' && <p className="text-[11px] text-error">{tg.message}</p>}
           </div>
         </Card>
