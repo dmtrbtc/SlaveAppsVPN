@@ -339,7 +339,12 @@ const META_GEOX_URL = {
 }
 
 function androidClashMode(mode: AndroidRoutingMode): 'rule' | 'global' | 'direct' {
-  if (mode === 'global') return 'global'
+  // NEVER use clash `mode: global` — it IGNORES the rule list and forces every
+  // connection (DNS, the local external-controller API, even the proxy's own
+  // outbound) through the GLOBAL group, which our config doesn't define → foreign
+  // sites die, the engine API becomes unreachable and logs stop. The 'global'
+  // routing intent is expressed as RULES instead (buildAndroidRules → MATCH,
+  // SLAVE-SELECT with private-direct), so rule mode does the full tunnel safely.
   if (mode === 'direct') return 'direct'
   return 'rule'
 }
@@ -385,7 +390,13 @@ function mergeAndroidExtras(policyRules: readonly string[], opts?: AndroidRoutin
 
 function buildAndroidRules(opts: AndroidRoutingOptions): string[] {
   if (opts.mode === 'direct') return ['MATCH,DIRECT']
-  if (opts.mode === 'global') return [...PRIVATE_DIRECT_RULES, `MATCH,${SLAVE_SELECT_GROUP}`]
+  if (opts.mode === 'global') return [
+    // Anti-loop: the proxy node's own domain must dial DIRECT, else MATCH would
+    // route the node connection through the node itself.
+    ...opts.nodeDomainSuffixes.map((s) => `DOMAIN-SUFFIX,${s},DIRECT`),
+    ...PRIVATE_DIRECT_RULES,
+    `MATCH,${SLAVE_SELECT_GROUP}`,
+  ]
 
   const rules: string[] = []
   for (const s of opts.nodeDomainSuffixes) rules.push(`DOMAIN-SUFFIX,${s},DIRECT`)
