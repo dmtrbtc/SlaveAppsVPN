@@ -15,7 +15,7 @@ export interface NetworkResponse {
 }
 
 export interface NetworkRequestOptions {
-  method?: 'GET' | 'POST' | 'HEAD'
+  method?: 'GET' | 'POST' | 'HEAD' | 'PATCH' | 'DELETE'
   headers?: Record<string, string>
   body?: string
   timeoutMs?: number

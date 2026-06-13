@@ -86,6 +86,20 @@ export const cabinetApi = {
     unwrap(requireBridge().cabinet.getSubscription()),
   importSubscription: () =>
     unwrap(requireBridge().cabinet.importSubscription()),
+  getBalance: () =>
+    unwrap(requireBridge().cabinet.getBalance()),
+  getTransactions: () =>
+    unwrap(requireBridge().cabinet.getTransactions()),
+  getDevices: () =>
+    unwrap(requireBridge().cabinet.getDevices()),
+  removeDevice: (hwid: string) =>
+    unwrap(requireBridge().cabinet.removeDevice({ hwid })),
+  getRenewalOptions: () =>
+    unwrap(requireBridge().cabinet.getRenewalOptions()),
+  renew: (periodDays: number) =>
+    unwrap(requireBridge().cabinet.renew({ periodDays })),
+  setAutopay: (enabled: boolean, daysBefore?: number) =>
+    unwrap(requireBridge().cabinet.setAutopay({ enabled, ...(daysBefore != null ? { daysBefore } : {}) })),
   logout: () =>
     unwrap(requireBridge().cabinet.logout()),
 }

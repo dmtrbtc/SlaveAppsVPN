@@ -100,8 +100,50 @@ export type CabinetPollOutcome =
   | { status: 'confirmed'; user: CabinetUserInfo }
   | { status: 'expired' }
 
+export interface CabinetTransactionInfo {
+  id: number
+  type: string
+  amountKopeks: number
+  amountRubles: number
+  description: string | null
+  paymentMethod: string | null
+  isCompleted: boolean
+  createdAt: string
+}
+
+export interface CabinetTransactionPageInfo {
+  items: CabinetTransactionInfo[]
+  total: number
+  page: number
+  pages: number
+}
+
+export interface CabinetDeviceInfo {
+  hwid: string
+  platform: string
+  deviceModel: string
+  localName: string | null
+}
+
+export interface CabinetDeviceListInfo {
+  devices: CabinetDeviceInfo[]
+  total: number
+  deviceLimit: number
+}
+
+export interface CabinetRenewalOptionInfo {
+  periodDays: number
+  priceKopeks: number
+  priceRubles: number
+  discountPercent: number
+  originalPriceKopeks: number | null
+}
+
 export interface CabinetPollPayload { token: string }
 export interface CabinetLoginEmailPayload { email: string; password: string }
+export interface CabinetRemoveDevicePayload { hwid: string }
+export interface CabinetRenewPayload { periodDays: number }
+export interface CabinetAutopayPayload { enabled: boolean; daysBefore?: number }
 
 export type CabinetAuthStateResult = IpcResult<{ authenticated: boolean }>
 export type CabinetRequestDeepLinkResult = IpcResult<CabinetDeepLinkInfo>
@@ -111,6 +153,13 @@ export type CabinetGetMeResult = IpcResult<CabinetUserInfo>
 export type CabinetGetSubscriptionResult = IpcResult<CabinetSubscriptionStatusInfo>
 export type CabinetImportSubscriptionResult = IpcResult<{ imported: boolean }>
 export type CabinetLogoutResult = IpcResult<void>
+export type CabinetGetBalanceResult = IpcResult<{ balanceKopeks: number; balanceRubles: number }>
+export type CabinetGetTransactionsResult = IpcResult<CabinetTransactionPageInfo>
+export type CabinetGetDevicesResult = IpcResult<CabinetDeviceListInfo>
+export type CabinetRemoveDeviceResult = IpcResult<void>
+export type CabinetGetRenewalOptionsResult = IpcResult<CabinetRenewalOptionInfo[]>
+export type CabinetRenewResult = IpcResult<void>
+export type CabinetSetAutopayResult = IpcResult<void>
 
 // ─── VPN ─────────────────────────────────────────────────────────────────────
 
@@ -903,6 +952,14 @@ export interface SlaveVPNBridge {
     // Auto-import the cabinet's subscription URL as the active config source.
     // The URL never crosses to the renderer — only a boolean outcome.
     importSubscription: () => Promise<CabinetImportSubscriptionResult>
+    getBalance: () => Promise<CabinetGetBalanceResult>
+    getTransactions: () => Promise<CabinetGetTransactionsResult>
+    getDevices: () => Promise<CabinetGetDevicesResult>
+    removeDevice: (payload: CabinetRemoveDevicePayload) => Promise<CabinetRemoveDeviceResult>
+    getRenewalOptions: () => Promise<CabinetGetRenewalOptionsResult>
+    // Renews from the cabinet balance (errors carry the API detail, e.g. insufficient funds).
+    renew: (payload: CabinetRenewPayload) => Promise<CabinetRenewResult>
+    setAutopay: (payload: CabinetAutopayPayload) => Promise<CabinetSetAutopayResult>
     logout: () => Promise<CabinetLogoutResult>
   }
   vpn: {

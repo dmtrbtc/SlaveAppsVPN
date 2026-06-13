@@ -990,6 +990,14 @@ export function installAndroidBridge(): void {
         invalidateServerCache()
         return { imported: true }
       }),
+      getBalance: () => wrapCabinet(() => cabinetClient().getBalance()),
+      getTransactions: () => wrapCabinet(() => cabinetClient().getTransactions()),
+      getDevices: () => wrapCabinet(() => cabinetClient().getDevices()),
+      removeDevice: (payload: { hwid: string }) => wrapCabinet(() => cabinetClient().removeDevice(payload.hwid)),
+      getRenewalOptions: () => wrapCabinet(() => cabinetClient().getRenewalOptions()),
+      renew: (payload: { periodDays: number }) => wrapCabinet(() => cabinetClient().renewSubscription(payload.periodDays)),
+      setAutopay: (payload: { enabled: boolean; daysBefore?: number }) =>
+        wrapCabinet(() => cabinetClient().setAutopay(payload.enabled, payload.daysBefore)),
       logout: () => wrapCabinet(() => cabinetClient().logout()),
     },
     controls: {

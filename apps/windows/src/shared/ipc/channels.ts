@@ -14,6 +14,13 @@ export const IpcChannel = {
   CABINET_GET_ME: 'cabinet:getMe',
   CABINET_GET_SUBSCRIPTION: 'cabinet:getSubscription',
   CABINET_IMPORT_SUBSCRIPTION: 'cabinet:importSubscription',
+  CABINET_GET_BALANCE: 'cabinet:getBalance',
+  CABINET_GET_TRANSACTIONS: 'cabinet:getTransactions',
+  CABINET_GET_DEVICES: 'cabinet:getDevices',
+  CABINET_REMOVE_DEVICE: 'cabinet:removeDevice',
+  CABINET_GET_RENEWAL_OPTIONS: 'cabinet:getRenewalOptions',
+  CABINET_RENEW: 'cabinet:renew',
+  CABINET_SET_AUTOPAY: 'cabinet:setAutopay',
   CABINET_LOGOUT: 'cabinet:logout',
 
   // VPN — request/response
@@ -170,6 +177,13 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'CABINET_GET_ME'
   | 'CABINET_GET_SUBSCRIPTION'
   | 'CABINET_IMPORT_SUBSCRIPTION'
+  | 'CABINET_GET_BALANCE'
+  | 'CABINET_GET_TRANSACTIONS'
+  | 'CABINET_GET_DEVICES'
+  | 'CABINET_REMOVE_DEVICE'
+  | 'CABINET_GET_RENEWAL_OPTIONS'
+  | 'CABINET_RENEW'
+  | 'CABINET_SET_AUTOPAY'
   | 'CABINET_LOGOUT'
   | 'VPN_CONNECT'
   | 'VPN_DISCONNECT'

@@ -1,16 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   User, Mail, Send, LogOut, RefreshCw, Clock, HardDrive, Smartphone, CheckCircle, ChevronDown,
+  Wallet, CalendarClock, MonitorSmartphone, Trash2, ExternalLink,
 } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
 import { Spinner } from '../ui/spinner'
+import { ToggleRow } from '../ui/toggle-row'
 import { cabinetApi } from '../../lib/api'
 import {
   useCabinetAuthState, useCabinetMe, useCabinetSubscription,
   useCabinetInvalidate, useCabinetEmailLogin, useCabinetLogout,
+  useCabinetTransactions, useCabinetDevices, useCabinetRenewalOptions,
 } from '../../hooks/useCabinet'
+import { useQueryClient } from '@tanstack/react-query'
 import { useUIStore } from '../../stores/ui.store'
 import { useAuthStore } from '../../stores/auth.store'
 import { useSubscriptionsStore } from '../../stores/subscriptions.store'
@@ -211,18 +215,22 @@ function EmailLoginForm({ onSuccess }: { onSuccess: () => Promise<void> }) {
 
 // ─── Status card (authenticated) ──────────────────────────────────────────────
 
+type SectionKey = 'balance' | 'renew' | 'devices' | null
+
 function CabinetStatusCard() {
   const { data: me } = useCabinetMe(true)
   const { data: sub, isFetching, refetch } = useCabinetSubscription(true)
   const logout = useCabinetLogout()
   const autoImport = useAutoImport()
   const [importing, setImporting] = useState(false)
+  const [open, setOpen] = useState<SectionKey>(null)
 
   const displayName = me
     ? (me.username || [me.firstName, me.lastName].filter(Boolean).join(' ') || me.email || `ID ${me.id}`)
     : '…'
 
   const s = sub?.subscription ?? null
+  const toggle = (k: Exclude<SectionKey, null>) => setOpen(prev => (prev === k ? null : k))
 
   return (
     <div className="rounded-lg border border-border bg-bg-primary overflow-hidden">
@@ -248,6 +256,17 @@ function CabinetStatusCard() {
           <p className="text-[12px] text-text-muted">Активная подписка в кабинете не найдена.</p>
         )}
 
+        {/* Expandable detail tabs */}
+        <div className="flex flex-wrap gap-1.5">
+          <TabButton active={open === 'balance'} icon={<Wallet className="h-3.5 w-3.5" />} label="Баланс" onClick={() => toggle('balance')} />
+          {s && <TabButton active={open === 'renew'} icon={<CalendarClock className="h-3.5 w-3.5" />} label="Продление" onClick={() => toggle('renew')} />}
+          {s && <TabButton active={open === 'devices'} icon={<MonitorSmartphone className="h-3.5 w-3.5" />} label="Устройства" onClick={() => toggle('devices')} />}
+        </div>
+
+        {open === 'balance' && <BalanceSection />}
+        {open === 'renew' && s && <RenewSection autopayEnabled={s.autopayEnabled} />}
+        {open === 'devices' && s && <DevicesSection deviceLimit={s.deviceLimit} />}
+
         {s && (
           <Button variant="ghost" size="sm" className="self-start" loading={importing}
             onClick={() => { setImporting(true); void autoImport().finally(() => setImporting(false)) }}>
@@ -255,6 +274,150 @@ function CabinetStatusCard() {
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+function TabButton({ active, icon, label, onClick }: { active: boolean; icon: React.ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick}
+      className={cn(
+        'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors',
+        active ? 'bg-accent/12 text-accent' : 'bg-bg-secondary text-text-muted hover:text-text-secondary',
+      )}>
+      {icon}{label}
+    </button>
+  )
+}
+
+// ── Balance + transactions ────────────────────────────────────────────────────
+
+function BalanceSection() {
+  const { data: page, isLoading } = useCabinetTransactions(true)
+  const { data: me } = useCabinetMe(true)
+
+  return (
+    <div className="rounded-md border border-border bg-bg-secondary/40 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-text-secondary">Текущий баланс</span>
+        <span className="text-[13px] font-semibold text-text-primary">{(me?.balanceRubles ?? 0).toFixed(2)} ₽</span>
+      </div>
+      <p className="text-[11px] text-text-muted">Последние операции</p>
+      {isLoading ? <Spinner className="h-4 w-4" /> : (page?.items.length ? (
+        <div className="flex flex-col gap-1">
+          {page.items.slice(0, 6).map(t => (
+            <div key={t.id} className="flex items-center justify-between text-[11px]">
+              <span className="truncate text-text-muted">{t.description || t.type}</span>
+              <span className={cn('font-medium shrink-0 ml-2', t.amountRubles >= 0 ? 'text-connected' : 'text-text-secondary')}>
+                {t.amountRubles >= 0 ? '+' : ''}{t.amountRubles.toFixed(2)} ₽
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-[11px] text-text-muted">Операций пока нет.</p>)}
+    </div>
+  )
+}
+
+// ── Renewal + autopay ─────────────────────────────────────────────────────────
+
+function RenewSection({ autopayEnabled }: { autopayEnabled: boolean }) {
+  const { data: options, isLoading } = useCabinetRenewalOptions(true)
+  const { notify } = useUIStore()
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState<number | null>(null)
+  const [autopay, setAutopay] = useState(autopayEnabled)
+  const [autopayBusy, setAutopayBusy] = useState(false)
+
+  const doRenew = async (periodDays: number) => {
+    setBusy(periodDays)
+    try {
+      await cabinetApi.renew(periodDays)
+      await qc.invalidateQueries({ queryKey: ['cabinet'] })
+      notify({ type: 'success', title: 'Подписка продлена', message: `+${periodDays} дней` })
+    } catch (e) {
+      notify({ type: 'error', title: 'Не удалось продлить', message: e instanceof Error ? e.message : 'Ошибка' })
+    } finally { setBusy(null) }
+  }
+
+  const toggleAutopay = async (v: boolean) => {
+    setAutopayBusy(true); setAutopay(v)
+    try {
+      await cabinetApi.setAutopay(v)
+      notify({ type: 'success', title: 'Автопродление', message: v ? 'Включено' : 'Выключено' })
+    } catch (e) {
+      setAutopay(!v)
+      notify({ type: 'error', title: 'Ошибка', message: e instanceof Error ? e.message : 'Не удалось изменить' })
+    } finally { setAutopayBusy(false) }
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-bg-secondary/40 flex flex-col">
+      <ToggleRow label="Автопродление" sub="Списывать с баланса перед окончанием"
+        value={autopay} onChange={toggleAutopay} loading={autopayBusy} />
+      <div className="px-3 pb-3 flex flex-col gap-2">
+        <p className="text-[11px] text-text-muted">Продлить с баланса кабинета:</p>
+        {isLoading ? <Spinner className="h-4 w-4" /> : (options?.length ? (
+          <div className="flex flex-wrap gap-2">
+            {options.map(o => (
+              <Button key={o.periodDays} variant="secondary" size="sm" loading={busy === o.periodDays}
+                onClick={() => void doRenew(o.periodDays)}>
+                {o.periodDays} дн. · {o.priceRubles.toFixed(0)} ₽
+                {o.discountPercent > 0 && <span className="ml-1 text-connected">−{o.discountPercent}%</span>}
+              </Button>
+            ))}
+          </div>
+        ) : <p className="text-[11px] text-text-muted">Нет доступных вариантов продления.</p>)}
+        <button
+          onClick={() => { try { window.open('https://cabinet.slave-apps.online', '_system') } catch { /* */ } }}
+          className="inline-flex items-center gap-1 self-start text-[11px] text-accent hover:opacity-80">
+          <ExternalLink className="h-3 w-3" /> Пополнить баланс в кабинете
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Devices ─────────────────────────────────────────────────────────────────
+
+function DevicesSection({ deviceLimit }: { deviceLimit: number }) {
+  const { data, isLoading, refetch } = useCabinetDevices(true)
+  const { notify } = useUIStore()
+  const [removing, setRemoving] = useState<string | null>(null)
+
+  const remove = async (hwid: string) => {
+    setRemoving(hwid)
+    try {
+      await cabinetApi.removeDevice(hwid)
+      await refetch()
+      notify({ type: 'success', title: 'Устройство отвязано', message: '' })
+    } catch (e) {
+      notify({ type: 'error', title: 'Не удалось отвязать', message: e instanceof Error ? e.message : 'Ошибка' })
+    } finally { setRemoving(null) }
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-bg-secondary/40 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[12px] text-text-secondary">Подключённые устройства</span>
+        <Badge tone="neutral">{data?.total ?? 0} / {deviceLimit}</Badge>
+      </div>
+      {isLoading ? <Spinner className="h-4 w-4" /> : (data?.devices.length ? (
+        <div className="flex flex-col gap-1.5">
+          {data.devices.map(d => (
+            <div key={d.hwid} className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[12px] text-text-primary truncate">{d.localName || d.deviceModel}</p>
+                <p className="text-[10px] text-text-muted truncate">{d.platform}</p>
+              </div>
+              <Button variant="ghost" size="icon-sm" title="Отвязать" loading={removing === d.hwid}
+                onClick={() => void remove(d.hwid)}>
+                <Trash2 className="h-3.5 w-3.5 text-error" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-[11px] text-text-muted">Нет активных устройств.</p>)}
     </div>
   )
 }
@@ -274,7 +437,7 @@ function SubLine({ s }: { s: CabinetSubscriptionInfo }) {
       </div>
       {s.trafficLimitGb > 0 && (
         <div className="h-1 w-full rounded-full bg-bg-tertiary overflow-hidden">
-          <div className={cn('h-full rounded-full', pct >= 90 ? 'bg-error' : pct >= 70 ? 'bg-warning' : 'bg-accent')} style={{ width: `${pct}%` }} />
+          <div className={cn('h-full rounded-full', pct >= 90 ? 'bg-error' : pct >= 70 ? 'bg-connecting' : 'bg-accent')} style={{ width: `${pct}%` }} />
         </div>
       )}
     </div>

@@ -52,9 +52,20 @@ export function createAndroidNetworkAdapter(): NetworkAdapter {
       const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
       if (isNative()) {
-        const fn = method === 'POST' ? CapacitorHttp.post : method === 'HEAD' ? CapacitorHttp.request : CapacitorHttp.get
-        const res = await (method === 'HEAD'
-          ? CapacitorHttp.request({ method: 'HEAD', url, headers, connectTimeout: timeout, readTimeout: timeout } as Parameters<typeof CapacitorHttp.request>[0])
+        // GET/POST keep their dedicated helpers; HEAD/PATCH/DELETE go through
+        // the generic request() with an explicit method.
+        const generic = method !== 'GET' && method !== 'POST'
+        const fn = method === 'POST' ? CapacitorHttp.post : CapacitorHttp.get
+        const res = await (generic
+          ? CapacitorHttp.request({
+              method,
+              url,
+              headers,
+              ...(opts.body !== undefined ? { data: opts.body } : {}),
+              connectTimeout: timeout,
+              readTimeout: timeout,
+              responseType: 'text',
+            } as Parameters<typeof CapacitorHttp.request>[0])
           : fn({
               url,
               headers,

@@ -19,6 +19,19 @@ export const CabinetLoginEmailSchema = z.object({
   password: z.string().min(1).max(256),
 })
 
+export const CabinetRemoveDeviceSchema = z.object({
+  hwid: z.string().min(1).max(256),
+})
+
+export const CabinetRenewSchema = z.object({
+  periodDays: z.number().int().positive().max(3650),
+})
+
+export const CabinetAutopaySchema = z.object({
+  enabled: z.boolean(),
+  daysBefore: z.number().int().min(0).max(30).optional(),
+})
+
 export const VpnSetModeSchema = z.object({
   mode: z.enum(['full', 'bypass', 'split', 'custom']),
 })

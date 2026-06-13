@@ -1,5 +1,8 @@
 import { IpcChannel } from '../../../shared/ipc/channels'
-import { CabinetLoginEmailSchema, CabinetPollSchema, EmptySchema } from '../../../shared/ipc/schemas'
+import {
+  CabinetLoginEmailSchema, CabinetPollSchema, EmptySchema,
+  CabinetRemoveDeviceSchema, CabinetRenewSchema, CabinetAutopaySchema,
+} from '../../../shared/ipc/schemas'
 import { errResult, okResult, type IpcResult } from '../../../shared/ipc/types'
 import type {
   CabinetUserInfo,
@@ -111,6 +114,44 @@ export function registerCabinetHandlers(): void {
   handleIpc(IpcChannel.CABINET_IMPORT_SUBSCRIPTION, EmptySchema, async () => {
     try {
       return okResult(await svc().importSubscription())
+    } catch (e) { return toErr(e) }
+  })
+
+  // Account extras — core types are already renderer-safe (no subscription URL).
+  handleIpc(IpcChannel.CABINET_GET_BALANCE, EmptySchema, async () => {
+    try { return okResult(await svc().getClient().getBalance()) } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_GET_TRANSACTIONS, EmptySchema, async () => {
+    try { return okResult(await svc().getClient().getTransactions()) } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_GET_DEVICES, EmptySchema, async () => {
+    try { return okResult(await svc().getClient().getDevices()) } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_REMOVE_DEVICE, CabinetRemoveDeviceSchema, async (data) => {
+    try {
+      await svc().getClient().removeDevice(data.hwid)
+      return okResult(undefined)
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_GET_RENEWAL_OPTIONS, EmptySchema, async () => {
+    try { return okResult(await svc().getClient().getRenewalOptions()) } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_RENEW, CabinetRenewSchema, async (data) => {
+    try {
+      await svc().getClient().renewSubscription(data.periodDays)
+      return okResult(undefined)
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_SET_AUTOPAY, CabinetAutopaySchema, async (data) => {
+    try {
+      await svc().getClient().setAutopay(data.enabled, data.daysBefore)
+      return okResult(undefined)
     } catch (e) { return toErr(e) }
   })
 

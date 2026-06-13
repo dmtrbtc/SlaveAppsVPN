@@ -3,10 +3,15 @@ import type { StorageAdapter } from '../adapters/StorageAdapter.js'
 import {
   CabinetError,
   type CabinetDeepLink,
+  type CabinetDevice,
+  type CabinetDeviceList,
   type CabinetPollResult,
+  type CabinetRenewalOption,
   type CabinetSubscription,
   type CabinetSubscriptionStatus,
   type CabinetTokens,
+  type CabinetTransaction,
+  type CabinetTransactionPage,
   type CabinetUser,
 } from './types.js'
 
@@ -148,6 +153,77 @@ export class CabinetClient {
     return status.subscription?.subscriptionUrl ?? null
   }
 
+  // ── Account extras (balance / devices / renewal) ─────────────────────────
+
+  async getBalance(): Promise<{ balanceKopeks: number; balanceRubles: number }> {
+    const res = await this.authed('GET', '/cabinet/balance')
+    const d = this.parse<{ balance_kopeks: number; balance_rubles: number }>(res.body)
+    return { balanceKopeks: Number(d.balance_kopeks ?? 0), balanceRubles: Number(d.balance_rubles ?? 0) }
+  }
+
+  async getTransactions(page = 1, perPage = 20): Promise<CabinetTransactionPage> {
+    const res = await this.authed('GET', `/cabinet/balance/transactions?page=${page}&per_page=${perPage}`)
+    const d = this.parse<{ items: Record<string, unknown>[]; total: number; page: number; pages: number }>(res.body)
+    return {
+      items: (d.items ?? []).map((t): CabinetTransaction => ({
+        id: Number(t.id),
+        type: (t.type as string) ?? '',
+        amountKopeks: Number(t.amount_kopeks ?? 0),
+        amountRubles: Number(t.amount_rubles ?? 0),
+        description: (t.description as string) ?? null,
+        paymentMethod: (t.payment_method as string) ?? null,
+        isCompleted: !!t.is_completed,
+        createdAt: (t.created_at as string) ?? '',
+      })),
+      total: Number(d.total ?? 0),
+      page: Number(d.page ?? 1),
+      pages: Number(d.pages ?? 1),
+    }
+  }
+
+  async getDevices(): Promise<CabinetDeviceList> {
+    const res = await this.authed('GET', '/cabinet/subscription/devices')
+    const d = this.parse<{ devices?: Record<string, unknown>[]; total?: number; device_limit?: number }>(res.body)
+    return {
+      devices: (d.devices ?? []).map((x): CabinetDevice => ({
+        hwid: String(x.hwid ?? ''),
+        platform: (x.platform as string) ?? 'Unknown',
+        deviceModel: (x.device_model as string) ?? 'Unknown',
+        localName: (x.local_name as string) ?? null,
+      })),
+      total: Number(d.total ?? 0),
+      deviceLimit: Number(d.device_limit ?? 0),
+    }
+  }
+
+  async removeDevice(hwid: string): Promise<void> {
+    await this.authed('DELETE', `/cabinet/subscription/devices/${encodeURIComponent(hwid)}`)
+  }
+
+  async getRenewalOptions(): Promise<CabinetRenewalOption[]> {
+    const res = await this.authed('GET', '/cabinet/subscription/renewal-options')
+    const arr = this.parse<Record<string, unknown>[]>(res.body)
+    return (Array.isArray(arr) ? arr : []).map((x): CabinetRenewalOption => ({
+      periodDays: Number(x.period_days ?? 0),
+      priceKopeks: Number(x.price_kopeks ?? 0),
+      priceRubles: Number(x.price_rubles ?? 0),
+      discountPercent: Number(x.discount_percent ?? 0),
+      originalPriceKopeks: x.original_price_kopeks == null ? null : Number(x.original_price_kopeks),
+    }))
+  }
+
+  /** Renew from the cabinet balance. Throws SERVER with the API detail (e.g. insufficient funds). */
+  async renewSubscription(periodDays: number): Promise<void> {
+    await this.authed('POST', '/cabinet/subscription/renew', { period_days: periodDays })
+  }
+
+  async setAutopay(enabled: boolean, daysBefore?: number): Promise<void> {
+    await this.authed('PATCH', '/cabinet/subscription/autopay', {
+      enabled,
+      ...(daysBefore != null ? { days_before: daysBefore } : {}),
+    })
+  }
+
   async logout(): Promise<void> {
     try {
       const tokens = await this.getTokens()
@@ -162,24 +238,31 @@ export class CabinetClient {
 
   // ── Internals ────────────────────────────────────────────────────────────
 
-  /** GET with bearer + single transparent refresh-on-401. */
-  private async authedGet(path: string) {
+  /** Authenticated request with bearer + single transparent refresh-on-401. */
+  private async authed(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown) {
     let tokens = await this.getTokens()
     if (!tokens?.accessToken) throw new CabinetError('NOT_AUTHENTICATED', 'Нет активной сессии')
 
-    let res = await this.get(path, tokens.accessToken)
+    let res = await this.request(method, path, body, tokens.accessToken)
     if (res.status === 401) {
       tokens = await this.refresh()
-      res = await this.get(path, tokens.accessToken)
+      res = await this.request(method, path, body, tokens.accessToken)
     }
     if (res.status === 401 || res.status === 403) {
       await this.clearTokens()
       throw new CabinetError('AUTH_EXPIRED', 'Сессия истекла, войдите снова')
     }
     if (res.status < 200 || res.status >= 300) {
-      throw new CabinetError('SERVER', `GET ${path} failed (HTTP ${res.status})`)
+      // Surface the API's human-readable detail when present (e.g. «Недостаточно средств»).
+      let detail = ''
+      try { detail = String((JSON.parse(res.body) as { detail?: unknown }).detail ?? '') } catch { /* not JSON */ }
+      throw new CabinetError('SERVER', detail || `${method} ${path} failed (HTTP ${res.status})`)
     }
     return res
+  }
+
+  private async authedGet(path: string) {
+    return this.authed('GET', path)
   }
 
   private async refresh(): Promise<CabinetTokens> {
@@ -217,21 +300,17 @@ export class CabinetClient {
     return { accessToken: access, refreshToken: refresh ?? '', expiresAt: Date.now() + ttl }
   }
 
-  private async get(path: string, accessToken?: string) {
+  private async request(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown, accessToken?: string) {
     return this.net.fetch(this.base + path, {
-      method: 'GET',
+      method,
       headers: this.headers(accessToken),
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body ?? {}) }),
       timeoutMs: 15_000,
     })
   }
 
   private async post(path: string, body: unknown, accessToken?: string) {
-    return this.net.fetch(this.base + path, {
-      method: 'POST',
-      headers: this.headers(accessToken),
-      body: JSON.stringify(body ?? {}),
-      timeoutMs: 15_000,
-    })
+    return this.request('POST', path, body, accessToken)
   }
 
   private headers(accessToken?: string): Record<string, string> {

@@ -8,4 +8,9 @@ export {
   type CabinetDeepLink,
   type CabinetPollResult,
   type CabinetErrorCode,
+  type CabinetTransaction,
+  type CabinetTransactionPage,
+  type CabinetDevice,
+  type CabinetDeviceList,
+  type CabinetRenewalOption,
 } from './types.js'

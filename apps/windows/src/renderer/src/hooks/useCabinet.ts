@@ -67,3 +67,35 @@ export function useCabinetImportSubscription() {
     mutationFn: () => cabinetApi.importSubscription(),
   })
 }
+
+// ── Account extras (balance / devices / renewal) ─────────────────────────────
+
+export function useCabinetTransactions(enabled: boolean) {
+  return useQuery({
+    queryKey: ['cabinet', 'transactions'] as const,
+    queryFn: () => cabinetApi.getTransactions(),
+    enabled,
+    staleTime: 30_000,
+    retry: 0,
+  })
+}
+
+export function useCabinetDevices(enabled: boolean) {
+  return useQuery({
+    queryKey: ['cabinet', 'devices'] as const,
+    queryFn: () => cabinetApi.getDevices(),
+    enabled,
+    staleTime: 30_000,
+    retry: 0,
+  })
+}
+
+export function useCabinetRenewalOptions(enabled: boolean) {
+  return useQuery({
+    queryKey: ['cabinet', 'renewal-options'] as const,
+    queryFn: () => cabinetApi.getRenewalOptions(),
+    enabled,
+    staleTime: 60_000,
+    retry: 0,
+  })
+}

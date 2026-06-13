@@ -79,6 +79,50 @@ export type CabinetPollResult =
   | { status: 'confirmed'; user: CabinetUser }
   | { status: 'expired' }
 
+/** One balance transaction (mapped from TransactionResponse). */
+export interface CabinetTransaction {
+  id: number
+  /** 'deposit' | 'withdrawal' | … server-defined. */
+  type: string
+  amountKopeks: number
+  amountRubles: number
+  description: string | null
+  paymentMethod: string | null
+  isCompleted: boolean
+  createdAt: string
+}
+
+export interface CabinetTransactionPage {
+  items: CabinetTransaction[]
+  total: number
+  page: number
+  pages: number
+}
+
+/** A connected device (HWID slot) of the subscription. */
+export interface CabinetDevice {
+  hwid: string
+  platform: string
+  deviceModel: string
+  /** User-set alias (falls back to platform/model when null). */
+  localName: string | null
+}
+
+export interface CabinetDeviceList {
+  devices: CabinetDevice[]
+  total: number
+  deviceLimit: number
+}
+
+/** A renewal period offer (mapped from RenewalOptionResponse). */
+export interface CabinetRenewalOption {
+  periodDays: number
+  priceKopeks: number
+  priceRubles: number
+  discountPercent: number
+  originalPriceKopeks: number | null
+}
+
 /** Discriminated error codes surfaced to the UI. */
 export type CabinetErrorCode =
   | 'AUTH_EXPIRED'      // tokens invalid and refresh failed → must re-login

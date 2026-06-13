@@ -42,6 +42,9 @@ import type {
   ServerLatencyPayload,
   CabinetPollPayload,
   CabinetLoginEmailPayload,
+  CabinetRemoveDevicePayload,
+  CabinetRenewPayload,
+  CabinetAutopayPayload,
 } from '../shared/ipc/types'
 // SafeMode types are embedded directly via bridge type
 import type { VPNStatus, TrafficStats, Subscription } from '@slave-vpn/shared'
@@ -89,6 +92,20 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.CABINET_GET_SUBSCRIPTION),
     importSubscription: () =>
       invoke(IpcChannel.CABINET_IMPORT_SUBSCRIPTION),
+    getBalance: () =>
+      invoke(IpcChannel.CABINET_GET_BALANCE),
+    getTransactions: () =>
+      invoke(IpcChannel.CABINET_GET_TRANSACTIONS),
+    getDevices: () =>
+      invoke(IpcChannel.CABINET_GET_DEVICES),
+    removeDevice: (payload: CabinetRemoveDevicePayload) =>
+      invoke(IpcChannel.CABINET_REMOVE_DEVICE, payload),
+    getRenewalOptions: () =>
+      invoke(IpcChannel.CABINET_GET_RENEWAL_OPTIONS),
+    renew: (payload: CabinetRenewPayload) =>
+      invoke(IpcChannel.CABINET_RENEW, payload),
+    setAutopay: (payload: CabinetAutopayPayload) =>
+      invoke(IpcChannel.CABINET_SET_AUTOPAY, payload),
     logout: () =>
       invoke(IpcChannel.CABINET_LOGOUT),
   },
