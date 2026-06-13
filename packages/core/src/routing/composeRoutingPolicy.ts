@@ -5,6 +5,7 @@ import {
   type NormalizedPolicy,
   type ScenarioId,
 } from '@slave-vpn/routing'
+import type { VPNMode } from '@slave-vpn/shared'
 
 export interface ComposeRoutingResult {
   /** Engine-ready normalized policy, or null when nothing valid is enabled. */
@@ -55,4 +56,42 @@ export function composeRoutingPolicy(enabledIds: readonly string[]): ComposeRout
   }
 
   return { policy: result.policy, warnings, valid: true, errors: [] }
+}
+
+// ─── Mode → routing policy ─────────────────────────────────────────────────────
+// The VPN MODE is the master routing control; scenarios are the detail layer used
+// only in 'custom'. This resolves which policy (if any) the engine should use:
+//
+//   full   → null  → engine emits the legacy full-tunnel rules (MATCH→proxy);
+//                    EVERYTHING (incl. RU) goes through the VPN.
+//   split  → null  → engine emits the legacy split rules (only selected
+//                    processes/apps through the VPN, MATCH→DIRECT).
+//   bypass → roscomvpn-default → RU services/banks/sites DIRECT (geoip:RU +
+//                    geosite:category-ru), and EVERYTHING ELSE (blocked-in-RU and
+//                    foreign) through the VPN (defaultAction=proxy). The default
+//                    daily mode for RU. (NOT smart-russia-bypass, whose
+//                    defaultAction is DIRECT — that would send foreign traffic
+//                    direct, the opposite of what's wanted here.)
+//   custom → the user's enabled scenarios from the Маршруты tab.
+//
+// Before this, a composed scenario policy ALWAYS won over the vpnMode rules
+// (ConfigGenerator), so the Полный/Раздельный buttons were dead and traffic
+// followed whatever scenario was active. Now the mode decides.
+const BYPASS_SCENARIOS: readonly ScenarioId[] = ['roscomvpn-default']
+
+export function resolveRoutingPolicyForMode(
+  mode: VPNMode,
+  enabledScenarios: readonly string[],
+): ComposeRoutingResult {
+  switch (mode) {
+    case 'full':
+    case 'split':
+      // No scenario policy — the engine's legacy vpnMode rules drive it.
+      return { policy: null, warnings: [], valid: true, errors: [] }
+    case 'bypass':
+      return composeRoutingPolicy(BYPASS_SCENARIOS)
+    case 'custom':
+    default:
+      return composeRoutingPolicy(enabledScenarios)
+  }
 }

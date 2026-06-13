@@ -5,7 +5,7 @@ import {
   type GeneratorSettings,
 } from '@slave-vpn/config'
 import { buildAndroidDnsProfile } from '@slave-vpn/dns'
-import { composeRoutingPolicy } from '@slave-vpn/core'
+import { resolveRoutingPolicyForMode } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
 import { resolveDohUrl, getRuleLists } from './runtime-settings'
@@ -78,8 +78,21 @@ export async function compileMihomoConfigForAndroid(
   // the composition fails validation) `policy` is null and we fall back to the
   // androidRouting rules below. availableGeoSites lets the generator drop GEOSITE
   // rules for categories the native dat lacks (mihomo fatals otherwise).
+  // The VPN mode is the master routing control (same as Windows): full/split →
+  // null policy (fall through to androidRouting below), bypass → Smart-Russia,
+  // custom → the user's enabled scenarios. Before this, scenarios always won and
+  // the Полный/Раздельный selection did nothing.
   const enabledScenarios = androidSettings().enabledScenarios
-  const composed = composeRoutingPolicy(enabledScenarios)
+  const composed = resolveRoutingPolicyForMode(options.vpnMode, enabledScenarios)
+
+  // When no scenario policy applies (full/split), the androidRouting mode drives
+  // the rules: full/split → 'global' (everything in the tunnel goes via VPN; on
+  // Android the native VpnService decides WHICH apps enter the tunnel for split),
+  // custom-without-scenarios → the explicit routingMode (default smart).
+  const androidMode: AndroidRoutingModeOption =
+    options.vpnMode === 'full' || options.vpnMode === 'split'
+      ? 'global'
+      : (options.routingMode ?? 'smart')
   // Cache-ONLY read — must NOT fetch the ~4MB geosite.dat here, or a cold first
   // connect blocks past the 15s IPC timeout («[IPC] request time out», works on
   // the 2nd try once warm). The startup prefetch fills the cache; [] is safe
@@ -117,7 +130,7 @@ export async function compileMihomoConfigForAndroid(
     ...(composed.policy ? { routingPolicy: composed.policy } : {}),
     ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
     androidRouting: {
-      mode: options.routingMode ?? 'smart',
+      mode: androidMode,
       nodeDomainSuffixes,
       geoEnabled: true,
       // User-managed rule lists (enabled only) → mihomo rule-providers.

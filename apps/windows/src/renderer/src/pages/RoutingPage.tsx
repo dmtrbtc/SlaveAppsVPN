@@ -33,27 +33,27 @@ const MODES: ModeOption[] = [
   {
     mode: 'bypass',
     Icon: Shield,
-    label: 'Обход блокировок',
-    description: 'Трафик к заблокированным сервисам через VPN, остальное — напрямую.',
+    label: 'Обход',
+    description: 'Российские сайты и банки — напрямую, всё остальное (включая заблокированное) — через VPN.',
     recommended: true,
   },
   {
     mode: 'full',
     Icon: Globe,
     label: 'Полный VPN',
-    description: 'Весь трафик через VPN. Максимальная анонимность.',
+    description: 'Весь трафик через VPN, включая российские сервисы. Максимальная анонимность.',
   },
   {
     mode: 'split',
     Icon: SplitSquareVertical,
     label: 'Раздельный туннель',
-    description: 'Только выбранные приложения идут через VPN.',
+    description: 'Через VPN идут только выбранные приложения, остальное — напрямую.',
   },
   {
     mode: 'custom',
     Icon: Settings2,
-    label: 'Кастомный',
-    description: 'Импорт правил, кастомные провайдеры, ручной приоритет.',
+    label: 'Свой',
+    description: 'Гибкая настройка сценариями маршрутизации (ниже).',
   },
 ]
 
@@ -657,8 +657,19 @@ export function RoutingPage() {
           })}
         </div>
 
-        {/* Routing scenarios (Karing-style recipes) */}
-        <ScenariosSection />
+        {/* Routing scenarios apply ONLY in the «Свой» mode — the other modes are
+            fixed presets (full = all via VPN, bypass = RU-direct, split = per-app).
+            Showing the toggles outside custom would be misleading (they'd do
+            nothing). In other modes, a hint explains how to unlock them. */}
+        {status.mode === 'custom' ? (
+          <ScenariosSection />
+        ) : (
+          <div className="rounded-lg border border-border bg-bg-primary px-4 py-3 text-[11px] text-text-muted">
+            Сценарии маршрутизации (AI, стриминг, игры, RuNet Freedom…) доступны в режиме{' '}
+            <span className="text-text-secondary font-medium">«Свой»</span>. Текущий режим управляет
+            маршрутизацией сам.
+          </div>
+        )}
 
         {/* Split tunnel: visible whenever mode is 'split' */}
         {status.mode === 'split' && <SplitTunnelSection />}

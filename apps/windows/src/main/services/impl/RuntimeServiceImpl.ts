@@ -372,7 +372,10 @@ export class RuntimeServiceImpl implements RuntimeService {
   }
 
   private buildRoutingPolicyForEngine(): NormalizedPolicy | undefined {
-    const policy = getRoutingScenarioService().composePolicy()
+    // The VPN mode is the master routing control: full/split fall through to the
+    // engine's legacy vpnMode rules (policy undefined), bypass = Smart-Russia,
+    // custom = the user's enabled scenarios.
+    const policy = getRoutingScenarioService().composePolicyForMode(this.currentMode)
     return policy ?? undefined
   }
 

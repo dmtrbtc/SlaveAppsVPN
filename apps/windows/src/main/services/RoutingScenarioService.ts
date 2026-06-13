@@ -4,7 +4,8 @@ import {
   type ScenarioId,
   type ScenarioMetadata,
 } from '@slave-vpn/routing'
-import { composeRoutingPolicy } from '@slave-vpn/core'
+import { composeRoutingPolicy, resolveRoutingPolicyForMode } from '@slave-vpn/core'
+import type { VPNMode } from '@slave-vpn/shared'
 import { getSettingsStore } from './SettingsStore'
 import { getLogger } from '../logger'
 import type { RoutingScenarioInfo } from '../../shared/ipc/types'
@@ -27,6 +28,21 @@ export class RoutingScenarioService {
   // Returns null when nothing is enabled — caller falls back to vpnMode-based legacy rules.
   composePolicy(): NormalizedPolicy | null {
     const { policy, warnings, valid, errors } = composeRoutingPolicy(this.getEnabledIds())
+    this.logComposition(warnings, valid, errors)
+    return policy
+  }
+
+  // Mode-aware composition. The VPN mode is the master control: full/split use
+  // the engine's legacy vpnMode rules (policy=null), bypass = Smart-Russia,
+  // custom = the user's enabled scenarios. Fixes the "Полный VPN не работает,
+  // трафик идёт раздельно" bug where a scenario policy always overrode the mode.
+  composePolicyForMode(mode: VPNMode): NormalizedPolicy | null {
+    const { policy, warnings, valid, errors } = resolveRoutingPolicyForMode(mode, this.getEnabledIds())
+    this.logComposition(warnings, valid, errors)
+    return policy
+  }
+
+  private logComposition(warnings: string[], valid: boolean, errors: string[]): void {
     for (const w of warnings) {
       getLogger().warn({ warning: w }, 'Scenario composition warning')
     }
@@ -36,7 +52,6 @@ export class RoutingScenarioService {
         'Composed policy failed validation; falling back to legacy mode',
       )
     }
-    return policy
   }
 
   private getEnabledIds(): ScenarioId[] {
