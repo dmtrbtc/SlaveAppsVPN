@@ -68,6 +68,13 @@ nsis:
 
 portable:
   artifactName: SlaveAppsVPN-Portable-v${version}.${ext}
+  # The app exe manifest is requireAdministrator (WinTUN needs it). But
+  # electron-builder does NOT propagate win.requestedExecutionLevel to the
+  # portable SFX wrapper — it stays asInvoker, so the non-elevated wrapper can't
+  # launch the elevated inner exe and the app never starts (electron-builder
+  # #3156/#3738/#7566). The portable target has its OWN knob; set admin so the
+  # wrapper elevates up-front and runs the app in the same elevated context.
+  requestExecutionLevel: admin
 
 publish:
   provider: github
