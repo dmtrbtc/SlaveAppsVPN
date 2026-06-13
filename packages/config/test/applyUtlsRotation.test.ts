@@ -20,11 +20,40 @@ function reality(name: string, fp?: string): ParsedProxy {
   return p as unknown as ParsedProxy
 }
 
-test('rotation writes client-fingerprint and NO bare fingerprint (override always)', () => {
+function plainTls(name: string, fp?: string): ParsedProxy {
+  const p: Record<string, unknown> = {
+    name, type: 'vless', server: `${name}.example`, port: 443,
+    uuid: '00000000-0000-4000-8000-000000000000', tls: true, servername: `${name}.example`,
+  }
+  if (fp) p['client-fingerprint'] = fp
+  return p as unknown as ParsedProxy
+}
+
+test('REALITY never gets a randomized fingerprint — coerced to chrome (override always)', () => {
+  // randomized/random randomize the key_share group → mihomo REALITY logs
+  // "nil ecdheKey" and every dial fails. Must coerce to a deterministic X25519 fp.
   const out = applyUtlsRotation([reality('nl', 'edge')], { fingerprint: 'randomized', override: 'always' })
   const p = out[0] as unknown as Record<string, unknown>
-  assert.equal(p['client-fingerprint'], 'randomized')
+  assert.equal(p['client-fingerprint'], 'chrome')
   assert.equal('fingerprint' in p, false, 'must NOT emit a bare `fingerprint` (mihomo cert-pinning)')
+})
+
+test('REALITY with no fingerprint gets chrome even under when-missing default (the friend bug)', () => {
+  const out = applyUtlsRotation([reality('orel')], { fingerprint: 'randomized', override: 'when-missing-or-chrome' })
+  const p = out[0] as unknown as Record<string, unknown>
+  assert.equal(p['client-fingerprint'], 'chrome')
+})
+
+test('non-REALITY proxy still receives the randomized fingerprint', () => {
+  const out = applyUtlsRotation([plainTls('de')], { fingerprint: 'randomized', override: 'when-missing-or-chrome' })
+  const p = out[0] as unknown as Record<string, unknown>
+  assert.equal(p['client-fingerprint'], 'randomized')
+})
+
+test('REALITY honours an explicit deterministic user fingerprint (firefox kept)', () => {
+  const out = applyUtlsRotation([reality('nl')], { fingerprint: 'firefox', override: 'always' })
+  const p = out[0] as unknown as Record<string, unknown>
+  assert.equal(p['client-fingerprint'], 'firefox')
 })
 
 test('rotation strips a pre-existing bare fingerprint when it rewrites', () => {
@@ -33,7 +62,7 @@ test('rotation strips a pre-existing bare fingerprint when it rewrites', () => {
   const out = applyUtlsRotation([node as unknown as ParsedProxy], { fingerprint: 'randomized', override: 'always' })
   const p = out[0] as unknown as Record<string, unknown>
   assert.equal('fingerprint' in p, false)
-  assert.equal(p['client-fingerprint'], 'randomized')
+  assert.equal(p['client-fingerprint'], 'chrome') // reality → coerced
 })
 
 test('when-missing-or-chrome preserves a provider-set client-fingerprint and still no bare fingerprint', () => {
