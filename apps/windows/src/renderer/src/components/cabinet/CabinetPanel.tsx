@@ -176,23 +176,70 @@ function CabinetLoginCard() {
   )
 }
 
+type EmailMode = 'login' | 'register' | 'forgot'
+
 function EmailLoginForm({ onSuccess }: { onSuccess: () => Promise<void> }) {
+  const { notify } = useUIStore()
   const login = useCabinetEmailLogin()
+  const [mode, setMode] = useState<EmailMode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | undefined>()
 
-  const submit = (e: React.FormEvent) => {
+  const reset = (m: EmailMode) => { setMode(m); setErr(undefined) }
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault()
-    login.mutate({ email: email.trim(), password }, {
-      onSuccess: () => { void onSuccess() },
-    })
+    setErr(undefined)
+    const mail = email.trim()
+
+    if (mode === 'forgot') {
+      setBusy(true)
+      try {
+        await cabinetApi.passwordForgot(mail)
+        notify({ type: 'success', title: 'Письмо отправлено', message: 'Проверьте почту и перейдите по ссылке для сброса' })
+        reset('login')
+      } catch (e2) { setErr(e2 instanceof Error ? e2.message : 'Ошибка') }
+      finally { setBusy(false) }
+      return
+    }
+
+    if (mode === 'register') {
+      if (password.length < 8) { setErr('Пароль не короче 8 символов'); return }
+      setBusy(true)
+      try {
+        const r = await cabinetApi.register(mail, password, name.trim() || undefined)
+        if (r.requiresVerification) {
+          notify({ type: 'info', title: 'Подтвердите email', message: 'Письмо отправлено — перейдите по ссылке, затем войдите' })
+          reset('login')
+        } else {
+          // Verification not required on this server → log in immediately.
+          await login.mutateAsync({ email: mail, password })
+          await onSuccess()
+        }
+      } catch (e2) {
+        setErr((e2 as Error & { code?: string }).code === 'INVALID_CREDENTIALS'
+          ? (e2 as Error).message
+          : (e2 instanceof Error ? e2.message : 'Ошибка регистрации'))
+      } finally { setBusy(false) }
+      return
+    }
+
+    // login
+    setBusy(true)
+    try {
+      await login.mutateAsync({ email: mail, password })
+      await onSuccess()
+    } catch (e2) {
+      setErr((e2 as Error & { code?: string }).code === 'INVALID_CREDENTIALS'
+        ? 'Неверный email или пароль'
+        : (e2 instanceof Error ? e2.message : 'Ошибка'))
+    } finally { setBusy(false) }
   }
 
-  const errMsg = login.isError
-    ? ((login.error as Error & { code?: string }).code === 'INVALID_CREDENTIALS'
-        ? 'Неверный email или пароль'
-        : (login.error as Error).message)
-    : undefined
+  const cta = mode === 'register' ? 'Зарегистрироваться' : mode === 'forgot' ? 'Отправить ссылку' : 'Войти'
 
   return (
     <form className="flex flex-col gap-2 pt-1" onSubmit={submit}>
@@ -200,15 +247,32 @@ function EmailLoginForm({ onSuccess }: { onSuccess: () => Promise<void> }) {
         type="email" placeholder="Email" icon={<Mail className="h-3.5 w-3.5" />}
         value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email"
       />
-      <Input
-        type="password" placeholder="Пароль"
-        value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password"
-        {...(errMsg ? { error: errMsg } : {})}
-      />
-      <Button type="submit" variant="secondary" size="sm" loading={login.isPending} className="self-start"
-        disabled={!email.trim() || !password}>
-        Войти
+      {mode === 'register' && (
+        <Input
+          type="text" placeholder="Имя (необязательно)"
+          value={name} onChange={(e) => setName(e.target.value)} autoComplete="given-name"
+        />
+      )}
+      {mode !== 'forgot' && (
+        <Input
+          type="password" placeholder={mode === 'register' ? 'Пароль (от 8 символов)' : 'Пароль'}
+          value={password} onChange={(e) => setPassword(e.target.value)}
+          autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+          {...(err ? { error: err } : {})}
+        />
+      )}
+      {mode === 'forgot' && err && <p className="text-[11px] text-error">{err}</p>}
+
+      <Button type="submit" variant="secondary" size="sm" loading={busy} className="self-start"
+        disabled={!email.trim() || (mode !== 'forgot' && !password)}>
+        {cta}
       </Button>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted pt-0.5">
+        {mode !== 'login' && <button type="button" className="hover:text-text-secondary" onClick={() => reset('login')}>Уже есть аккаунт — войти</button>}
+        {mode !== 'register' && <button type="button" className="hover:text-text-secondary" onClick={() => reset('register')}>Регистрация</button>}
+        {mode !== 'forgot' && <button type="button" className="hover:text-text-secondary" onClick={() => reset('forgot')}>Забыли пароль?</button>}
+      </div>
     </form>
   )
 }

@@ -975,6 +975,14 @@ export function installAndroidBridge(): void {
       }),
       loginEmail: (payload: { email: string; password: string }) =>
         wrapCabinet(async () => cabUserInfo(await cabinetClient().loginEmail(payload.email, payload.password))),
+      register: (payload: { email: string; password: string; firstName?: string }) =>
+        wrapCabinet(() => cabinetClient().registerStandalone(payload.email, payload.password, payload.firstName)),
+      verifyEmail: (payload: { token: string }) =>
+        wrapCabinet(async () => cabUserInfo(await cabinetClient().verifyEmail(payload.token))),
+      passwordForgot: (payload: { email: string }) =>
+        wrapCabinet(() => cabinetClient().passwordForgot(payload.email)),
+      passwordReset: (payload: { token: string; password: string }) =>
+        wrapCabinet(() => cabinetClient().passwordReset(payload.token, payload.password)),
       getMe: () => wrapCabinet(async () => cabUserInfo(await cabinetClient().getMe())),
       getSubscription: () => wrapCabinet(async () => {
         const st = await cabinetClient().getSubscriptionStatus()

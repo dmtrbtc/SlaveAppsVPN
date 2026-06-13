@@ -112,12 +112,53 @@ export class CabinetClient {
     return this.consumeAuthResponse(res.body)
   }
 
-  async registerEmail(email: string, password: string): Promise<void> {
-    const res = await this.post('/cabinet/auth/email/register', { email, password })
-    if (res.status < 200 || res.status >= 300) {
-      throw new CabinetError('SERVER', `email/register failed (HTTP ${res.status})`)
+  /**
+   * Register a brand-new account (no Telegram needed). Returns whether the
+   * server requires email verification before the account can be used. When it
+   * doesn't (this deployment), the caller can immediately loginEmail().
+   */
+  async registerStandalone(email: string, password: string, firstName?: string): Promise<{ requiresVerification: boolean }> {
+    const res = await this.post('/cabinet/auth/email/register/standalone', {
+      email,
+      password,
+      language: 'ru',
+      ...(firstName ? { first_name: firstName } : {}),
+    })
+    if (res.status >= 400 && res.status < 500) {
+      // Surface the server's reason: «email занят», «Disposable email…», слабый пароль.
+      let detail = ''
+      try { detail = String((JSON.parse(res.body) as { detail?: unknown }).detail ?? '') } catch { /* */ }
+      throw new CabinetError('INVALID_CREDENTIALS', detail || 'Не удалось зарегистрировать (проверьте email и пароль)')
     }
-    // Verification happens out-of-band (email link). Caller informs the user.
+    if (res.status < 200 || res.status >= 300) {
+      throw new CabinetError('SERVER', `register failed (HTTP ${res.status})`)
+    }
+    const d = this.parse<{ requires_verification?: boolean }>(res.body)
+    return { requiresVerification: !!d.requires_verification }
+  }
+
+  /** Verify an email via the token from the verification email link → logs in. */
+  async verifyEmail(token: string): Promise<CabinetUser> {
+    const res = await this.post('/cabinet/auth/email/verify', { token })
+    if (res.status < 200 || res.status >= 300) {
+      throw new CabinetError('SERVER', `verify failed (HTTP ${res.status})`)
+    }
+    return this.consumeAuthResponse(res.body)
+  }
+
+  /** Request a password-reset email. Always succeeds (no account enumeration). */
+  async passwordForgot(email: string): Promise<void> {
+    await this.post('/cabinet/auth/password/forgot', { email })
+  }
+
+  /** Reset the password using the token from the reset email link. */
+  async passwordReset(token: string, password: string): Promise<void> {
+    const res = await this.post('/cabinet/auth/password/reset', { token, password })
+    if (res.status < 200 || res.status >= 300) {
+      let detail = ''
+      try { detail = String((JSON.parse(res.body) as { detail?: unknown }).detail ?? '') } catch { /* */ }
+      throw new CabinetError('SERVER', detail || `reset failed (HTTP ${res.status})`)
+    }
   }
 
   // ── Authenticated reads ──────────────────────────────────────────────────

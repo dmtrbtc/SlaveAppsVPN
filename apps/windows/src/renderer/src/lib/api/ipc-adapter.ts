@@ -80,6 +80,14 @@ export const cabinetApi = {
     unwrap(requireBridge().cabinet.pollDeepLink({ token })),
   loginEmail: (email: string, password: string) =>
     unwrap(requireBridge().cabinet.loginEmail({ email, password })),
+  register: (email: string, password: string, firstName?: string) =>
+    unwrap(requireBridge().cabinet.register({ email, password, ...(firstName ? { firstName } : {}) })),
+  verifyEmail: (token: string) =>
+    unwrap(requireBridge().cabinet.verifyEmail({ token })),
+  passwordForgot: (email: string) =>
+    unwrap(requireBridge().cabinet.passwordForgot({ email })),
+  passwordReset: (token: string, password: string) =>
+    unwrap(requireBridge().cabinet.passwordReset({ token, password })),
   getMe: () =>
     unwrap(requireBridge().cabinet.getMe()),
   getSubscription: () =>

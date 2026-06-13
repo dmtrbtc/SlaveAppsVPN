@@ -11,6 +11,10 @@ export const IpcChannel = {
   CABINET_REQUEST_DEEPLINK: 'cabinet:requestDeepLink',
   CABINET_POLL_DEEPLINK: 'cabinet:pollDeepLink',
   CABINET_LOGIN_EMAIL: 'cabinet:loginEmail',
+  CABINET_REGISTER: 'cabinet:register',
+  CABINET_VERIFY_EMAIL: 'cabinet:verifyEmail',
+  CABINET_PASSWORD_FORGOT: 'cabinet:passwordForgot',
+  CABINET_PASSWORD_RESET: 'cabinet:passwordReset',
   CABINET_GET_ME: 'cabinet:getMe',
   CABINET_GET_SUBSCRIPTION: 'cabinet:getSubscription',
   CABINET_IMPORT_SUBSCRIPTION: 'cabinet:importSubscription',
@@ -174,6 +178,10 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'CABINET_REQUEST_DEEPLINK'
   | 'CABINET_POLL_DEEPLINK'
   | 'CABINET_LOGIN_EMAIL'
+  | 'CABINET_REGISTER'
+  | 'CABINET_VERIFY_EMAIL'
+  | 'CABINET_PASSWORD_FORGOT'
+  | 'CABINET_PASSWORD_RESET'
   | 'CABINET_GET_ME'
   | 'CABINET_GET_SUBSCRIPTION'
   | 'CABINET_IMPORT_SUBSCRIPTION'

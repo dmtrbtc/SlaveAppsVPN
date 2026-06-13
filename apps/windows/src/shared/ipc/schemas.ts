@@ -19,6 +19,25 @@ export const CabinetLoginEmailSchema = z.object({
   password: z.string().min(1).max(256),
 })
 
+export const CabinetRegisterSchema = z.object({
+  email: z.string().email().max(254),
+  password: z.string().min(8).max(256),
+  firstName: z.string().max(128).optional(),
+})
+
+export const CabinetVerifyEmailSchema = z.object({
+  token: z.string().min(1).max(2048),
+})
+
+export const CabinetPasswordForgotSchema = z.object({
+  email: z.string().email().max(254),
+})
+
+export const CabinetPasswordResetSchema = z.object({
+  token: z.string().min(1).max(2048),
+  password: z.string().min(8).max(256),
+})
+
 export const CabinetRemoveDeviceSchema = z.object({
   hwid: z.string().min(1).max(256),
 })

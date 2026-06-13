@@ -42,6 +42,10 @@ import type {
   ServerLatencyPayload,
   CabinetPollPayload,
   CabinetLoginEmailPayload,
+  CabinetRegisterPayload,
+  CabinetVerifyEmailPayload,
+  CabinetPasswordForgotPayload,
+  CabinetPasswordResetPayload,
   CabinetRemoveDevicePayload,
   CabinetRenewPayload,
   CabinetAutopayPayload,
@@ -86,6 +90,14 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.CABINET_POLL_DEEPLINK, payload),
     loginEmail: (payload: CabinetLoginEmailPayload) =>
       invoke(IpcChannel.CABINET_LOGIN_EMAIL, payload),
+    register: (payload: CabinetRegisterPayload) =>
+      invoke(IpcChannel.CABINET_REGISTER, payload),
+    verifyEmail: (payload: CabinetVerifyEmailPayload) =>
+      invoke(IpcChannel.CABINET_VERIFY_EMAIL, payload),
+    passwordForgot: (payload: CabinetPasswordForgotPayload) =>
+      invoke(IpcChannel.CABINET_PASSWORD_FORGOT, payload),
+    passwordReset: (payload: CabinetPasswordResetPayload) =>
+      invoke(IpcChannel.CABINET_PASSWORD_RESET, payload),
     getMe: () =>
       invoke(IpcChannel.CABINET_GET_ME),
     getSubscription: () =>

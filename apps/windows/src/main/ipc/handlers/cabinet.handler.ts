@@ -2,6 +2,8 @@ import { IpcChannel } from '../../../shared/ipc/channels'
 import {
   CabinetLoginEmailSchema, CabinetPollSchema, EmptySchema,
   CabinetRemoveDeviceSchema, CabinetRenewSchema, CabinetAutopaySchema,
+  CabinetRegisterSchema, CabinetVerifyEmailSchema,
+  CabinetPasswordForgotSchema, CabinetPasswordResetSchema,
 } from '../../../shared/ipc/schemas'
 import { errResult, okResult, type IpcResult } from '../../../shared/ipc/types'
 import type {
@@ -92,6 +94,32 @@ export function registerCabinetHandlers(): void {
     try {
       const user = await svc().getClient().loginEmail(data.email, data.password)
       return okResult(toUserInfo(user))
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_REGISTER, CabinetRegisterSchema, async (data) => {
+    try {
+      return okResult(await svc().getClient().registerStandalone(data.email, data.password, data.firstName))
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_VERIFY_EMAIL, CabinetVerifyEmailSchema, async (data) => {
+    try {
+      return okResult(toUserInfo(await svc().getClient().verifyEmail(data.token)))
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_PASSWORD_FORGOT, CabinetPasswordForgotSchema, async (data) => {
+    try {
+      await svc().getClient().passwordForgot(data.email)
+      return okResult(undefined)
+    } catch (e) { return toErr(e) }
+  })
+
+  handleIpc(IpcChannel.CABINET_PASSWORD_RESET, CabinetPasswordResetSchema, async (data) => {
+    try {
+      await svc().getClient().passwordReset(data.token, data.password)
+      return okResult(undefined)
     } catch (e) { return toErr(e) }
   })
 

@@ -141,6 +141,10 @@ export interface CabinetRenewalOptionInfo {
 
 export interface CabinetPollPayload { token: string }
 export interface CabinetLoginEmailPayload { email: string; password: string }
+export interface CabinetRegisterPayload { email: string; password: string; firstName?: string }
+export interface CabinetVerifyEmailPayload { token: string }
+export interface CabinetPasswordForgotPayload { email: string }
+export interface CabinetPasswordResetPayload { token: string; password: string }
 export interface CabinetRemoveDevicePayload { hwid: string }
 export interface CabinetRenewPayload { periodDays: number }
 export interface CabinetAutopayPayload { enabled: boolean; daysBefore?: number }
@@ -149,6 +153,10 @@ export type CabinetAuthStateResult = IpcResult<{ authenticated: boolean }>
 export type CabinetRequestDeepLinkResult = IpcResult<CabinetDeepLinkInfo>
 export type CabinetPollDeepLinkResult = IpcResult<CabinetPollOutcome>
 export type CabinetLoginEmailResult = IpcResult<CabinetUserInfo>
+export type CabinetRegisterResult = IpcResult<{ requiresVerification: boolean }>
+export type CabinetVerifyEmailResult = IpcResult<CabinetUserInfo>
+export type CabinetPasswordForgotResult = IpcResult<void>
+export type CabinetPasswordResetResult = IpcResult<void>
 export type CabinetGetMeResult = IpcResult<CabinetUserInfo>
 export type CabinetGetSubscriptionResult = IpcResult<CabinetSubscriptionStatusInfo>
 export type CabinetImportSubscriptionResult = IpcResult<{ imported: boolean }>
@@ -947,6 +955,10 @@ export interface SlaveVPNBridge {
     requestDeepLink: () => Promise<CabinetRequestDeepLinkResult>
     pollDeepLink: (payload: CabinetPollPayload) => Promise<CabinetPollDeepLinkResult>
     loginEmail: (payload: CabinetLoginEmailPayload) => Promise<CabinetLoginEmailResult>
+    register: (payload: CabinetRegisterPayload) => Promise<CabinetRegisterResult>
+    verifyEmail: (payload: CabinetVerifyEmailPayload) => Promise<CabinetVerifyEmailResult>
+    passwordForgot: (payload: CabinetPasswordForgotPayload) => Promise<CabinetPasswordForgotResult>
+    passwordReset: (payload: CabinetPasswordResetPayload) => Promise<CabinetPasswordResetResult>
     getMe: () => Promise<CabinetGetMeResult>
     getSubscription: () => Promise<CabinetGetSubscriptionResult>
     // Auto-import the cabinet's subscription URL as the active config source.
