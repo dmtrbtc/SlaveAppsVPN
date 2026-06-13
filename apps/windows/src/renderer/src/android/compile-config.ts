@@ -123,7 +123,14 @@ export async function compileMihomoConfigForAndroid(
     // Unified DNS (P2): the hardened Android DNS section now comes from the
     // shared DnsProfile/MihomoDnsCompiler path (same as Windows) instead of the
     // inline buildAndroidDnsSection. Verified byte-identical to the old output.
-    dnsProfile: buildAndroidDnsProfile({ dohUrl, nodeDomainSuffixes }),
+    // RU-direct DNS (resolve RU via a Russian resolver, keep direct) only when RU
+    // actually goes direct — i.e. «Обход»/«Свой». In «Полный»/«Раздельный» RU also
+    // tunnels, so resolve it via DoH (no plaintext RU DNS leak).
+    dnsProfile: buildAndroidDnsProfile({
+      dohUrl,
+      nodeDomainSuffixes,
+      ruDirectDns: options.vpnMode === 'bypass' || options.vpnMode === 'custom',
+    }),
     // Scenario rules WIN over androidRouting's smart/global/direct split (the
     // generator forces mode:'rule' when routingPolicy is present). geo / DNS /
     // node-domain anti-loop still come from androidRouting below.

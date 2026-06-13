@@ -8,18 +8,27 @@ const require = createRequire(import.meta.url)
 const { generateMihomoConfig } = require('../dist/cjs/index.js') as {
   generateMihomoConfig: (ctx: unknown) => string
 }
+const { buildAndroidDnsProfile } = require('@slave-vpn/dns') as {
+  buildAndroidDnsProfile: (opts: { dohUrl: string; nodeDomainSuffixes: string[]; ruDirectDns?: boolean }) => unknown
+}
 
 const SUB = `
 proxies:
   - { name: NL, type: vless, server: nl.example.online, port: 443, uuid: 00000000-0000-4000-8000-000000000000, tls: true, servername: nl.example.online, flow: xtls-rprx-vision, reality-opts: { public-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, short-id: 0123456789abcdef } }
 `.trim()
 
+// `smart` keeps RU-direct DNS (bypass); `global` is the full tunnel (no RU-direct).
 function gen(mode: 'smart' | 'global' | 'direct'): string {
   return generateMihomoConfig({
     subscriptionYaml: SUB,
     vpnMode: 'full',
     settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://cloudflare-dns.com/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
     apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
+    dnsProfile: buildAndroidDnsProfile({
+      dohUrl: 'https://cloudflare-dns.com/dns-query',
+      nodeDomainSuffixes: ['nl.example.online'],
+      ruDirectDns: mode === 'smart',
+    }),
     androidRouting: {
       mode,
       nodeDomainSuffixes: ['nl.example.online'],
@@ -53,13 +62,25 @@ test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plain
   assert.ok(Array.isArray(doc.dns['proxy-server-nameserver']))
 })
 
-test('smart mode: DNS nameserver-policy — RU TLDs direct + node domains resolved directly', () => {
+test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
   const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
   const policy = doc.dns['nameserver-policy'] as Record<string, unknown>
-  assert.deepEqual(policy['+.ru'], ['77.88.8.8', '8.8.8.8'], '+.ru → Yandex+Google direct')
-  assert.deepEqual(policy['+.рф'], ['77.88.8.8', '8.8.8.8'], '+.рф → Yandex+Google direct')
-  // node domain resolved directly (before tunnel) to real IPs
-  assert.deepEqual(policy['+.nl.example.online'], ['system', '8.8.8.8'], 'node domain → direct system/Google')
+  // RU domains → two Russian (Yandex) resolvers, both direct — NO foreign 8.8.8.8
+  // (it's a non-RU IP that respect-rules sent through the tunnel → cancelled DNS).
+  assert.deepEqual(policy['+.ru'], ['77.88.8.8', '77.88.8.1'], '+.ru → Russian resolvers only')
+  assert.deepEqual(policy['+.рф'], ['77.88.8.8', '77.88.8.1'], '+.рф → Russian resolvers only')
+  // node domain resolved directly (before tunnel) via the system resolver — a
+  // single resolver is emitted as a scalar, not a list.
+  assert.equal(policy['+.nl.example.online'], 'system', 'node domain → system resolver')
+})
+
+test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plaintext leak', () => {
+  const doc = require('js-yaml').load(gen('global')) as { dns: Record<string, unknown> }
+  const policy = (doc.dns['nameserver-policy'] ?? {}) as Record<string, unknown>
+  assert.equal(policy['+.ru'], undefined, 'no RU TLD policy in full tunnel')
+  assert.equal(policy['geosite:category-ru'], undefined, 'no category-ru policy in full tunnel')
+  const fakeFilter = (doc.dns['fake-ip-filter'] ?? []) as string[]
+  assert.ok(!fakeFilter.includes('+.ru'), '+.ru must NOT be fake-ip-excluded in full tunnel')
 })
 
 test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () => {
@@ -72,9 +93,12 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () =>
   assert.equal(auto!['interval'], 300)
 })
 
-test('global mode → mode:global + MATCH proxy; direct mode → mode:direct + MATCH direct', () => {
+test('global mode → clash mode:RULE (never global) + MATCH proxy; direct mode → mode:direct', () => {
+  // clash `mode: global` IGNORES the rule list and routes everything (incl. DNS,
+  // the local API, the proxy's own dial) through the undefined GLOBAL group →
+  // breaks the engine. The full-tunnel intent is the RULE list instead.
   const g = require('js-yaml').load(gen('global')) as { mode: string; rules: string[] }
-  assert.equal(g.mode, 'global')
+  assert.equal(g.mode, 'rule', 'full tunnel uses rule mode, NOT clash global')
   assert.equal(g.rules[g.rules.length - 1], 'MATCH,SLAVE-SELECT')
   const d = require('js-yaml').load(gen('direct')) as { mode: string; rules: string[] }
   assert.equal(d.mode, 'direct')

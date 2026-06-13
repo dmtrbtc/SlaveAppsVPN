@@ -17,24 +17,37 @@ import type { DnsProfile, DnsResolver, DnsRule } from './DnsProfile'
  *     → system; each node domain → system+Google so it resolves before the tunnel.
  */
 
-const RU_DIRECT_RESOLVERS = ['77.88.8.8', '8.8.8.8'] as const
-const NODE_DIRECT_RESOLVERS = ['system', '8.8.8.8'] as const
+// RU domains resolve via TWO Russian plaintext resolvers (both Yandex) so they
+// get RU-localised CDN IPs and stay DIRECT. Both are RU IPs → GeoIP(ru)→DIRECT,
+// so neither is routed through the proxy. (The old list mixed in Google 8.8.8.8,
+// a NON-RU IP that respect-rules sent through the tunnel → a parallel DNS dial
+// that the Yandex winner cancelled — "operation was canceled" log spam + leak.)
+const RU_DIRECT_RESOLVERS = ['77.88.8.8', '77.88.8.1'] as const
+const NODE_DIRECT_RESOLVERS = ['system'] as const
 
-// Mirrors the former buildAndroidDnsSection fake-ip-filter base (RU + node
-// suffixes are appended below). Distinct from the desktop DEFAULT_FAKE_IP_FILTER
-// — the mobile list is intentionally lean.
+// Local/captive-portal entries that must never get a fake-ip. The RU entries
+// (+.ru/+.рф/category-ru) are appended only when ruDirectDns is on (bypass/custom)
+// — in full/split EVERYTHING (incl. RU) tunnels, so RU domains should fake-ip and
+// resolve via DoH like the rest (no plaintext RU leak).
 const ANDROID_FAKE_IP_FILTER_BASE = [
   '*.lan', '*.local', '*.localdomain', '*.localhost', 'localhost',
   'time.*.com', 'ntp.*.com', '*.msftncsi.com', '*.msftconnecttest.com',
   'connectivitycheck.gstatic.com', 'captive.apple.com',
-  '+.ru', '+.рф', 'geosite:category-ru',
 ] as const
+
+const ANDROID_FAKE_IP_FILTER_RU = ['+.ru', '+.рф', 'geosite:category-ru'] as const
 
 export interface AndroidDnsProfileOptions {
   /** Chosen DoH endpoint (from the user's provider selector). */
   dohUrl: string
   /** Proxy node domains — excluded from fake-ip and resolved directly. */
   nodeDomainSuffixes: readonly string[]
+  /**
+   * Resolve RU domains via a Russian resolver and keep them on real IPs so they
+   * route DIRECT. On for «Обход»/«Свой»; OFF for «Полный»/«Раздельный», where RU
+   * also tunnels and must resolve via DoH (no plaintext RU DNS leak). Default on.
+   */
+  ruDirectDns?: boolean
 }
 
 export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfile {
@@ -48,10 +61,18 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
     { url: '77.88.8.8', type: 'udp' },
   ]
 
+  const ruDirectDns = opts.ruDirectDns ?? true
+
+  const ruRules: DnsRule[] = ruDirectDns
+    ? [
+        { id: 'ru-tld', matchType: 'domain_suffix', value: 'ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
+        { id: 'rf-tld', matchType: 'domain_suffix', value: 'рф', resolverTag: [...RU_DIRECT_RESOLVERS] },
+        { id: 'ru-geosite', matchType: 'geosite', value: 'category-ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
+      ]
+    : []
+
   const rules: DnsRule[] = [
-    { id: 'ru-tld', matchType: 'domain_suffix', value: 'ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
-    { id: 'rf-tld', matchType: 'domain_suffix', value: 'рф', resolverTag: [...RU_DIRECT_RESOLVERS] },
-    { id: 'ru-geosite', matchType: 'geosite', value: 'category-ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
+    ...ruRules,
     { id: 'private-geosite', matchType: 'geosite', value: 'private', resolverTag: 'system' },
     ...opts.nodeDomainSuffixes.map((s, i) => ({
       id: `node-${i}`,
@@ -72,7 +93,11 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
     fakeIp: {
       enabled: true,
       range: '198.18.0.1/16',
-      filter: [...ANDROID_FAKE_IP_FILTER_BASE, ...opts.nodeDomainSuffixes.map((s) => `+.${s}`)],
+      filter: [
+        ...ANDROID_FAKE_IP_FILTER_BASE,
+        ...(ruDirectDns ? ANDROID_FAKE_IP_FILTER_RU : []),
+        ...opts.nodeDomainSuffixes.map((s) => `+.${s}`),
+      ],
     },
     // respect-rules on (useSystemDns:false) but no fallback-filter (no fallback pool).
     leakPrevention: { enabled: false, useSystemDns: false },
