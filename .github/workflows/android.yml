@@ -86,6 +86,26 @@ jobs:
           mkdir -p android/app/src/main/java/com/slavevpn/plugin
           cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
 
+      - name: Apply Slave Apps brand launcher icons
+        working-directory: apps/android
+        run: |
+          set -e
+          RES=android/app/src/main/res
+          # Drop the Capacitor template's default ic_launcher set so brand assets
+          # overlay cleanly (no leftover vector foreground/background referencing
+          # a now-missing resource, no duplicate ic_launcher_background).
+          rm -f  $RES/mipmap-anydpi-v26/ic_launcher*.xml
+          rm -f  $RES/mipmap-*/ic_launcher*.png
+          rm -f  $RES/drawable*/ic_launcher_*.xml $RES/drawable*/ic_launcher_*.png
+          rm -f  $RES/values*/ic_launcher_background.xml
+          # Overlay the tracked brand resources (adaptive icon + all densities +
+          # monochrome for Android 13 themed icons + #100C1C background colour).
+          cp -r brand-res/mipmap-anydpi-v26 brand-res/mipmap-mdpi brand-res/mipmap-hdpi \
+                brand-res/mipmap-xhdpi brand-res/mipmap-xxhdpi brand-res/mipmap-xxxhdpi \
+                brand-res/values $RES/
+          echo "=== launcher icons applied ==="
+          ls -R $RES/mipmap-anydpi-v26 $RES/mipmap-xxxhdpi $RES/values | grep -i ic_launcher || true
+
       - name: Register SlaveVpnPlugin in MainActivity
         working-directory: apps/android
         run: |
