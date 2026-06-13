@@ -131,6 +131,32 @@ function notImplemented(name: string): () => Promise<IpcErr> {
   return async () => err('NOT_IMPLEMENTED', `${name} not implemented on Android`)
 }
 
+// Compile the current config and bring the native tunnel up. Shared by vpn.connect
+// and vpn.setMode (the latter recompiles + reconnects so a mode change applies to
+// the running tunnel).
+async function connectNative(): Promise<void> {
+  const perm = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
+  if (!perm.granted) {
+    const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
+    if (!requested.granted) throw new Error('Android VPN permission denied')
+  }
+  const compiled = await compileMihomoConfigForAndroid({
+    vpnMode: currentMode,
+    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+    utlsFingerprint: currentUtlsFingerprint,
+    routingMode: currentRoutingMode,
+  })
+  const s = androidSettings()
+  await SlaveVpn.connect({
+    config: compiled.config,
+    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+    vpnMode: currentMode,
+    // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
+    splitMode: s.splitTunnelMode ?? 'off',
+    splitApps: s.splitProcessList ?? [],
+  })
+}
+
 // ─── Personal cabinet ─────────────────────────────────────────────────────────
 // Same platform-agnostic CabinetClient as Windows, over the Android adapters
 // (CapacitorHttp = no CORS/UA loss; Capacitor Preferences for token storage).
@@ -467,34 +493,22 @@ export function installAndroidBridge(): void {
 
   const bridge = {
     vpn: {
-      connect: () => wrap(async () => {
-        // Make sure we have VPN permission before doing the heavy lifting.
-        const perm = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
-        if (!perm.granted) {
-          const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
-          if (!requested.granted) throw new Error('Android VPN permission denied')
-        }
-        const compiled = await compileMihomoConfigForAndroid({
-          vpnMode: currentMode,
-          ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-          utlsFingerprint: currentUtlsFingerprint,
-          routingMode: currentRoutingMode,
-        })
-        const s = androidSettings()
-        await SlaveVpn.connect({
-          config: compiled.config,
-          ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-          vpnMode: currentMode,
-          // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
-          splitMode: s.splitTunnelMode ?? 'off',
-          splitApps: s.splitProcessList ?? [],
-        })
-      }),
+      connect: () => wrap(connectNative),
       disconnect: () => wrap(() => SlaveVpn.disconnect()),
       getStatus: () => wrap(() => readNativeStatus()),
+      // Changing the mode must take effect on the RUNNING tunnel, not just on the
+      // next manual reconnect — otherwise picking «Полный» while connected does
+      // nothing (the old rule set keeps routing RU direct). Mihomo can't hot-swap
+      // the rule list via the native plugin, so recompile + reconnect.
       setMode: (payload: { mode: VPNMode }) => wrap(async () => {
         currentMode = payload.mode
         await SlaveVpn.setMode(payload).catch(() => undefined)
+        const st = await readNativeStatus().catch(() => null)
+        if (st && st.state === 'connected') {
+          await SlaveVpn.disconnect().catch(() => undefined)
+          await new Promise(r => setTimeout(r, 400))
+          await connectNative()
+        }
       }),
       getConnectivity: notImplemented('vpn.getConnectivity'),
       // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
