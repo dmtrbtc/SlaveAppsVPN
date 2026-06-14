@@ -158,6 +158,18 @@ async function connectNative(): Promise<void> {
   })
 }
 
+// Re-apply a config-affecting setting (mode, fingerprint, …) to the RUNNING
+// tunnel: mihomo can't hot-swap its config via the native plugin, so we recompile
+// and reconnect. No-op when disconnected (the change lands on the next connect).
+async function reconnectIfConnected(): Promise<void> {
+  const st = await readNativeStatus().catch(() => null)
+  if (st && st.state === 'connected') {
+    await SlaveVpn.disconnect().catch(() => undefined)
+    await new Promise(r => setTimeout(r, 400))
+    await connectNative()
+  }
+}
+
 // ─── Personal cabinet ─────────────────────────────────────────────────────────
 // Same platform-agnostic CabinetClient as Windows, over the Android adapters
 // (CapacitorHttp = no CORS/UA loss; Capacitor Preferences for token storage).
@@ -504,12 +516,7 @@ export function installAndroidBridge(): void {
       setMode: (payload: { mode: VPNMode }) => wrap(async () => {
         currentMode = payload.mode
         await SlaveVpn.setMode(payload).catch(() => undefined)
-        const st = await readNativeStatus().catch(() => null)
-        if (st && st.state === 'connected') {
-          await SlaveVpn.disconnect().catch(() => undefined)
-          await new Promise(r => setTimeout(r, 400))
-          await connectNative()
-        }
+        await reconnectIfConnected()
       }),
       getConnectivity: notImplemented('vpn.getConnectivity'),
       // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
@@ -832,12 +839,19 @@ export function installAndroidBridge(): void {
             currentMode = m
           }
         }
+        let fingerprintChanged = false
         if (typeof payload['utlsFingerprint'] === 'string') {
-          currentUtlsFingerprint = payload['utlsFingerprint'] as string
+          const next = payload['utlsFingerprint'] as string
+          fingerprintChanged = next !== currentUtlsFingerprint
+          currentUtlsFingerprint = next
           saveUtlsToLocalStorage(currentUtlsFingerprint)
         }
         // Persist the whole patch durably (dnsPreset/dnsStrategy/enabledScenarios/…).
         await patchAndroidSettings(payload as Partial<AppSettings>)
+        // The fingerprint is baked into the compiled config — re-apply it to the
+        // running tunnel so the change takes effect immediately (like setMode),
+        // not only on the next manual reconnect.
+        if (fingerprintChanged) await reconnectIfConnected()
       }),
     },
     provider: {

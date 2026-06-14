@@ -659,14 +659,14 @@ export function SettingsPage() {
                   onChange={(e) => {
                     const v = e.target.value as UtlsFingerprintName
                     updateSetting({ utlsFingerprint: v } as Partial<AppSettings>, {
-                      onSuccess: () => notify({ type: 'info', title: 'Отпечаток обновлён', message: `Применится при следующем подключении: ${v}` }),
+                      onSuccess: () => notify({ type: 'info', title: 'Отпечаток обновлён', message: `Применён: ${v} (если подключено — переподключаюсь)` }),
                       onError: () => notify({ type: 'error', title: 'Ошибка сохранения', message: 'Настройка не сохранена' }),
                     })
                   }}
                   disabled={isKeyPending('utlsFingerprint')}
                 >
-                  <option value="randomized">randomized — рекомендуется (рандомизация Client Hello каждое соединение)</option>
-                  <option value="random">random</option>
+                  <option value="randomized">randomized — рекомендуется (для REALITY → chrome)</option>
+                  <option value="random">random (для REALITY → chrome)</option>
                   <option value="chrome">chrome</option>
                   <option value="firefox">firefox</option>
                   <option value="safari">safari</option>
@@ -679,7 +679,13 @@ export function SettingsPage() {
                 <p className="text-[11px] text-text-muted">
                   Отпечаток TLS-клиента, под который подделывается uTLS. <b>randomized</b> ротирует Client Hello
                   на каждом хендшейке — баseline против behavioural-DPI ТСПУ (2026). Меняй на конкретный
-                  fingerprint только если канал ругается.
+                  fingerprint только если канал ругается. Изменение применяется сразу (переподключение).
+                </p>
+                <p className="text-[11px] text-text-muted">
+                  <b>REALITY-серверы:</b> <code>randomized</code>/<code>random</code> ломают REALITY (рандомный
+                  key_share → «nil ecdheKey»), поэтому для таких узлов автоматически используется{' '}
+                  <code>chrome</code>. Именованные отпечатки (<code>firefox</code>, <code>safari</code>,{' '}
+                  <code>edge</code>, <code>ios</code>, <code>android</code>) с REALITY работают и применяются как есть.
                 </p>
                 {isKeyPending('utlsFingerprint') && (
                   <p className="text-[11px] text-text-muted">Сохранение...</p>
