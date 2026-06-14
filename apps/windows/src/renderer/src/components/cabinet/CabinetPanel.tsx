@@ -18,6 +18,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useUIStore } from '../../stores/ui.store'
 import { useAuthStore } from '../../stores/auth.store'
 import { useSubscriptionsStore } from '../../stores/subscriptions.store'
+import { openExternalUrl } from '../../lib/external'
 import { cn } from '../../lib/utils'
 import type { CabinetSubscriptionInfo } from '@shared/ipc/types'
 
@@ -69,9 +70,9 @@ function tgScheme(bot: string, startParam: string): string {
   return `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(startParam)}`
 }
 
-function openExternal(url: string): void {
-  try { window.open(url, '_system') } catch { try { window.open(url, '_blank') } catch { /* ignore */ } }
-}
+// On Electron window.open is denied (setWindowOpenHandler) → openExternalUrl
+// routes https/tg links through the main process. Android keeps window.open.
+const openExternal = openExternalUrl
 
 function CabinetLoginCard() {
   const autoImport = useAutoImport()

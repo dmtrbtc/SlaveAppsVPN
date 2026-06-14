@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useNavigate } from 'react-router-dom'
 import {
   RefreshCw, Plus, Trash2, ToggleLeft, ToggleRight, X, Link as LinkIcon,
-  KeyRound, ScanLine, AlertCircle, Loader2, Edit3, Check,
+  KeyRound, ScanLine, AlertCircle, Loader2, Edit3, Check, CircleUser, ChevronRight,
 } from 'lucide-react'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
 import { ListSkeleton, EmptyState } from '../components/ui/states'
-import { CabinetPanel } from '../components/cabinet/CabinetPanel'
+import { useCabinetAuthState } from '../hooks/useCabinet'
 import { cn } from '../lib/utils'
 import { useSubscriptionsStore } from '../stores/subscriptions.store'
 import { useUIStore } from '../stores/ui.store'
@@ -17,6 +18,35 @@ import type {
   SubscriptionAutoUpdate,
   ConfigSourceType,
 } from '@shared/ipc/types'
+
+// ─── Cabinet pointer ──────────────────────────────────────────────────────────
+// The cabinet itself moved to the «Аккаунт» section; this is a one-tap shortcut
+// (and the only path to it on mobile, where the sidebar isn't shown). Shows
+// whether you're signed in.
+
+function CabinetPointer() {
+  const navigate = useNavigate()
+  const { data: authState } = useCabinetAuthState()
+  const authed = !!authState?.authenticated
+
+  return (
+    <button
+      onClick={() => navigate('/account')}
+      className="group flex w-full items-center gap-3 rounded-lg border border-border bg-bg-primary p-3 text-left transition-colors hover:border-border-strong"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/12">
+        <CircleUser className="h-4.5 w-4.5 text-accent" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-semibold text-text-primary">Личный кабинет</p>
+        <p className="text-[11px] text-text-muted">
+          {authed ? 'Подписка, баланс, устройства — в разделе «Аккаунт»' : 'Войдите — подписка добавится автоматически'}
+        </p>
+      </div>
+      <ChevronRight className="h-4 w-4 shrink-0 text-text-muted transition-colors group-hover:text-text-secondary" />
+    </button>
+  )
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -416,9 +446,10 @@ export function SubscriptionsPage() {
       </div>
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
-        {/* Personal cabinet — sign in here; the cabinet subscription imports
-            automatically after login. */}
-        <CabinetPanel />
+        {/* Cabinet lives in the «Аккаунт» section now — sign in there to
+            auto-import your subscription. Quick pointer (works on mobile too,
+            where the sidebar isn't shown). */}
+        <CabinetPointer />
 
         {loading && entries.length === 0 ? (
           <ListSkeleton rows={3} />

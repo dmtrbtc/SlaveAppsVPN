@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom'
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion'
 import {
   Shield, Globe, Route, Layers, Activity, Settings,
-  ChevronLeft, ChevronRight, ScanLine,
+  ChevronLeft, ChevronRight, ScanLine, CircleUser,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useUIStore } from '../../stores/ui.store'
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { to: '/dashboard', icon: Shield, label: 'Подключение' },
   { to: '/servers', icon: Globe, label: 'Серверы' },
   { to: '/subscriptions', icon: ScanLine, label: 'Подписки' },
+  { to: '/account', icon: CircleUser, label: 'Аккаунт' },
   { to: '/routing', icon: Route, label: 'Маршрутизация' },
   { to: '/dns', icon: Layers, label: 'DNS' },
   { to: '/diagnostics', icon: Activity, label: 'Диагностика' },

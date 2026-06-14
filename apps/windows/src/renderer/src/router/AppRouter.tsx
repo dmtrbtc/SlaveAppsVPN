@@ -8,6 +8,7 @@ import { DnsPage } from '../pages/DnsPage'
 import { DiagnosticsPage } from '../pages/DiagnosticsPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { SubscriptionsPage } from '../pages/SubscriptionsPage'
+import { AccountPage } from '../pages/AccountPage'
 import { CabinetPage } from '../pages/CabinetPage'
 import { useAuthStore } from '../stores/auth.store'
 
@@ -43,8 +44,9 @@ const router = createHashRouter([
       { path: '/routing', element: <RoutingPage /> },
       { path: '/dns', element: <DnsPage /> },
       { path: '/diagnostics', element: <DiagnosticsPage /> },
-      // Cabinet lives inside the Подписки tab now; keep the old path working.
-      { path: '/cabinet', element: <Navigate to="/subscriptions" replace /> },
+      { path: '/account', element: <AccountPage /> },
+      // Cabinet is now the «Аккаунт» section; keep the old path working.
+      { path: '/cabinet', element: <Navigate to="/account" replace /> },
       { path: '/settings', element: <SettingsPage /> },
     ],
   },
