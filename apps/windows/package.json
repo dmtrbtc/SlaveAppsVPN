@@ -1,6 +1,6 @@
 {
   "name": "@slave-vpn/windows",
-  "version": "0.2.9-dev.4",
+  "version": "0.2.9",
   "description": "SLAVE VPN — Windows desktop client",
   "author": {
     "name": "SLAVE VPN",
