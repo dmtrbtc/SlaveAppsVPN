@@ -268,8 +268,11 @@ export function DashboardPage() {
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6 flex flex-col gap-5">
 
-        {/* Hero row — orb + right column (stacks on narrow/mobile) */}
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:min-h-[260px]">
+        {/* Hero row — orb + right column (stacks on narrow/mobile). A DEFINITE
+            height (not min-h) on sm+ so the right card's h-full resolves and its
+            server list scrolls internally instead of growing past the card and
+            overlapping the stats row below. */}
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 sm:h-[320px]">
 
           {/* Left: Orb */}
           <div className="flex items-center justify-center">
@@ -291,7 +294,7 @@ export function DashboardPage() {
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.1, duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-            className="rounded-lg border border-border bg-bg-primary p-5"
+            className="rounded-lg border border-border bg-bg-primary p-5 h-full min-h-0 overflow-hidden"
           >
             <RightColumn />
           </motion.div>
