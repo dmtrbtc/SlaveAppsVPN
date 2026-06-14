@@ -1,24 +1,24 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { CabinetLoginCard } from '../components/cabinet/CabinetPanel'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Link2, Key, Shield, CheckCircle, AlertCircle, Mail, Lock, Send, Server,
+  Link2, Shield, CheckCircle, AlertCircle, Server,
   Zap, User, Check, ArrowRight,
 } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Input } from '../components/ui/input'
-import { Segmented } from '../components/ui/segmented'
 import { cn } from '../lib/utils'
 import { useAuthStore } from '../stores/auth.store'
 import { useConfigSourceStore } from '../stores/config-source.store'
-import { useUIStore } from '../stores/ui.store'
 import { TitleBar } from '../components/layout/TitleBar'
 import type { ConfigSourceValidateResult } from '@shared/ipc/types'
 
-type OnboardingTab = 'subscription-url' | 'single-proxy' | 'remnawave-key' | 'provider'
+type OnboardingTab = 'provider' | 'subscription-url' | 'single-proxy'
 
 // Aurora v1.1 onboarding — radio MethodCards (left column) instead of segmented.
+// Аккаунт SLAVE first (the recommended path — email/Telegram → auto-import).
 const METHODS: {
   id: OnboardingTab
   icon: React.ReactNode
@@ -26,17 +26,15 @@ const METHODS: {
   sub: string
   recommended?: boolean
 }[] = [
-  { id: 'subscription-url', icon: <Link2 className="h-4 w-4" />, title: 'Подписка-URL', sub: 'https-ссылка, авто-обновление нод', recommended: true },
+  { id: 'provider',         icon: <User className="h-4 w-4" />,  title: 'Аккаунт SLAVE', sub: 'вход по email или Telegram', recommended: true },
+  { id: 'subscription-url', icon: <Link2 className="h-4 w-4" />, title: 'Подписка-URL', sub: 'https-ссылка, авто-обновление нод' },
   { id: 'single-proxy',     icon: <Zap className="h-4 w-4" />,   title: 'Одиночная ссылка', sub: 'vless:// · vmess:// · trojan://' },
-  { id: 'remnawave-key',    icon: <Key className="h-4 w-4" />,   title: 'Ключ Remnawave', sub: 'короткий ключ доступа' },
-  { id: 'provider',         icon: <User className="h-4 w-4" />,  title: 'Аккаунт SLAVE', sub: 'вход по email или Telegram' },
 ]
 
 const METHOD_TITLE: Record<OnboardingTab, string> = {
+  'provider': 'Вход в аккаунт SLAVE',
   'subscription-url': 'Подписка-URL',
   'single-proxy': 'Одиночная ссылка',
-  'remnawave-key': 'Ключ Remnawave',
-  'provider': 'Вход в аккаунт',
 }
 
 function MethodCard({
@@ -76,13 +74,6 @@ function MethodCard({
     </button>
   )
 }
-
-type AuthTab = 'email' | 'telegram'
-
-const AUTH_TAB_OPTIONS: { value: AuthTab; label: string }[] = [
-  { value: 'email',    label: 'Email' },
-  { value: 'telegram', label: 'Telegram' },
-]
 
 const PROTOCOL_TONE: Record<string, 'ok' | 'warn' | 'neutral'> = {
   reality: 'ok',
@@ -298,197 +289,18 @@ function SingleProxyTab({ onSuccess }: { onSuccess: () => void }) {
   )
 }
 
-function RemnawaveKeyTab({ onSuccess }: { onSuccess: () => void }) {
-  const [key, setKey] = useState('')
-  const { phase, error, validationResult, validate, save, resetValidation } = useConfigSourceStore()
-  const { setConfigSourceMeta } = useAuthStore()
-
-  const isValidating = phase === 'validating'
-  const isSaving = phase === 'saving'
-  const busy = isValidating || isSaving
-
-  const handleValidate = async () => {
-    if (!key.trim()) return
-    await validate('remnawave-key', key.trim())
-  }
-
-  const handleSave = async () => {
-    try {
-      const meta = await save('remnawave-key', key.trim())
-      setConfigSourceMeta(meta)
-      onSuccess()
-    } catch {
-      // error shown via store
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="text-[13px] text-text-secondary leading-relaxed">
-        Введите ключ доступа Remnawave. Ключ хранится только в зашифрованном хранилище на вашем устройстве.
-      </p>
-      <Input
-        label="Ключ доступа"
-        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-        value={key}
-        onChange={e => { setKey(e.target.value); if (validationResult) resetValidation() }}
-        icon={<Key className="h-3.5 w-3.5" />}
-        disabled={busy}
-      />
-      {validationResult && <ValidationBadge result={validationResult} />}
-      {validationResult && <NodePreviewPanel result={validationResult} />}
-      {error && phase === 'error' && (
-        <div className="flex items-center gap-1.5 text-[12px] text-error">
-          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
-      <div className="flex gap-2">
-        <Button
-          variant="secondary"
-          size="md"
-          className="flex-1"
-          onClick={() => void handleValidate()}
-          loading={isValidating}
-          disabled={busy || key.trim().length < 8}
-        >
-          Проверить
-        </Button>
-        <Button
-          variant="primary"
-          size="md"
-          className="flex-1"
-          onClick={() => void handleSave()}
-          loading={isSaving}
-          disabled={busy || key.trim().length < 8}
-        >
-          Подключить
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function ProviderLoginTab({ onSuccess }: { onSuccess: () => void }) {
-  const { loginEmail } = useAuthStore()
-  const { notify } = useUIStore()
-
-  const [authTab, setAuthTab] = useState<AuthTab>('email')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [isEmailLoading, setIsEmailLoading] = useState(false)
-  const [isTgLoading, setIsTgLoading] = useState(false)
-  const [emailError, setEmailError] = useState('')
-
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!email || !password) return
-    setEmailError('')
-    setIsEmailLoading(true)
-    try {
-      await loginEmail(email, password)
-      onSuccess()
-    } catch (err: unknown) {
-      setEmailError(err instanceof Error ? err.message : 'Ошибка авторизации')
-    } finally {
-      setIsEmailLoading(false)
-    }
-  }
-
-  const handleTgLogin = async () => {
-    setIsTgLoading(true)
-    try {
-      notify({ type: 'info', title: 'Telegram', message: 'Функция в разработке' })
-    } finally {
-      setIsTgLoading(false)
-    }
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex justify-center">
-        <Segmented options={AUTH_TAB_OPTIONS} value={authTab} onChange={setAuthTab} size="sm" />
-      </div>
-
-      <AnimatePresence mode="wait">
-        {authTab === 'email' && (
-          <motion.form
-            key="email"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 8 }}
-            transition={{ duration: 0.15 }}
-            onSubmit={handleEmailLogin}
-            className="flex flex-col gap-3"
-          >
-            <Input
-              type="email"
-              label="Email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              icon={<Mail className="h-3.5 w-3.5" />}
-              autoComplete="email"
-              disabled={isEmailLoading}
-            />
-            <Input
-              type="password"
-              label="Пароль"
-              placeholder="••••••••"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              error={emailError}
-              icon={<Lock className="h-3.5 w-3.5" />}
-              autoComplete="current-password"
-              disabled={isEmailLoading}
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              size="lg"
-              className="w-full mt-1"
-              loading={isEmailLoading}
-              disabled={isEmailLoading || !email || !password}
-            >
-              {isEmailLoading ? 'Входим...' : 'Войти'}
-            </Button>
-          </motion.form>
-        )}
-
-        {authTab === 'telegram' && (
-          <motion.div
-            key="telegram"
-            initial={{ opacity: 0, x: 8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.15 }}
-            className="flex flex-col gap-3"
-          >
-            <p className="text-[13px] text-text-secondary text-center leading-relaxed">
-              Нажмите кнопку ниже и подтвердите вход в Telegram-боте
-            </p>
-            <Button
-              variant="primary"
-              size="lg"
-              className="w-full"
-              onClick={() => void handleTgLogin()}
-              loading={isTgLoading}
-              style={{ background: '#2196F3', borderColor: '#2196F3' }}
-            >
-              <Send className="h-4 w-4" />
-              {isTgLoading ? 'Ожидаем подтверждение...' : 'Открыть Telegram'}
-            </Button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  )
-}
 
 export function OnboardingPage() {
   const navigate = useNavigate()
-  const [tab, setTab] = useState<OnboardingTab>('subscription-url')
+  const [tab, setTab] = useState<OnboardingTab>('provider')
   const { resetValidation } = useConfigSourceStore()
+  const hasAccess = useAuthStore(s => s.hasAccess)
+
+  // Cabinet login (provider tab) grants access via auto-import; forward into the
+  // app once that happens.
+  useEffect(() => {
+    if (hasAccess) navigate('/dashboard', { replace: true })
+  }, [hasAccess, navigate])
 
   const handleTabChange = useCallback((next: OnboardingTab) => {
     resetValidation()
@@ -580,10 +392,9 @@ export function OnboardingPage() {
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.18 }}
               >
+                {tab === 'provider'         && <CabinetLoginCard />}
                 {tab === 'subscription-url' && <SubscriptionUrlTab onSuccess={handleSuccess} />}
                 {tab === 'single-proxy'     && <SingleProxyTab onSuccess={handleSuccess} />}
-                {tab === 'remnawave-key'    && <RemnawaveKeyTab onSuccess={handleSuccess} />}
-                {tab === 'provider'         && <ProviderLoginTab onSuccess={handleSuccess} />}
               </motion.div>
             </AnimatePresence>
 

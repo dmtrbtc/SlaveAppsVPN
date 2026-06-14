@@ -74,7 +74,7 @@ function tgScheme(bot: string, startParam: string): string {
 // routes https/tg links through the main process. Android keeps window.open.
 const openExternal = openExternalUrl
 
-function CabinetLoginCard() {
+export function CabinetLoginCard() {
   const autoImport = useAutoImport()
   const { notify } = useUIStore()
   const [tg, setTg] = useState<TgState>({ kind: 'idle' })
@@ -321,6 +321,39 @@ function CabinetStatusCard() {
           <p className="text-[12px] text-text-muted">Активная подписка в кабинете не найдена.</p>
         )}
 
+        {/* Identity: email + verification, then Telegram link status. Shown
+            wherever the cabinet status renders (Account page, standalone login)
+            so the «Привязать Telegram» action is always reachable. */}
+        {me?.email && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Mail className="h-3 w-3 shrink-0 text-text-muted" />
+            <span className="truncate text-[11px] text-text-muted">{me.email}</span>
+            <Badge tone={me.emailVerified ? 'ok' : 'warn'} className="text-[9px]">
+              {me.emailVerified ? 'подтверждён' : 'не подтверждён'}
+            </Badge>
+          </div>
+        )}
+        {me && (
+          <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2">
+            <Send className="h-3.5 w-3.5 shrink-0 text-accent" />
+            {me.telegramId != null ? (
+              <>
+                <span className="flex-1 text-[11px] text-connected">
+                  Telegram привязан{me.username ? ` · @${me.username}` : ''}
+                </span>
+                <CheckCircle className="h-3.5 w-3.5 shrink-0 text-connected" />
+              </>
+            ) : (
+              <>
+                <span className="flex-1 text-[11px] text-text-muted">Telegram не привязан</span>
+                <Button variant="secondary" size="sm" onClick={() => openExternalUrl('https://cabinet.slave-apps.online')}>
+                  <ExternalLink className="h-3 w-3" /> Привязать
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Expandable detail tabs */}
         <div className="flex flex-wrap gap-1.5">
           <TabButton active={open === 'balance'} icon={<Wallet className="h-3.5 w-3.5" />} label="Баланс" onClick={() => toggle('balance')} />
@@ -434,7 +467,7 @@ function RenewSection({ autopayEnabled }: { autopayEnabled: boolean }) {
           </div>
         ) : <p className="text-[11px] text-text-muted">Нет доступных вариантов продления.</p>)}
         <button
-          onClick={() => { try { window.open('https://cabinet.slave-apps.online', '_system') } catch { /* */ } }}
+          onClick={() => openExternalUrl('https://cabinet.slave-apps.online')}
           className="inline-flex items-center gap-1 self-start text-[11px] text-accent hover:opacity-80">
           <ExternalLink className="h-3 w-3" /> Пополнить баланс в кабинете
         </button>

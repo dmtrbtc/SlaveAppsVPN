@@ -1,6 +1,4 @@
 import { CabinetPanel } from '../components/cabinet/CabinetPanel'
-import { AccountIdentityCard } from '../components/cabinet/AccountIdentityCard'
-import { useCabinetAuthState } from '../hooks/useCabinet'
 
 /**
  * «Аккаунт» — first-class home for the personal cabinet. Identity (email /
@@ -10,9 +8,6 @@ import { useCabinetAuthState } from '../hooks/useCabinet'
  * Подписки tab.
  */
 export function AccountPage() {
-  const { data: authState } = useCabinetAuthState()
-  const authed = !!authState?.authenticated
-
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-bg-base">
       <div className="px-6 py-4 border-b border-border">
@@ -21,7 +16,6 @@ export function AccountPage() {
       </div>
 
       <div className="flex w-full max-w-2xl flex-col gap-4 px-6 py-5">
-        {authed && <AccountIdentityCard />}
         <CabinetPanel />
       </div>
     </div>
