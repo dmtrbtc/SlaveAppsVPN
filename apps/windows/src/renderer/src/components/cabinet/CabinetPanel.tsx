@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  User, Mail, Send, LogOut, RefreshCw, Clock, HardDrive, Smartphone, CheckCircle, ChevronDown,
+  User, Mail, Send, LogOut, RefreshCw, Clock, HardDrive, Smartphone, CheckCircle,
   Wallet, CalendarClock, MonitorSmartphone, Trash2, ExternalLink,
 } from 'lucide-react'
 import { Button } from '../ui/button'
@@ -79,7 +79,6 @@ export function CabinetLoginCard() {
   const { notify } = useUIStore()
   const [tg, setTg] = useState<TgState>({ kind: 'idle' })
   const [checking, setChecking] = useState(false)
-  const [emailOpen, setEmailOpen] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const deadlineRef = useRef<number>(0)
 
@@ -155,19 +154,17 @@ export function CabinetLoginCard() {
             <p className="text-[12px] text-text-muted">
               Войдите — подписка из кабинета добавится автоматически.
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="primary" size="sm" onClick={() => void startTelegram()}>
-                <Send className="h-3.5 w-3.5" /> Войти через Telegram
-              </Button>
-              <button
-                className="inline-flex items-center gap-1 text-[12px] text-text-muted hover:text-text-secondary"
-                onClick={() => setEmailOpen(v => !v)}
-              >
-                <Mail className="h-3.5 w-3.5" /> по email
-                <ChevronDown className={cn('h-3 w-3 transition-transform', emailOpen && 'rotate-180')} />
-              </button>
+            {/* Email is the primary path (always visible); Telegram is the
+                alternative below. */}
+            <EmailLoginForm onSuccess={autoImport} />
+            <div className="flex items-center gap-2 pt-1">
+              <span className="h-px flex-1 bg-border" />
+              <span className="text-[10px] text-text-muted">или</span>
+              <span className="h-px flex-1 bg-border" />
             </div>
-            {emailOpen && <EmailLoginForm onSuccess={autoImport} />}
+            <Button variant="secondary" size="sm" className="self-start" onClick={() => void startTelegram()}>
+              <Send className="h-3.5 w-3.5" /> Войти через Telegram
+            </Button>
           </>
         )}
         {tg.kind === 'expired' && <p className="text-[11px] text-error">Ссылка истекла — попробуйте снова.</p>}
