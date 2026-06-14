@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Search, Check, SplitSquareVertical } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Search, Check, SplitSquareVertical, Landmark } from 'lucide-react'
 import { Segmented } from '../ui/segmented'
 import { Input } from '../ui/input'
+import { Button } from '../ui/button'
 import { Spinner } from '../ui/spinner'
 import { settingsApi, splitApi } from '../../lib/api'
 import { useUIStore } from '../../stores/ui.store'
@@ -20,7 +21,22 @@ const MODE_OPTIONS: { value: Mode; label: string }[] = [
 const MODE_HINT: Record<Mode, string> = {
   off:     'Весь трафик идёт через VPN.',
   include: 'Через VPN пойдут ТОЛЬКО выбранные приложения.',
-  exclude: 'Через VPN пойдут ВСЕ приложения, кроме выбранных.',
+  exclude: 'Выбранные приложения идут МИМО VPN (прямое подключение). Нужно для банков, которые блокируют вход при включённом VPN. Работает в любом режиме.',
+}
+
+// Substring patterns (matched against the installed-app packageName) for Russian
+// banking / payment apps that refuse to run with ANY active VPN. One-tap excludes
+// them so their sockets bypass the tunnel entirely → no VPN detected, RU exit IP.
+const BANK_PACKAGE_PATTERNS: readonly string[] = [
+  'sberbank', 'sber.', 'vtb', 'alfabank', 'tinkoff', 'tbank', 'gazprombank',
+  'raiffeisen', 'rosbank', 'pochta.bank', 'pochtabank', 'sovcombank', 'psbank',
+  'rshb', 'uralsib', 'openbank', 'otkritie', 'mkb', 'ozon', 'yoo.money', 'yoomoney',
+  'mironline', 'nspk', 'gosuslugi', 'rostel', 'mir.',
+]
+
+function isBankApp(pkg: string): boolean {
+  const p = pkg.toLowerCase()
+  return BANK_PACKAGE_PATTERNS.some(pat => p.includes(pat))
 }
 
 /**
@@ -51,19 +67,51 @@ function AndroidSplitTunnelInner() {
       .catch(() => undefined)
   }, [])
 
-  // Load the installed-app catalogue lazily, the first time split is enabled.
+  // Load the installed-app catalogue (idempotent — returns the cached list).
+  const ensureApps = useCallback(async (): Promise<SplitAppInfo[]> => {
+    if (apps.length > 0) return apps
+    setLoading(true)
+    try {
+      const list = await splitApi.listApps()
+      const sorted = [...list].sort((a, b) => a.label.localeCompare(b.label))
+      setApps(sorted)
+      return sorted
+    } catch {
+      notify({ type: 'error', title: 'Не удалось получить список приложений' })
+      return []
+    } finally {
+      setLoading(false)
+    }
+  }, [apps, notify])
+
+  // Lazily load the catalogue the first time split is enabled.
   useEffect(() => {
     if (mode === 'off' || apps.length > 0 || loading) return
-    setLoading(true)
-    splitApi.listApps()
-      .then(list => setApps([...list].sort((a, b) => a.label.localeCompare(b.label))))
-      .catch(() => notify({ type: 'error', title: 'Не удалось получить список приложений' }))
-      .finally(() => setLoading(false))
-  }, [mode, apps.length, loading, notify])
+    void ensureApps()
+  }, [mode, apps.length, loading, ensureApps])
 
   const changeMode = (m: Mode) => {
     setMode(m)
     void settingsApi.set({ splitTunnelMode: m } as Parameters<typeof settingsApi.set>[0])
+  }
+
+  // One-tap: route every installed banking app MIMO the VPN (exclude mode).
+  const excludeBanks = async () => {
+    const list = await ensureApps()
+    const banks = list.filter(a => isBankApp(a.packageName)).map(a => a.packageName)
+    if (banks.length === 0) {
+      notify({ type: 'info', title: 'Банковские приложения не найдены', message: 'Не нашли установленных банков по списку' })
+      return
+    }
+    setMode('exclude')
+    await settingsApi.set({ splitTunnelMode: 'exclude' } as Parameters<typeof settingsApi.set>[0])
+    setSelected(prev => {
+      const next = new Set(prev)
+      for (const b of banks) next.add(b)
+      void splitApi.setProcessList({ processList: [...next] })
+      return next
+    })
+    notify({ type: 'success', title: 'Банки — мимо VPN', message: `Исключено приложений: ${banks.length}. Переподключитесь.` })
   }
 
   const toggleApp = (pkg: string) => {
@@ -89,10 +137,16 @@ function AndroidSplitTunnelInner() {
       <div className="flex items-center gap-2">
         <SplitSquareVertical className="h-4 w-4 text-accent shrink-0" />
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-semibold text-text-primary">Раздельный туннель</p>
-          <p className="text-[11px] text-text-muted">Выберите, какие приложения идут через VPN</p>
+          <p className="text-[13px] font-semibold text-text-primary">Приложения и VPN</p>
+          <p className="text-[11px] text-text-muted">Какие приложения идут через VPN, а какие — мимо</p>
         </div>
       </div>
+
+      {/* One-tap «банки мимо VPN» — the common case (bank apps block on VPN). */}
+      <Button variant="secondary" size="sm" onClick={() => void excludeBanks()} className="justify-start">
+        <Landmark className="h-3.5 w-3.5" />
+        Банковские приложения — мимо VPN
+      </Button>
 
       <Segmented options={MODE_OPTIONS} value={mode} onChange={changeMode} size="sm" />
       <p className="text-[11px] text-text-muted">{MODE_HINT[mode]}</p>

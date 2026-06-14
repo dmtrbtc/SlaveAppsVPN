@@ -72,9 +72,13 @@ test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, n
   // (it's a non-RU IP that respect-rules sent through the tunnel → cancelled DNS).
   assert.deepEqual(policy['+.ru'], ['77.88.8.8', '77.88.8.1'], '+.ru → Russian resolvers only')
   assert.deepEqual(policy['+.рф'], ['77.88.8.8', '77.88.8.1'], '+.рф → Russian resolvers only')
-  // node domain resolved directly (before tunnel) via the system resolver — a
-  // single resolver is emitted as a scalar, not a list.
-  assert.equal(policy['+.nl.example.online'], 'system', 'node domain → system resolver')
+  // node domain resolved via the DoH pool (NOT `system`, which loops back through
+  // the TUN and fails) — emitted as the DoH URL list (multiple) or scalar (one).
+  const nodePolicy = policy['+.nl.example.online']
+  const nodeList = Array.isArray(nodePolicy) ? nodePolicy : [nodePolicy]
+  assert.ok(nodeList.every(u => typeof u === 'string' && u.startsWith('https://')),
+    'node domain → DoH pool (no plaintext/system)')
+  assert.ok(nodeList.some(u => (u as string).includes('dns.google')), 'node DoH pool includes Google')
 })
 
 test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plaintext leak', () => {

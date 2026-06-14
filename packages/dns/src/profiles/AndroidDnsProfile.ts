@@ -23,7 +23,6 @@ import type { DnsProfile, DnsResolver, DnsRule } from './DnsProfile'
 // a NON-RU IP that respect-rules sent through the tunnel → a parallel DNS dial
 // that the Yandex winner cancelled — "operation was canceled" log spam + leak.)
 const RU_DIRECT_RESOLVERS = ['77.88.8.8', '77.88.8.1'] as const
-const NODE_DIRECT_RESOLVERS = ['system'] as const
 
 // Local/captive-portal entries that must never get a fake-ip. The RU entries
 // (+.ru/+.рф/category-ru) are appended only when ruDirectDns is on (bypass/custom)
@@ -71,6 +70,16 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
       ]
     : []
 
+  // Proxy node domains resolve via the DoH pool, NOT `system`. Under the Android
+  // VpnService TUN the `system` resolver loops its query back through the tun
+  // (hijacked to fake-ip) and ALWAYS fails — «resolve … from system() … all DNS
+  // requests failed» — before mihomo retries on the DoH pool. Pointing node
+  // domains straight at DoH removes the failed first attempt (log spam + a
+  // first-connect stall) and keeps resolution encrypted/poison-resistant. mihomo
+  // bootstraps the DoH host IPs via default-nameserver (plaintext), then queries
+  // DoH directly (not through the not-yet-up tunnel), exactly as the fallback did.
+  const nodeResolverTags = dohUrls
+
   const rules: DnsRule[] = [
     ...ruRules,
     { id: 'private-geosite', matchType: 'geosite', value: 'private', resolverTag: 'system' },
@@ -78,7 +87,7 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
       id: `node-${i}`,
       matchType: 'domain_suffix' as const,
       value: s,
-      resolverTag: [...NODE_DIRECT_RESOLVERS],
+      resolverTag: nodeResolverTags,
     })),
   ]
 
