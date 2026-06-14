@@ -8,6 +8,50 @@
     --radius-lg: 1rem;
     --radius-xl: 1.375rem;
     --radius-2xl: 1.75rem;
+
+    /* Semantic colour tokens as space-separated RGB channels so Tailwind's
+       opacity modifiers (bg-accent/12, text-text-primary/50) keep working.
+       Light theme values; html.dark overrides below. The Tailwind config maps
+       each token to rgb(var(--x) / <alpha-value>). */
+    --bg-base: 244 241 236;
+    --bg-primary: 255 255 255;
+    --bg-secondary: 249 246 241;
+    --bg-tertiary: 244 241 236;
+    --bg-elevated: 255 255 255;
+    --accent: 255 122 89;
+    --accent-2: 91 141 239;
+    --accent-hover: 255 138 107;
+    --connected: 15 168 107;
+    --connecting: 217 119 6;
+    --error: 226 54 54;
+    --border: 236 232 223;
+    --border-subtle: 249 246 241;
+    --border-strong: 220 213 198;
+    --text-primary: 21 19 26;
+    --text-secondary: 90 84 102;
+    --text-muted: 155 148 166;
+    --text-accent: 255 122 89;
+  }
+
+  html.dark {
+    --bg-base: 16 12 28;
+    --bg-primary: 26 21 48;
+    --bg-secondary: 34 28 61;
+    --bg-tertiary: 42 35 73;
+    --bg-elevated: 34 28 61;
+    --accent: 255 138 107;
+    --accent-2: 125 166 255;
+    --accent-hover: 255 138 107;
+    --connected: 52 211 153;
+    --connecting: 251 191 36;
+    --error: 248 113 113;
+    --border: 47 40 84;
+    --border-subtle: 34 28 61;
+    --border-strong: 63 55 107;
+    --text-primary: 244 238 249;
+    --text-secondary: 170 161 199;
+    --text-muted: 110 102 140;
+    --text-accent: 255 138 107;
   }
 
   *,
@@ -89,7 +133,7 @@
 
   /* Focus ring — consistent across the app */
   :focus-visible {
-    outline: 2px solid var(--color-accent, #ff7a59);
+    outline: 2px solid rgb(var(--accent));
     outline-offset: 2px;
     border-radius: 4px;
   }

@@ -10,65 +10,52 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Semantic tokens map to CSS variables (defined in index.css :root +
+        // html.dark) as `rgb(var(--x) / <alpha-value>)` so a single class like
+        // `bg-bg-primary` themes automatically AND opacity modifiers (e.g.
+        // `bg-accent/12`) still work. Toggling `<html class="dark">` swaps them.
         // ─── Surface ────────────────────────────────────────
         bg: {
-          base: '#f4f1ec',          // light default
-          dark: '#100c1c',          // dark variant
-          primary: '#ffffff',
-          'primary-dark': '#1a1530',
-          secondary: '#f9f6f1',
-          'secondary-dark': '#221c3d',
-          tertiary: '#f4f1ec',
-          'tertiary-dark': '#2a2349',
-          elevated: '#ffffff',
-          'elevated-dark': '#221c3d',
+          base: 'rgb(var(--bg-base) / <alpha-value>)',
+          primary: 'rgb(var(--bg-primary) / <alpha-value>)',
+          secondary: 'rgb(var(--bg-secondary) / <alpha-value>)',
+          tertiary: 'rgb(var(--bg-tertiary) / <alpha-value>)',
+          elevated: 'rgb(var(--bg-elevated) / <alpha-value>)',
         },
         // ─── Brand accent (dual coral + sky) ─────────────────
         accent: {
-          DEFAULT: '#ff7a59',         // coral, light theme
-          dark: '#ff8a6b',            // coral, dark theme
-          2: '#5b8def',               // sky, light theme  (use as: bg-accent-2)
-          '2-dark': '#7da6ff',
-          hover: '#ff8a6b',
+          DEFAULT: 'rgb(var(--accent) / <alpha-value>)',
+          2: 'rgb(var(--accent-2) / <alpha-value>)',     // sky (use as: bg-accent-2)
+          hover: 'rgb(var(--accent-hover) / <alpha-value>)',
           muted: 'rgba(255,122,89,0.12)',
           glow: 'rgba(255,122,89,0.45)',
         },
         // ─── Connection states ───────────────────────────────
         connected: {
-          DEFAULT: '#0fa86b',
-          dark: '#34d399',
+          DEFAULT: 'rgb(var(--connected) / <alpha-value>)',
           muted: 'rgba(15,168,107,0.12)',
           glow: 'rgba(15,168,107,0.45)',
         },
         connecting: {
-          DEFAULT: '#d97706',
-          dark: '#fbbf24',
+          DEFAULT: 'rgb(var(--connecting) / <alpha-value>)',
           muted: 'rgba(217,119,6,0.12)',
         },
         error: {
-          DEFAULT: '#e23636',
-          dark: '#f87171',
+          DEFAULT: 'rgb(var(--error) / <alpha-value>)',
           muted: 'rgba(226,54,54,0.10)',
         },
         // ─── Border ──────────────────────────────────────────
         border: {
-          DEFAULT: '#ece8df',
-          dark: '#2f2854',
-          subtle: '#f9f6f1',
-          'subtle-dark': '#221c3d',
-          strong: '#dcd5c6',
-          'strong-dark': '#3f376b',
+          DEFAULT: 'rgb(var(--border) / <alpha-value>)',
+          subtle: 'rgb(var(--border-subtle) / <alpha-value>)',
+          strong: 'rgb(var(--border-strong) / <alpha-value>)',
         },
         // ─── Text ────────────────────────────────────────────
         text: {
-          primary: '#15131a',
-          'primary-dark': '#f4eef9',
-          secondary: '#5a5466',
-          'secondary-dark': '#aaa1c7',
-          muted: '#9b94a6',
-          'muted-dark': '#6e668c',
-          accent: '#ff7a59',
-          'accent-dark': '#ff8a6b',
+          primary: 'rgb(var(--text-primary) / <alpha-value>)',
+          secondary: 'rgb(var(--text-secondary) / <alpha-value>)',
+          muted: 'rgb(var(--text-muted) / <alpha-value>)',
+          accent: 'rgb(var(--text-accent) / <alpha-value>)',
         },
       },
       fontFamily: {
