@@ -1,5 +1,6 @@
 import type { RoutingRule, RuleTargetType, RuleAction } from '../models/RoutingRule'
 import { RUSSIA_BYPASS_RULES, RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
+import { RU_DIRECT_RULES } from '../data/ru-direct'
 import type { RoutingScenario } from './types'
 
 // Russia-specific direct routes for local services that MUST stay direct
@@ -68,6 +69,11 @@ function buildRules(): readonly RoutingRule[] {
   for (const r of RUSSIA_BYPASS_RULES) {
     rules.push({ ...r, priority: p++, source: { provider: 'scenario:smart-russia-bypass', category: 'blocked-in-ru' } })
   }
+
+  // Priority 2400-2499: curated RU-direct (banks/gov/payments/RU streaming on
+  // foreign CDNs that geoip:RU can't catch). Shared with roscomvpn-default so the
+  // RU-direct guarantee is identical across the bypass bases.
+  for (const r of RU_DIRECT_RULES) rules.push(r)
 
   // Priority 2500-2999: Geo-based — RU geoip → direct (catches the long tail of RU services)
   rules.push({

@@ -11,6 +11,9 @@ const { generateMihomoConfig } = require('../dist/cjs/index.js') as {
 const { buildAndroidDnsProfile } = require('@slave-vpn/dns') as {
   buildAndroidDnsProfile: (opts: { dohUrl: string; nodeDomainSuffixes: string[]; ruDirectDns?: boolean }) => unknown
 }
+const { composeScenarios } = require('@slave-vpn/routing') as {
+  composeScenarios: (ids: string[]) => { policy: { providerRules: Array<{ target: { type: string; value: string }; action: string; priority: number }> } }
+}
 
 const SUB = `
 proxies:
@@ -91,6 +94,22 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () =>
   assert.equal(auto!['tolerance'], 50)
   assert.equal(auto!['lazy'], true)
   assert.equal(auto!['interval'], 300)
+})
+
+test('R2: roscomvpn-default carries curated RU-direct (banks/gov/payments) DIRECT, before geoip:RU', () => {
+  // «Обход» resolves to roscomvpn-default on both platforms. Banks/gov on foreign
+  // CDNs leak into the tunnel under fake-ip unless an explicit DIRECT domain rule
+  // beats geoip:RU,no-resolve (which can't match a fake-IP). Guard that wiring.
+  const { providerRules } = composeScenarios(['roscomvpn-default']).policy
+  const ruDirect = providerRules.filter(
+    r => r.target.type === 'domain_suffix' && r.action === 'direct'
+      && /sberbank\.ru|tbank\.ru|gosuslugi\.ru|nspk\.ru|kinopoisk\.ru/.test(r.target.value),
+  )
+  assert.ok(ruDirect.length >= 5, 'curated RU-direct banks/gov/payments/streaming present')
+  const geoipRu = providerRules.find(r => r.target.type === 'geoip' && r.target.value === 'RU')
+  assert.ok(geoipRu, 'geoip:RU rule present')
+  // every curated RU-direct rule must sort BEFORE geoip:RU (lower priority = first)
+  assert.ok(ruDirect.every(r => r.priority < geoipRu!.priority), 'RU-direct evaluated before geoip:RU')
 })
 
 test('global mode → clash mode:RULE (never global) + MATCH proxy; direct mode → mode:direct', () => {

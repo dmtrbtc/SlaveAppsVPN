@@ -39,6 +39,7 @@ export function listScenarioMetadata(): readonly ScenarioMetadata[] {
     defaultEnabled: s.defaultEnabled,
     composable: s.composable,
     ruleCount: s.rules.length,
+    isBase: s.defaultAction != null,
   }))
 }
 

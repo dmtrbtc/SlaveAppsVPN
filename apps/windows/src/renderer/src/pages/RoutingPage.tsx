@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Globe, Shield, SplitSquareVertical, Settings2, Check,
   Plus, RefreshCw, ToggleLeft, ToggleRight, Trash2, AlertCircle, X,
-  Map, ShieldOff, Play, Sparkles, Gamepad2, Cpu, type LucideIcon,
+  Map, ShieldOff, ShieldCheck, Play, Sparkles, Gamepad2, Cpu, type LucideIcon,
 } from 'lucide-react'
 import { ProcessPickerModal } from '../components/split/ProcessPickerModal'
 import { splitApi } from '../lib/api'
@@ -63,6 +63,7 @@ const SCENARIO_ICON_MAP: Record<string, LucideIcon> = {
   Map,
   Globe,
   ShieldOff,
+  ShieldCheck,
   Play,
   Sparkles,
   Gamepad2,
@@ -164,6 +165,9 @@ function ScenariosSection() {
 
   useEffect(() => { void load() }, [load])
 
+  const baseScenarios = scenarios.filter(s => s.isBase)
+  const addonScenarios = scenarios.filter(s => !s.isBase)
+
   const handleToggle = async (scenario: RoutingScenarioInfo) => {
     if (pending) return
     setPending(scenario.id)
@@ -173,8 +177,13 @@ function ScenariosSection() {
 
     if (willEnable) {
       nextIds.push(scenario.id)
-      // Enforce mutual exclusivity for non-composable scenarios
-      if (!scenario.composable) {
+      if (scenario.isBase) {
+        // «База» is pick-one: enabling a base profile disables every other base
+        // (they each define the default action — only one can win).
+        const otherBases = scenarios.filter(s => s.isBase && s.id !== scenario.id)
+        nextIds = nextIds.filter(id => !otherBases.some(o => o.id === id))
+      } else if (!scenario.composable) {
+        // Non-composable add-on still excludes other non-composable ones.
         const otherNonComposable = scenarios.filter(s => !s.composable && s.id !== scenario.id)
         nextIds = nextIds.filter(id => !otherNonComposable.some(o => o.id === id))
       }
@@ -218,15 +227,46 @@ function ScenariosSection() {
           Загрузка сценариев...
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2.5">
-          {scenarios.map(scenario => (
-            <ScenarioCard
-              key={scenario.id}
-              scenario={scenario}
-              disabled={pending !== null && pending !== scenario.id}
-              onToggle={() => void handleToggle(scenario)}
-            />
-          ))}
+        <div className="flex flex-col gap-4">
+          {/* «База» — pick one; defines the default routing behaviour. */}
+          {baseScenarios.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-baseline gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">База</p>
+                <span className="text-[10px] text-text-muted">выберите один профиль</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {baseScenarios.map(scenario => (
+                  <ScenarioCard
+                    key={scenario.id}
+                    scenario={scenario}
+                    disabled={pending !== null && pending !== scenario.id}
+                    onToggle={() => void handleToggle(scenario)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* «Дополнения» — additive; stack any combination on top of the base. */}
+          {addonScenarios.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-baseline gap-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">Дополнения</p>
+                <span className="text-[10px] text-text-muted">комбинируйте любые</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {addonScenarios.map(scenario => (
+                  <ScenarioCard
+                    key={scenario.id}
+                    scenario={scenario}
+                    disabled={pending !== null && pending !== scenario.id}
+                    onToggle={() => void handleToggle(scenario)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </motion.div>

@@ -890,6 +890,9 @@ export interface RoutingScenarioInfo {
   composable: boolean
   ruleCount: number
   enabled: boolean
+  // Base scenario (defines the default action) → grouped as «База» (pick one);
+  // additive scenarios (isBase=false) stack freely as «Дополнения».
+  isBase: boolean
 }
 
 export interface RoutingSetEnabledScenariosPayload {

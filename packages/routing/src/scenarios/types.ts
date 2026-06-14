@@ -42,4 +42,8 @@ export interface ScenarioMetadata {
   readonly defaultEnabled: boolean
   readonly composable: boolean
   readonly ruleCount: number
+  // True when the scenario sets the default action (defaultAction != null) — it
+  // defines the base routing behaviour. The UI groups these as «База» (pick one)
+  // vs additive «Дополнения» (isBase=false, stack freely).
+  readonly isBase: boolean
 }

@@ -71,6 +71,7 @@ export class RoutingScenarioService {
       composable: m.composable,
       ruleCount: m.ruleCount,
       enabled,
+      isBase: m.isBase,
     }
   }
 }

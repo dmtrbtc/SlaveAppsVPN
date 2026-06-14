@@ -1,5 +1,6 @@
 import type { RoutingRule } from '../models/RoutingRule'
 import { RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
+import { RU_DIRECT_RULES } from '../data/ru-direct'
 import type { RoutingScenario } from './types'
 
 /**
@@ -86,6 +87,12 @@ function buildRules(): readonly RoutingRule[] {
       source: { provider: 'scenario:roscomvpn-default', category: 'direct' },
     })
   }
+
+  // ─── Curated RU-direct (banks / gov / payments / RU streaming) ──────────
+  // Priority 2400-2499 — explicit DIRECT for RU services on foreign CDNs that
+  // geoip:RU,no-resolve can't catch under fake-ip (the R0.2 leak class). Sits
+  // before geoip:RU below so a bank/gov domain stays DIRECT regardless of CDN IP.
+  for (const r of RU_DIRECT_RULES) rules.push(r)
 
   // ─── geoip:RU → DIRECT (long tail not in geosite) ───────────────────────
   rules.push({

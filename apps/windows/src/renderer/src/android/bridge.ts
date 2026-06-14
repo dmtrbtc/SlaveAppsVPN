@@ -41,6 +41,7 @@ function buildScenarioInfo(): unknown[] {
     composable: m.composable,
     ruleCount: m.ruleCount,
     enabled: enabled.has(m.id),
+    isBase: m.isBase,
   }))
 }
 
