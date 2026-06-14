@@ -112,10 +112,21 @@ export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise
 
 /**
  * Open the APK (or release page) so the user can download + install it.
- * Capacitor routes external http(s) URLs opened with target=_blank to the
- * system browser, which downloads the APK; the user then taps to install.
+ *
+ * Android: Capacitor routes external http(s) URLs opened with target=_blank to
+ * the system browser, which downloads the APK; the user then taps to install.
+ *
+ * Windows (Electron): `window.open` is DENIED by setWindowOpenHandler, so the
+ * button did nothing. Route through the main process (`shell.openExternal`) via
+ * the preload bridge so the Setup .exe download opens in the system browser.
  */
 export function openUpdate(info: UpdateInfo): void {
   const url = info.downloadUrl ?? info.releaseUrl
+  if (!Capacitor.isNativePlatform()) {
+    const bridge = (window as unknown as { slaveVPN?: { update?: { openExternal?: (u: string) => unknown } } }).slaveVPN
+    if (bridge?.update?.openExternal) {
+      try { void bridge.update.openExternal(url); return } catch { /* fall through */ }
+    }
+  }
   try { window.open(url, '_blank') } catch { /* ignore */ }
 }

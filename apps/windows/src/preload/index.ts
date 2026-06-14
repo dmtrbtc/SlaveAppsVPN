@@ -247,6 +247,9 @@ const bridge: SlaveVPNBridge = {
     fetchReleases: () =>
       invoke(IpcChannel.UPDATE_FETCH_RELEASES),
 
+    openExternal: (url: string) =>
+      invoke(IpcChannel.UPDATE_OPEN_EXTERNAL, url),
+
     download: () =>
       invoke(IpcChannel.UPDATE_DOWNLOAD),
 

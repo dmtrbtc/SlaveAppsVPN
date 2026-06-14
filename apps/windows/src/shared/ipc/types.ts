@@ -1033,6 +1033,9 @@ export interface SlaveVPNBridge {
     // `connect-src 'none'` blocks api.github.com from the renderer). Returns the
     // raw release array, or [] on any failure. Never throws.
     fetchReleases: () => Promise<unknown[]>
+    // Opens an external URL (release download / page) in the system browser via
+    // the main process — the renderer can't (window.open is denied).
+    openExternal: (url: string) => Promise<unknown>
     download: () => Promise<UpdateDownloadResult>
     install: () => Promise<UpdateInstallResult>
     getStatus: () => Promise<UpdateGetStatusResult>

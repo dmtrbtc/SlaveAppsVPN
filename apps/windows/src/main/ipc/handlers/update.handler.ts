@@ -4,6 +4,7 @@ import { handleIpc } from '../registry'
 import { IpcChannel } from '../../../shared/ipc/channels'
 import { okResult, errResult } from '../../../shared/ipc/types'
 import { getUpdateService } from '../../services/UpdateService'
+import { openExternalUrl } from '../../window'
 
 const UpdateChannelSchema = z.object({
   channel: z.enum(['stable', 'beta']),
@@ -53,6 +54,16 @@ export function registerUpdateHandlers(): void {
     } catch {
       return []
     }
+  })
+
+  // Open an external URL (release download / page) in the system browser. The
+  // renderer can't do this itself: window.open is denied by setWindowOpenHandler,
+  // so the update banner's «Скачать» button needs the main process to call
+  // shell.openExternal. Raw handle (fire-and-forget); openExternalUrl validates
+  // the protocol (https only).
+  ipcMain.handle(IpcChannel.UPDATE_OPEN_EXTERNAL, (_e, url: unknown) => {
+    if (typeof url === 'string') openExternalUrl(url)
+    return true
   })
 
   // INSTALL uses a raw ipcMain.handle because quitAndInstall is fire-and-forget
