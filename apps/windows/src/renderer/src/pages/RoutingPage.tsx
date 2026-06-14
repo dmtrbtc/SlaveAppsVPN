@@ -10,6 +10,7 @@ import { splitApi } from '../lib/api'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { LoadingState, EmptyState } from '../components/ui/states'
 import { cn } from '../lib/utils'
 import { useVpnStore } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
@@ -223,9 +224,7 @@ function ScenariosSection() {
       </div>
 
       {loading ? (
-        <div className="rounded-lg border border-border bg-bg-primary py-8 flex items-center justify-center text-[12px] text-text-muted">
-          Загрузка сценариев...
-        </div>
+        <LoadingState label="Загрузка сценариев..." />
       ) : (
         <div className="flex flex-col gap-4">
           {/* «База» — pick one; defines the default routing behaviour. */}
@@ -528,14 +527,10 @@ function RuleProvidersSection() {
       {/* Providers list */}
       <div className="rounded-lg border border-border bg-bg-primary overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center py-8 text-[12px] text-text-muted">
-            Загрузка...
-          </div>
+          <LoadingState label="Загрузка..." />
         ) : providers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 gap-1.5 text-text-muted">
-            <Shield className="h-5 w-5 opacity-40" />
-            <span className="text-[12px]">Нет источников правил</span>
-          </div>
+          <EmptyState icon={<Shield className="h-6 w-6" />} label="Нет источников правил"
+            description="Добавьте список доменов для маршрутизации" />
         ) : (
           providers.map(provider => (
             <ProviderRow
