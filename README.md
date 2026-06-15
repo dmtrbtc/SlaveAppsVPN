@@ -24,7 +24,7 @@
 
 | Платформа | Файл | Прямая ссылка |
 |---|---|---|
-| 🤖 **Android** (arm64) | `SlaveAppsVPN-Android-debug.apk` | [Скачать APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest/download/SlaveAppsVPN-Android-debug.apk) |
+| 🤖 **Android** (arm64) | `SlaveAppsVPN-Android.apk` | [Скачать APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest/download/SlaveAppsVPN-Android.apk) |
 | 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.7.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.7/SlaveAppsVPN-Setup-v0.2.7.exe) |
 | 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.7.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.7/SlaveAppsVPN-Portable-v0.2.7.exe) |
 

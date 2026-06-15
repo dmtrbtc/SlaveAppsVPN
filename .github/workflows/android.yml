@@ -206,30 +206,73 @@ jobs:
           pnpm exec cap copy android
           pnpm exec cap sync android
 
-      - name: Build debug APK
+      - name: Configure release signing (when keystore secret present)
+        id: signing
+        working-directory: apps/android/android/app
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -e
+          # R4 — release signing. When the ANDROID_KEYSTORE_BASE64 secret is set
+          # we decode the keystore and inject a release signingConfig into the
+          # Capacitor-generated app/build.gradle, then build a properly signed
+          # `assembleRelease`. Without the secret (forks / before setup) we fall
+          # back to the debug build so CI never breaks. See docs/ANDROID_SIGNING.md.
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+            if ! grep -q "signingConfigs" build.gradle; then
+              sed -i 's|android {|android {\n    signingConfigs {\n        release {\n            storeFile file("release.keystore")\n            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n            keyAlias System.getenv("ANDROID_KEY_ALIAS")\n            keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n        }\n    }|' build.gradle
+            fi
+            # Attach to the release buildType (the line right after minifyEnabled,
+            # which lives inside buildTypes.release).
+            if ! grep -q "signingConfig signingConfigs.release" build.gradle; then
+              sed -i '/minifyEnabled/a\            signingConfig signingConfigs.release' build.gradle
+            fi
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "Release signing configured."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "No ANDROID_KEYSTORE_BASE64 secret — falling back to a debug build."
+          fi
+
+      - name: Build APK
         working-directory: apps/android/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            ./gradlew assembleRelease --no-daemon
+          else
+            ./gradlew assembleDebug --no-daemon
+          fi
 
       - name: Rename APK
         run: |
           mkdir -p artifacts
-          cp apps/android/android/app/build/outputs/apk/debug/app-debug.apk \
-             artifacts/SlaveAppsVPN-Android-debug.apk
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            cp apps/android/android/app/build/outputs/apk/release/app-release.apk \
+               artifacts/SlaveAppsVPN-Android.apk
+          else
+            cp apps/android/android/app/build/outputs/apk/debug/app-debug.apk \
+               artifacts/SlaveAppsVPN-Android.apk
+          fi
+          echo "APK: $(du -h artifacts/SlaveAppsVPN-Android.apk | cut -f1) (signed=${{ steps.signing.outputs.signed }})"
 
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SlaveAppsVPN-Android-debug
-          path: artifacts/SlaveAppsVPN-Android-debug.apk
+          name: SlaveAppsVPN-Android
+          path: artifacts/SlaveAppsVPN-Android.apk
           if-no-files-found: error
 
       - name: Attach APK to release (when triggered by tag push)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/SlaveAppsVPN-Android-debug.apk
+          files: artifacts/SlaveAppsVPN-Android.apk
 
       - name: Attach APK to existing release (manual trigger with tag)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
@@ -237,5 +280,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.inputs.release_tag }}" \
-            artifacts/SlaveAppsVPN-Android-debug.apk \
+            artifacts/SlaveAppsVPN-Android.apk \
             --clobber
