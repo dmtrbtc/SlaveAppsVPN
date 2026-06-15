@@ -48,7 +48,7 @@ const MODES: ModeOption[] = [
     mode: 'split',
     Icon: SplitSquareVertical,
     label: 'Раздельный туннель',
-    description: 'Через VPN идут только выбранные приложения, остальное — напрямую.',
+    description: 'Через VPN идут только выбранные приложения, остальное — напрямую. Приложения выбираются в блоке «Приложения и VPN».',
   },
   {
     mode: 'custom',

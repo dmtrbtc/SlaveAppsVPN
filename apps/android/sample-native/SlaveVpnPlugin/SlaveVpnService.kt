@@ -237,7 +237,13 @@ class SlaveVpnService : VpnService() {
      * If nothing is applicable the tunnel covers all apps (the safe default).
      */
     private fun applySplitTunnel(builder: Builder, mode: String, apps: List<String>) {
-        if (mode == "off" || apps.isEmpty()) return
+        if (mode == "off" || apps.isEmpty()) {
+            // Always log the split decision so «раздельный туннель не работает»
+            // reports are diagnosable: here NO per-app filter applies → every app
+            // goes through the tunnel (the VPN mode's routing decides include/exclude).
+            appendLog("[service] split-tunnel: OFF — all apps via VPN (mode=$mode, selected=${apps.size})")
+            return
+        }
         var applied = 0
         for (pkg in apps) {
             try {

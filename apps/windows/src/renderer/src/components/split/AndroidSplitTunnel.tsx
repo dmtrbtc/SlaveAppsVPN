@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Search, Check, SplitSquareVertical, Landmark } from 'lucide-react'
+import { Search, Check, SplitSquareVertical, Landmark, AlertTriangle } from 'lucide-react'
 import { Segmented } from '../ui/segmented'
 import { Input } from '../ui/input'
 import { Button } from '../ui/button'
 import { Spinner } from '../ui/spinner'
 import { settingsApi, splitApi } from '../../lib/api'
 import { useUIStore } from '../../stores/ui.store'
+import { useVpnStore, selectVpnStatus } from '../../stores/vpn.store'
 import { IS_MOBILE } from '../../lib/platform'
 import { cn } from '../../lib/utils'
 import type { SplitAppInfo } from '@shared/ipc/types'
@@ -19,9 +20,9 @@ const MODE_OPTIONS: { value: Mode; label: string }[] = [
 ]
 
 const MODE_HINT: Record<Mode, string> = {
-  off:     'Весь трафик идёт через VPN.',
-  include: 'Через VPN пойдут ТОЛЬКО выбранные приложения.',
-  exclude: 'Выбранные приложения идут МИМО VPN (прямое подключение). Нужно для банков, которые блокируют вход при включённом VPN. Работает в любом режиме.',
+  off:     'Раздельного туннеля нет — весь трафик идёт через VPN (по выбранному режиму маршрутизации).',
+  include: 'Через VPN идут ТОЛЬКО отмеченные приложения. Всё остальное — напрямую, мимо VPN.',
+  exclude: 'Отмеченные приложения идут НАПРЯМУЮ, мимо VPN (например банки, которые блокируют вход при включённом VPN). Остальное — через VPN.',
 }
 
 // Substring patterns (matched against the installed-app packageName) for Russian
@@ -39,6 +40,15 @@ function isBankApp(pkg: string): boolean {
   return BANK_PACKAGE_PATTERNS.some(pat => p.includes(pat))
 }
 
+function SplitWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-connecting/30 bg-connecting/10 px-3 py-2">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-connecting" />
+      <p className="text-[11px] leading-snug text-text-secondary">{children}</p>
+    </div>
+  )
+}
+
 /**
  * Per-app split tunnel for Android (native VpnService addAllowed/Disallowed-
  * Application). Mode + the selected package list persist in AppSettings
@@ -51,6 +61,7 @@ export function AndroidSplitTunnel() {
 
 function AndroidSplitTunnelInner() {
   const { notify } = useUIStore()
+  const vpnMode = useVpnStore(selectVpnStatus).mode
   const [mode, setMode] = useState<Mode>('off')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [apps, setApps] = useState<SplitAppInfo[]>([])
@@ -138,7 +149,7 @@ function AndroidSplitTunnelInner() {
         <SplitSquareVertical className="h-4 w-4 text-accent shrink-0" />
         <div className="min-w-0 flex-1">
           <p className="text-[13px] font-semibold text-text-primary">Приложения и VPN</p>
-          <p className="text-[11px] text-text-muted">Какие приложения идут через VPN, а какие — мимо</p>
+          <p className="text-[11px] text-text-muted">Раздельный туннель: какие приложения идут через VPN, а какие — мимо</p>
         </div>
       </div>
 
@@ -150,6 +161,20 @@ function AndroidSplitTunnelInner() {
 
       <Segmented options={MODE_OPTIONS} value={mode} onChange={changeMode} size="sm" />
       <p className="text-[11px] text-text-muted">{MODE_HINT[mode]}</p>
+
+      {/* «Раздельный» VPN-режим выбран, но фильтра нет → весь трафик в туннеле. */}
+      {vpnMode === 'split' && mode === 'off' && (
+        <SplitWarning>
+          Режим «Раздельный» выбран, но приложения не указаны — сейчас весь трафик идёт через VPN.
+          Выберите <b>«Только выбр.»</b> и отметьте нужные приложения ниже.
+        </SplitWarning>
+      )}
+      {/* Фильтр включён, но список пуст → ведёт себя как «Все». */}
+      {mode !== 'off' && selected.size === 0 && (
+        <SplitWarning>
+          Ничего не выбрано — фильтр пока не действует (как «Все»). Отметьте приложения ниже.
+        </SplitWarning>
+      )}
 
       {mode !== 'off' && (
         <>
