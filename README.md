@@ -150,7 +150,6 @@ Android APK собирается в CI — `.github/workflows/android.yml`. Ло
 
 | Документ | Описание |
 |---|---|
-| [docs/CABINET_INTEGRATION.md](./docs/CABINET_INTEGRATION.md) | 🔌 Подключение своего личного кабинета (white-label) + API-контракт |
 | [docs/ANDROID_SIGNING.md](./docs/ANDROID_SIGNING.md) | Подпись Android-релиза (keystore + секреты CI) |
 | [docs/ANDROID.md](./docs/ANDROID.md) | Сборка и устройство Android-клиента |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Архитектурные решения и слои |
