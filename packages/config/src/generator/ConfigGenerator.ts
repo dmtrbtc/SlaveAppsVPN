@@ -313,6 +313,16 @@ function buildLegacyRules(mode: VPNMode, splitProcesses?: string[]): string[] {
         `MATCH,${SLAVE_SELECT_GROUP}`,
       ]
 
+    case 'blocked':
+      // «Только заблокированное» normally runs via the smart-russia-bypass scenario
+      // policy; this is the legacy fallback (if that policy fails validation):
+      // everything DIRECT, while the RKN-list rule-providers (added separately,
+      // action=proxy) still send blocked domains through the VPN.
+      return [
+        ...PRIVATE_DIRECT_RULES,
+        'MATCH,DIRECT',
+      ]
+
     case 'split':
       return [
         ...(splitProcesses ?? []).map((p) => `PROCESS-NAME,${p},${SLAVE_SELECT_GROUP}`),

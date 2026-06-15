@@ -129,7 +129,10 @@ export async function compileMihomoConfigForAndroid(
     dnsProfile: buildAndroidDnsProfile({
       dohUrl,
       nodeDomainSuffixes,
-      ruDirectDns: options.vpnMode === 'bypass' || options.vpnMode === 'custom',
+      ruDirectDns:
+        options.vpnMode === 'bypass' ||
+        options.vpnMode === 'blocked' ||
+        options.vpnMode === 'custom',
     }),
     // Scenario rules WIN over androidRouting's smart/global/direct split (the
     // generator forces mode:'rule' when routingPolicy is present). geo / DNS /

@@ -28,6 +28,7 @@ import { formatSpeed, formatBytes, formatUptime } from '../lib/utils'
 const MODE_LABELS: Record<string, string> = {
   full:    'Полный VPN',
   bypass:  'Обход блокировок',
+  blocked: 'Только заблок.',
   split:   'Раздельный',
   custom:  'Кастомный',
 }

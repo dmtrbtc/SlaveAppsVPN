@@ -9,6 +9,7 @@ export type VPNConnectionState =
 export type VPNMode =
   | 'full'
   | 'bypass'
+  | 'blocked'
   | 'split'
   | 'custom'
 

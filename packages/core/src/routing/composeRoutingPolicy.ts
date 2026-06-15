@@ -78,6 +78,11 @@ export function composeRoutingPolicy(enabledIds: readonly string[]): ComposeRout
 // (ConfigGenerator), so the Полный/Раздельный buttons were dead and traffic
 // followed whatever scenario was active. Now the mode decides.
 const BYPASS_SCENARIOS: readonly ScenarioId[] = ['roscomvpn-default']
+// «Только заблокированное» — defaultAction DIRECT, only the RKN-list rule-providers
+// (inside-raw + Re-filter, action=proxy) + AI/blocked services tunnel; everything
+// else (incl. foreign) goes DIRECT. The inverse of bypass (proxy-default). Reuses
+// smart-russia-bypass, whose defaultAction is DIRECT.
+const BLOCKED_ONLY_SCENARIOS: readonly ScenarioId[] = ['smart-russia-bypass']
 
 export function resolveRoutingPolicyForMode(
   mode: VPNMode,
@@ -90,6 +95,8 @@ export function resolveRoutingPolicyForMode(
       return { policy: null, warnings: [], valid: true, errors: [] }
     case 'bypass':
       return composeRoutingPolicy(BYPASS_SCENARIOS)
+    case 'blocked':
+      return composeRoutingPolicy(BLOCKED_ONLY_SCENARIOS)
     case 'custom':
     default:
       return composeRoutingPolicy(enabledScenarios)

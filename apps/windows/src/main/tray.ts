@@ -34,6 +34,7 @@ const MAX_TRAY_PROXIES = 12
 const MODE_LABELS: Record<VPNMode, string> = {
   full: 'Полный VPN',
   bypass: 'Обход блокировок',
+  blocked: 'Только заблокированное',
   split: 'Раздельный туннель',
   custom: 'Кастомный',
 }

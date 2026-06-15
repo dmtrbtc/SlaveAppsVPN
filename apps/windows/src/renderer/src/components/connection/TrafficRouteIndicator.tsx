@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { Globe, Shield, SplitSquareVertical, Settings2, ChevronRight, type LucideIcon } from 'lucide-react'
+import { Globe, Shield, SplitSquareVertical, Settings2, ChevronRight, Filter, type LucideIcon } from 'lucide-react'
 import { useVpnStore, selectVpnStatus } from '../../stores/vpn.store'
 import { cn } from '../../lib/utils'
 
@@ -27,6 +27,12 @@ const MODE_INFO: Record<string, ModeInfo> = {
     icon: Shield,
     summary: 'Российские сайты — напрямую, остальное — через VPN',
     flow: { left: '🇷🇺 РФ → напрямую', right: '🌍 Мир → VPN' },
+  },
+  blocked: {
+    label: 'Только заблокированное',
+    icon: Filter,
+    summary: 'Через VPN только заблокированные сайты, остальное — напрямую',
+    flow: { left: '🌍 Обычное → напрямую', right: '🚫 Заблок. → VPN' },
   },
   split: {
     label: 'Раздельный',

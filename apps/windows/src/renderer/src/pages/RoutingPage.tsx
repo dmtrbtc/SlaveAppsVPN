@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Globe, Shield, SplitSquareVertical, Settings2, Check,
   Plus, RefreshCw, ToggleLeft, ToggleRight, Trash2, AlertCircle, X,
-  Map, ShieldOff, ShieldCheck, Play, Sparkles, Gamepad2, Cpu, type LucideIcon,
+  Map, ShieldOff, ShieldCheck, Play, Sparkles, Gamepad2, Cpu, Filter, type LucideIcon,
 } from 'lucide-react'
 import { ProcessPickerModal } from '../components/split/ProcessPickerModal'
 import { splitApi } from '../lib/api'
@@ -37,6 +37,12 @@ const MODES: ModeOption[] = [
     label: 'Обход',
     description: 'Российские сайты и банки — напрямую, всё остальное (включая заблокированное) — через VPN.',
     recommended: true,
+  },
+  {
+    mode: 'blocked',
+    Icon: Filter,
+    label: 'Только заблокированное',
+    description: 'Через VPN идут ТОЛЬКО заблокированные в РФ сайты (по спискам РКН). Всё остальное — напрямую. Минимальный туннель, максимум скорости.',
   },
   {
     mode: 'full',
