@@ -4,6 +4,7 @@
 
 import type { VPNMode } from '@slave-vpn/shared'
 import type { DnsPresetName, DnsStrategyName, DnsProfileConfig } from '../dns/types.js'
+import type { DohProviderSetting } from '../dns/dohProviders.js'
 
 export type SelectedEngine = 'mihomo' | 'singbox' | 'xray'
 export type BalancerMode = 'latency' | 'stability' | 'balanced' | 'manual'
@@ -113,6 +114,10 @@ export interface AppSettings {
   dnsPreset: DnsPresetName
   dnsStrategy: DnsStrategyName
   customDnsProfile: DnsProfileConfig | null
+  // Cross-platform DoH provider (Cloudflare/Google/Quad9/AdGuard/custom). Overrides
+  // the preset's primary DoH endpoint on both platforms. Optional for back-compat
+  // with persisted settings written before this field existed (→ Cloudflare).
+  dohProvider?: DohProviderSetting
   balancerEnabled: boolean
   balancerMode: BalancerMode
   autoSelectProxy: boolean

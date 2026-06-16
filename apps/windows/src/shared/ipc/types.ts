@@ -193,6 +193,14 @@ export type SubscriptionRemoveDeviceResult = IpcResult<void>
 
 export type SelectedEngine = 'mihomo' | 'singbox' | 'xray'
 
+export interface DohProviderSetting {
+  /** provider id (cloudflare/google/quad9/adguard) or 'custom' */
+  id: string
+  /** used when id === 'custom'. `| undefined` to accept zod-parsed input under
+   *  exactOptionalPropertyTypes. */
+  customUrl?: string | undefined
+}
+
 export interface AppSettings {
   language: 'ru' | 'en'
   vpnMode: VPNMode
@@ -210,6 +218,9 @@ export interface AppSettings {
   dnsPreset: DnsPresetName
   dnsStrategy: DnsStrategyName
   customDnsProfile: DnsProfileConfig | null
+  // Cross-platform DoH provider (Cloudflare/Google/Quad9/AdGuard/custom). Overrides
+  // the preset's primary DoH endpoint. Optional for back-compat with old settings.
+  dohProvider?: DohProviderSetting
   balancerEnabled: boolean
   balancerMode: BalancerMode
   autoSelectProxy: boolean
@@ -660,6 +671,13 @@ export type DnsGetProfileResult = IpcResult<DnsProfileConfig>
 export type DnsSetProfileResult = IpcResult<void>
 export type DnsGetPresetsResult = IpcResult<DnsPresetInfo[]>
 export type DnsGetStrategiesResult = IpcResult<DnsStrategyInfo[]>
+export interface DohProviderInfo {
+  id: string
+  label: string
+  /** DoH endpoint; empty for the 'custom' entry */
+  doh: string
+}
+export type DnsGetDohProvidersResult = IpcResult<DohProviderInfo[]>
 
 export interface DnsSetProfilePayload {
   profile: DnsProfileConfig
@@ -1052,6 +1070,7 @@ export interface SlaveVPNBridge {
     setProfile: (payload: DnsSetProfilePayload) => Promise<DnsSetProfileResult>
     getPresets: () => Promise<DnsGetPresetsResult>
     getStrategies: () => Promise<DnsGetStrategiesResult>
+    getDohProviders: () => Promise<DnsGetDohProvidersResult>
     leakTest: () => Promise<DnsLeakTestResult>
   }
   rules: {

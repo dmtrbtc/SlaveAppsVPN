@@ -122,8 +122,8 @@ export function DnsPage() {
       </div>
 
       <div className="flex flex-col gap-2.5 px-6 py-5">
-        {/* Android: DoH provider selector (Cloudflare/Google/Quad9/AdGuard/custom).
-            Self-gates to mobile. */}
+        {/* Cross-platform DoH provider (Cloudflare/Google/Quad9/AdGuard/custom).
+            Overrides the preset's primary endpoint on both Windows and Android. */}
         <DnsProviderSelector />
 
         {/* Profile grid — 2×2 */}

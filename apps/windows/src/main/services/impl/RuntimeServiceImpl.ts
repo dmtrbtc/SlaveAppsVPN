@@ -22,7 +22,7 @@ import { getNodeHealthManager } from '../NodeHealthManager'
 import { getConfigSourceService } from './ConfigSourceService'
 import { getLogger } from '../../logger'
 import { normalizeSubscriptionContent } from '@slave-vpn/config'
-import { buildEngineDnsProfile } from '../DnsProfileService'
+import { buildEngineDnsProfile, resolveDohUrl } from '../DnsProfileService'
 import { getRoutingScenarioService } from '../RoutingScenarioService'
 import { getSubscriptionStore } from '../SubscriptionStore'
 import { getSubscriptionAggregator } from '../SubscriptionAggregatorService'
@@ -368,7 +368,17 @@ export class RuntimeServiceImpl implements RuntimeService {
 
   private buildDnsProfileForEngine(): DnsProfile {
     const settings = this.getSettings()
-    return buildEngineDnsProfile(settings.dnsPreset, settings.customDnsProfile, settings.dnsStrategy)
+    // Unified DoH provider (shared with Android): override the preset's primary
+    // DoH endpoint with the user's chosen provider. undefined → preset default.
+    const dohOverrideUrl = settings.dohProvider
+      ? resolveDohUrl(settings.dohProvider)
+      : undefined
+    return buildEngineDnsProfile(
+      settings.dnsPreset,
+      settings.customDnsProfile,
+      settings.dnsStrategy,
+      dohOverrideUrl,
+    )
   }
 
   private buildRoutingPolicyForEngine(): NormalizedPolicy | undefined {

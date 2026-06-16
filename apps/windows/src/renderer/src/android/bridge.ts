@@ -16,7 +16,7 @@ import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
-import { getDnsPresets, getDnsStrategies, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import { getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
 import type { AppSettings, UtlsFingerprintName, CabinetUser, CabinetSubscription } from '@slave-vpn/core'
 import {
   loadProfiles, listProfiles, subscribeProfiles, getProfile,
@@ -934,6 +934,9 @@ export function installAndroidBridge(): void {
       // Windows) instead of empty stubs, so the DNS screen shows real options.
       getPresets: async () => ok(getDnsPresets() as never),
       getStrategies: async () => ok(getDnsStrategies() as never),
+      // Unified DoH catalogue (shared with Windows) — drives the cross-platform
+      // DnsProviderSelector. The chosen provider persists in settings.dohProvider.
+      getDohProviders: async () => ok(DOH_PROVIDERS as never),
       leakTest: notImplemented('dns.leakTest'),
     },
     rules: {

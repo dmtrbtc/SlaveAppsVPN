@@ -286,6 +286,9 @@ const bridge: SlaveVPNBridge = {
     getStrategies: () =>
       invoke(IpcChannel.DNS_GET_STRATEGIES),
 
+    getDohProviders: () =>
+      invoke(IpcChannel.DNS_GET_DOH_PROVIDERS),
+
     leakTest: () =>
       invoke(IpcChannel.DNS_LEAK_TEST),
   },

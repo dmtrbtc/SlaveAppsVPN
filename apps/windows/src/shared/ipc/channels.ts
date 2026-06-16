@@ -120,6 +120,7 @@ export const IpcChannel = {
   DNS_SET_PROFILE: 'dns:setProfile',
   DNS_GET_PRESETS: 'dns:getPresets',
   DNS_GET_STRATEGIES: 'dns:getStrategies',
+  DNS_GET_DOH_PROVIDERS: 'dns:getDohProviders',
   DNS_LEAK_TEST: 'diag:dnsLeakTest',
 
   // Rules
@@ -244,6 +245,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'DNS_SET_PROFILE'
   | 'DNS_GET_PRESETS'
   | 'DNS_GET_STRATEGIES'
+  | 'DNS_GET_DOH_PROVIDERS'
   | 'DNS_LEAK_TEST'
   | 'RULES_LIST'
   | 'RULES_ADD'

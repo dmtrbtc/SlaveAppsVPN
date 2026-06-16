@@ -11,7 +11,11 @@ import {
   getDnsPresets,
   getDnsStrategies,
   resolveDnsProfile,
+  resolveDohUrl as coreResolveDohUrl,
+  DOH_PROVIDERS,
 } from '@slave-vpn/core'
+import type { DohProviderSetting } from '@slave-vpn/core'
+import type { DohProviderInfo } from '../../shared/ipc/types'
 import type {
   DnsProfileConfig,
   DnsPresetName,
@@ -35,10 +39,21 @@ export function getStrategies(): DnsStrategyInfo[] {
   return getDnsStrategies()
 }
 
+/** Resolve a DoH provider setting → effective https endpoint (shared with Android). */
+export function resolveDohUrl(v?: DohProviderSetting): string {
+  return coreResolveDohUrl(v)
+}
+
+/** The shared DoH provider catalogue (Cloudflare/Google/Quad9/AdGuard). */
+export function getDohProviders(): DohProviderInfo[] {
+  return DOH_PROVIDERS
+}
+
 export function buildEngineDnsProfile(
   preset: DnsPresetName,
   custom?: DnsProfileConfig | null,
   strategyOverride?: DnsStrategyName,
+  dohOverrideUrl?: string,
 ): DnsProfile {
-  return resolveDnsProfile(preset, custom, strategyOverride)
+  return resolveDnsProfile(preset, custom, strategyOverride, dohOverrideUrl)
 }

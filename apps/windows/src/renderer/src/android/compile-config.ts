@@ -5,10 +5,10 @@ import {
   type GeneratorSettings,
 } from '@slave-vpn/config'
 import { buildAndroidDnsProfile } from '@slave-vpn/dns'
-import { resolveRoutingPolicyForMode } from '@slave-vpn/core'
+import { resolveRoutingPolicyForMode, resolveDohUrl } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './aggregator'
-import { resolveDohUrl, getRuleLists } from './runtime-settings'
+import { getDnsProvider, getRuleLists } from './runtime-settings'
 import { androidSettings } from './settings-store'
 import { createAndroidStorageAdapter } from './adapters'
 import { getCachedGeoSiteCategories } from './geosite-categories'
@@ -67,8 +67,10 @@ export async function compileMihomoConfigForAndroid(
     proxies.map(p => p.server).filter((s): s is string => !!s && !IPV4_RE.test(s)),
   )]
 
-  // DoH provider + rule lists come from user settings (runtime-settings store).
-  const dohUrl = resolveDohUrl()
+  // DoH provider now lives in unified AppSettings (shared with Windows); fall back
+  // to the legacy runtime-settings store so installs that picked a provider before
+  // the migration keep their choice. Rule lists stay in the runtime-settings store.
+  const dohUrl = resolveDohUrl(androidSettings().dohProvider ?? getDnsProvider())
   const enabledLists = getRuleLists().filter(l => l.enabled)
 
   // P1.b.2 — unified routing: compose the SAME engine-ready routingPolicy

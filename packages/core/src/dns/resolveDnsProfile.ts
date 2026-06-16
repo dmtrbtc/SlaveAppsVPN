@@ -84,6 +84,17 @@ function withStrategy(profile: DnsProfile, strategy: DnsStrategy | undefined): D
   return { ...profile, strategy }
 }
 
+// Override the primary nameserver(s) with the user-chosen DoH provider endpoint.
+// The preset still drives behaviour (fake-ip / ipv6 / leak-prevention / strategy);
+// only the upstream resolver changes. Bootstrap nameservers are left intact — they
+// resolve the DoH hostname and must stay plaintext. Applied before user custom
+// resolvers so an explicit custom-resolver list still wins.
+function withDohOverride(profile: DnsProfile, dohUrl: string | undefined): DnsProfile {
+  const url = (dohUrl ?? '').trim()
+  if (!url) return profile
+  return { ...profile, nameservers: [toResolver(url)] }
+}
+
 // Layer user customisations (resolvers/rules/prefetch) onto a base preset.
 function withCustomisations(base: DnsProfile, custom?: DnsProfileConfig | null): DnsProfile {
   if (!custom) return base
@@ -111,6 +122,7 @@ export function resolveDnsProfile(
   preset: DnsPresetName,
   custom?: DnsProfileConfig | null,
   strategyOverride?: DnsStrategyName,
+  dohOverrideUrl?: string,
 ): DnsProfile {
   const strategy = toEngineStrategy(strategyOverride)
 
@@ -133,6 +145,7 @@ export function resolveDnsProfile(
       break
   }
 
+  base = withDohOverride(base, dohOverrideUrl)
   base = withCustomisations(base, custom)
   base = withStrategy(base, strategy)
   return base

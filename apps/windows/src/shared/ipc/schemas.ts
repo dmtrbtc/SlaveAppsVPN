@@ -74,6 +74,9 @@ export const SettingsSetSchema = z
     selectedEngine: z.enum(['mihomo', 'singbox', 'xray']).optional(),
     dnsPreset: z.enum(['secure', 'balanced', 'performance', 'minimal', 'custom']).optional(),
     dnsStrategy: z.enum(['prefer_ipv4', 'ipv4_only', 'prefer_ipv6', 'ipv6_only']).optional(),
+    dohProvider: z
+      .object({ id: z.string().max(32), customUrl: z.string().max(512).optional() })
+      .optional(),
     balancerEnabled: z.boolean().optional(),
     balancerMode: z.enum(['latency', 'stability', 'balanced', 'manual']).optional(),
     autoSelectProxy: z.boolean().optional(),

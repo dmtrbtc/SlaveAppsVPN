@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc } from '../registry'
 import { getSettingsStore } from '../../services/SettingsStore'
-import { buildDnsProfileConfig, getPresets, getStrategies } from '../../services/DnsProfileService'
+import { buildDnsProfileConfig, getPresets, getStrategies, getDohProviders } from '../../services/DnsProfileService'
 import { runDnsLeakTest } from '../../services/DnsLeakTest'
 import { EmptySchema } from '../../../shared/ipc/schemas'
 const ResolverKindSchema = z.enum(['doh', 'dot', 'udp', 'tcp', 'doq'])
@@ -68,6 +68,10 @@ export function registerDnsHandlers(): void {
 
   handleIpc(IpcChannel.DNS_GET_STRATEGIES, EmptySchema, async () => {
     return okResult(getStrategies())
+  })
+
+  handleIpc(IpcChannel.DNS_GET_DOH_PROVIDERS, EmptySchema, async () => {
+    return okResult(getDohProviders())
   })
 
   handleIpc(IpcChannel.DNS_LEAK_TEST, EmptySchema, async () => {

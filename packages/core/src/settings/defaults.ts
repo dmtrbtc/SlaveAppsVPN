@@ -25,6 +25,7 @@ export function createDefaultSettings(overrides: Partial<AppSettings> = {}): App
     dnsPreset: 'secure',
     dnsStrategy: 'prefer_ipv4',
     customDnsProfile: null,
+    dohProvider: { id: 'cloudflare' },
     balancerEnabled: false,
     balancerMode: 'balanced',
     autoSelectProxy: false,

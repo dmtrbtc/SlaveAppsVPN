@@ -221,6 +221,8 @@ export const dnsApi = {
     unwrap(requireBridge().dns.getPresets()),
   getStrategies: () =>
     unwrap(requireBridge().dns.getStrategies()),
+  getDohProviders: () =>
+    unwrap(requireBridge().dns.getDohProviders()),
   leakTest: () =>
     unwrap(requireBridge().dns.leakTest()),
 }

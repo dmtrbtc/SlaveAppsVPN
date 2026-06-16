@@ -1,19 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Layers, RefreshCw, Loader2, Check } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { IS_MOBILE } from '../../lib/platform'
 import { Button } from '../ui/button'
 import { useUIStore } from '../../stores/ui.store'
 import { useVpnStore, selectConnectionState } from '../../stores/vpn.store'
-import {
-  DOH_PRESETS, getDnsProvider, setDnsProvider, type DnsProviderSetting,
-} from '../../android/runtime-settings'
+import { settingsApi, dnsApi } from '../../lib/api'
+import type { DohProviderInfo, DohProviderSetting } from '@shared/ipc/types'
+
+// Fallback default (Cloudflare) — the live catalogue comes from dnsApi.getDohProviders().
+const DEFAULT_DOH_PROVIDER: DohProviderSetting = { id: 'cloudflare' }
 
 /**
- * DoH (DNS-over-HTTPS) provider selector for Android: pick Cloudflare / Google /
- * Quad9 / AdGuard, or a custom DoH URL. The choice drives the generated mihomo
- * DNS section (через туннель, без утечек) and applies on the next connect.
- * Android-only — desktop has the full DnsPage.
+ * Cross-platform DoH (DNS-over-HTTPS) provider selector: pick Cloudflare / Google /
+ * Quad9 / AdGuard, or a custom DoH URL. The choice is stored in the unified
+ * AppSettings.dohProvider and overrides the DNS preset's primary endpoint on BOTH
+ * platforms — Windows (engine DnsProfile) and Android (compiled mihomo config).
+ * Applies on the next connect (offered inline when already connected).
  */
 export function DnsProviderSelector() {
   const { notify } = useUIStore()
@@ -21,20 +23,35 @@ export function DnsProviderSelector() {
   const connect = useVpnStore(s => s.connect)
   const disconnect = useVpnStore(s => s.disconnect)
 
-  const [setting, setSetting] = useState<DnsProviderSetting>(getDnsProvider)
-  const [customUrl, setCustomUrl] = useState(getDnsProvider().customUrl ?? '')
+  const [providers, setProviders] = useState<DohProviderInfo[]>([])
+  const [setting, setSetting] = useState<DohProviderSetting>(DEFAULT_DOH_PROVIDER)
+  const [customUrl, setCustomUrl] = useState('')
   const [dirty, setDirty] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
 
-  if (!IS_MOBILE) return null
+  // Load the shared DoH catalogue + the persisted provider on mount.
+  useEffect(() => {
+    dnsApi.getDohProviders().then(setProviders).catch(() => {})
+    settingsApi.get().then(s => {
+      const v = s.dohProvider ?? DEFAULT_DOH_PROVIDER
+      setSetting(v)
+      setCustomUrl(v.customUrl ?? '')
+    }).catch(() => {})
+  }, [])
+
+  const persist = (next: DohProviderSetting) => {
+    setSetting(next); setDirty(true)
+    void settingsApi.set({ dohProvider: next }).catch(() => {
+      notify({ type: 'error', title: 'Ошибка', message: 'Не удалось сохранить DNS-провайдер' })
+    })
+  }
 
   const choose = (id: string) => {
-    const next: DnsProviderSetting = id === 'custom' ? { id, customUrl } : { id }
-    setSetting(next); setDnsProvider(next); setDirty(true)
+    persist(id === 'custom' ? { id, customUrl } : { id })
   }
   const saveCustom = (url: string) => {
     setCustomUrl(url)
-    if (setting.id === 'custom') { const next = { id: 'custom', customUrl: url }; setSetting(next); setDnsProvider(next); setDirty(true) }
+    if (setting.id === 'custom') persist({ id: 'custom', customUrl: url })
   }
 
   const applyNow = async () => {
@@ -53,7 +70,7 @@ export function DnsProviderSelector() {
     }
   }
 
-  const options = [...DOH_PRESETS, { id: 'custom', label: 'Свой DoH', doh: '' }]
+  const options: DohProviderInfo[] = [...providers, { id: 'custom', label: 'Свой DoH', doh: '' }]
 
   return (
     <div className="rounded-lg border border-border bg-bg-primary p-4 flex flex-col gap-3">

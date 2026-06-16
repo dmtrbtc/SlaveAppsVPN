@@ -8,54 +8,29 @@ import { getBypassRuleListDefaults } from '@slave-vpn/core'
 const DNS_PROVIDER_LS_KEY = 'slave.settings.dnsProvider.v1'
 const RULE_LISTS_LS_KEY = 'slave.settings.ruleLists.v1'
 
-// ─── DNS (DoH) provider ──────────────────────────────────────────────────────
+// ─── DNS (DoH) provider — LEGACY read-only migration source ──────────────────
+// The DoH provider now lives in unified AppSettings.dohProvider (shared with
+// Windows). This getter is kept ONLY so installs that persisted a choice in the
+// old localStorage key keep it on first run after upgrading; compile-config reads
+// `settings.dohProvider ?? getDnsProvider()`. The catalogue + resolveDohUrl moved
+// to @slave-vpn/core (DOH_PROVIDERS). Shape matches core's DohProviderSetting.
 
-export interface DohProvider {
+interface LegacyDnsProviderSetting {
   id: string
-  label: string
-  /** DoH endpoint. Empty for the "custom" entry until the user fills `customUrl`. */
-  doh: string
-}
-
-export const DOH_PRESETS: DohProvider[] = [
-  { id: 'cloudflare', label: 'Cloudflare', doh: 'https://dns.cloudflare.com/dns-query' },
-  { id: 'google',     label: 'Google',     doh: 'https://dns.google/dns-query' },
-  { id: 'quad9',      label: 'Quad9',      doh: 'https://dns.quad9.net/dns-query' },
-  { id: 'adguard',    label: 'AdGuard',    doh: 'https://dns.adguard-dns.com/dns-query' },
-]
-
-export interface DnsProviderSetting {
-  /** preset id, or 'custom' */
-  id: string
-  /** used when id === 'custom' */
   customUrl?: string
 }
 
-const DEFAULT_DNS: DnsProviderSetting = { id: 'cloudflare' }
+const DEFAULT_DNS: LegacyDnsProviderSetting = { id: 'cloudflare' }
 
-export function getDnsProvider(): DnsProviderSetting {
+export function getDnsProvider(): LegacyDnsProviderSetting {
   try {
     const raw = window.localStorage.getItem(DNS_PROVIDER_LS_KEY)
     if (raw) {
-      const v = JSON.parse(raw) as DnsProviderSetting
+      const v = JSON.parse(raw) as LegacyDnsProviderSetting
       if (v && typeof v.id === 'string') return v
     }
   } catch { /* ignore */ }
   return DEFAULT_DNS
-}
-
-export function setDnsProvider(v: DnsProviderSetting): void {
-  try { window.localStorage.setItem(DNS_PROVIDER_LS_KEY, JSON.stringify(v)) } catch { /* ignore */ }
-}
-
-/** Resolve the effective DoH URL for the current setting (falls back to Cloudflare). */
-export function resolveDohUrl(v: DnsProviderSetting = getDnsProvider()): string {
-  if (v.id === 'custom') {
-    const u = (v.customUrl ?? '').trim()
-    if (/^https:\/\//i.test(u)) return u
-    return DOH_PRESETS[0]!.doh
-  }
-  return DOH_PRESETS.find(p => p.id === v.id)?.doh ?? DOH_PRESETS[0]!.doh
 }
 
 // ─── Rule-provider lists (full management) ───────────────────────────────────
