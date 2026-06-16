@@ -44,8 +44,8 @@ const RULES_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'rules')
 
 const ENGINES = {
   mihomo: {
-    version: 'v1.18.7',
-    url: 'https://github.com/MetaCubeX/mihomo/releases/download/v1.18.7/mihomo-windows-amd64-v1.18.7.zip',
+    version: 'v1.19.27',
+    url: 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-windows-amd64-v1.19.27.zip',
     archive: 'zip',
     archiveMember: /mihomo-windows-amd64\.exe$/,
     outName: 'mihomo.exe',

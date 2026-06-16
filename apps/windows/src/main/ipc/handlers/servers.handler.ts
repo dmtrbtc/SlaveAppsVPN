@@ -116,6 +116,59 @@ function detectCountry(name: string, server: string): CountryInfo {
   return codeFromTokens(name) ?? codeFromTokens(server) ?? { code: 'UN', name: 'Неизвестно', flag: '🌐' }
 }
 
+// ─── IP-based country geolocation (mirrors the Android servers.ts path) ───────
+// The country was guessed from the node NAME; this resolves the real country from
+// the server IP/host via a free geoip API (ipwho.is). The API supplies only an
+// accurate country_code — we reuse CODE_TO_INFO for the RU label/flag. Name-based
+// detection (toServer) stays as the fallback. Cached in-process (host→info) so the
+// lookup is a one-time cost; globally capped so a slow API never blocks the list.
+
+const geoCache = new Map<string, CountryInfo | null>()
+
+function normalizeHost(server: string): string {
+  return server.replace(/:\d+$/, '').trim()
+}
+
+async function lookupCountryByIp(server: string): Promise<CountryInfo | null> {
+  const host = normalizeHost(server)
+  if (!host) return null
+  if (geoCache.has(host)) return geoCache.get(host) ?? null
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 3000)
+  try {
+    const res = await fetch(
+      `https://ipwho.is/${encodeURIComponent(host)}?fields=success,country,country_code,flag`,
+      { signal: ctrl.signal },
+    )
+    const d = (await res.json()) as { success?: boolean; country?: string; country_code?: string; flag?: { emoji?: string } }
+    if (!d || d.success === false || !d.country_code) { geoCache.set(host, null); return null }
+    const code = CODE_ALIASES[d.country_code.toUpperCase()] ?? d.country_code.toUpperCase()
+    const info = CODE_TO_INFO[code] ?? { code, name: d.country || code, flag: d.flag?.emoji || '🌐' }
+    geoCache.set(host, info)
+    return info
+  } catch {
+    return null  // do not cache transient failures
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function enrichCountriesByIp(servers: Server[], entries: ServerListEntry[]): Promise<void> {
+  const tasks = servers.map(async (srv, i) => {
+    const host = entries[i]?.server
+    if (!host) return
+    const info = await lookupCountryByIp(host)
+    if (!info) return
+    srv.countryCode = info.code
+    srv.countryName = info.name
+    srv.flagEmoji = info.flag
+  })
+  await Promise.race([
+    Promise.allSettled(tasks),
+    new Promise<void>(r => setTimeout(r, 3000)),
+  ])
+}
+
 // ─── Mapping ──────────────────────────────────────────────────────────────────
 
 function toServer(entry: ServerListEntry): Server {
@@ -147,7 +200,9 @@ export function registerServersHandlers(): void {
     const log = getLogger()
     try {
       const entries = await getConfigSourceService().getServerList()
-      return okResult(entries.map(toServer))
+      const servers = entries.map(toServer)
+      await enrichCountriesByIp(servers, entries)
+      return okResult(servers)
     } catch (err: unknown) {
       log.warn({ err }, 'Failed to fetch server list')
       return okResult([])

@@ -164,26 +164,44 @@ function ruleListToProvider(e: RuleListEntry): {
 // and vpn.setMode (the latter recompiles + reconnects so a mode change applies to
 // the running tunnel).
 async function connectNative(): Promise<void> {
-  const perm = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
-  if (!perm.granted) {
-    const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
-    if (!requested.granted) throw new Error('Android VPN permission denied')
+  // Breadcrumb EVERY connect phase into the same native log ring-buffer the
+  // «Диагностика→Логи» screen reads (SlaveVpn.getLogs). The native service already
+  // logs from «starting VPN» onward, but the renderer-side prep (config compile,
+  // VPN permission) ran SILENTLY — so a FIRST-connect failure here left the log
+  // empty («лог пишется только когда уже подключился»). Now any failure leaves a
+  // trace pinpointing the phase. Config CONTENT is never logged (only its size),
+  // so no keys/UUIDs leak into the buffer.
+  try {
+    nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
+    const perm = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
+    if (!perm.granted) {
+      nativeLog('[connect] запрос разрешения VPN')
+      const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
+      if (!requested.granted) throw new Error('Android VPN permission denied')
+    }
+    nativeLog('[connect] компиляция конфига mihomo…')
+    const compiled = await compileMihomoConfigForAndroid({
+      vpnMode: currentMode,
+      ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+      utlsFingerprint: currentUtlsFingerprint,
+      routingMode: currentRoutingMode,
+    })
+    nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
+    const s = androidSettings()
+    await SlaveVpn.connect({
+      config: compiled.config,
+      ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+      vpnMode: currentMode,
+      // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
+      splitMode: s.splitTunnelMode ?? 'off',
+      splitApps: s.splitProcessList ?? [],
+    })
+    nativeLog('[connect] запрос на старт принят ядром')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    nativeLog(`[connect] ОШИБКА: ${msg}`)
+    throw e
   }
-  const compiled = await compileMihomoConfigForAndroid({
-    vpnMode: currentMode,
-    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-    utlsFingerprint: currentUtlsFingerprint,
-    routingMode: currentRoutingMode,
-  })
-  const s = androidSettings()
-  await SlaveVpn.connect({
-    config: compiled.config,
-    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-    vpnMode: currentMode,
-    // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
-    splitMode: s.splitTunnelMode ?? 'off',
-    splitApps: s.splitProcessList ?? [],
-  })
 }
 
 // Re-apply a config-affecting setting (mode, fingerprint, …) to the RUNNING

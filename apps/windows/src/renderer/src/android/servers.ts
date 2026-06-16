@@ -1,6 +1,7 @@
 import type { Server } from '@slave-vpn/shared'
 import type { ProxyEntry } from '@slave-vpn/config'
 import { buildAggregatedProxies } from './aggregator'
+import { lookupCountry } from './geoip'
 
 /**
  * Renderer-side server-list builder for Android.
@@ -144,10 +145,35 @@ export function invalidateServerCache(): void {
   cache = null
 }
 
+// Override each server's country with IP-based geolocation (decision: online
+// geoip + name fallback). The geoip API only supplies an accurate country_code;
+// we reuse the app's CODE_TO_INFO table for the RU label/flag so the display
+// stays consistent. Name-based detection (toServer) remains for any host the API
+// can't resolve. Globally capped so a slow/unreachable API never blocks the list
+// more than ~3s; cached hosts resolve instantly, so steady-state is unaffected.
+async function enrichCountriesByIp(servers: Server[], proxies: ProxyEntry[]): Promise<void> {
+  const tasks = servers.map(async (srv, i) => {
+    const host = proxies[i]?.server
+    if (!host) return
+    const geo = await lookupCountry(host)
+    if (!geo?.code) return
+    const code = CODE_ALIASES[geo.code] ?? geo.code
+    const info = CODE_TO_INFO[code] ?? { code, name: geo.name || code, flag: geo.flag || '🌐' }
+    srv.countryCode = info.code
+    srv.countryName = info.name
+    srv.flagEmoji = info.flag
+  })
+  await Promise.race([
+    Promise.allSettled(tasks),
+    new Promise<void>(r => setTimeout(r, 3000)),
+  ])
+}
+
 export async function listAndroidServers(): Promise<Server[]> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.servers
   const { proxies } = await buildAggregatedProxies()
   const servers = proxies.map(toServer)
+  await enrichCountriesByIp(servers, proxies)
   cache = { at: Date.now(), servers }
   return servers
 }
