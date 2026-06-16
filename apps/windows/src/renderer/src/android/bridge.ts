@@ -266,12 +266,24 @@ function cabSubInfo(s: CabinetSubscription) {
 // `… level=warning msg="…"`, so derive the level (otherwise the level filter and
 // colours in DiagnosticsPage never see anything but "info") and the timestamp.
 function parseNativeLogLine(line: string): { level: string; time: number; msg: string } {
-  const lower = line.toLowerCase()
   let level = 'info'
-  if (/\b(fatal|panic)\b|level=fatal/.test(lower)) level = 'fatal'
-  else if (/\berror\b|level=error/.test(lower)) level = 'error'
-  else if (/\bwarn(ing)?\b|level=warning/.test(lower)) level = 'warn'
-  else if (/\bdebug\b|level=debug/.test(lower)) level = 'debug'
+  // Prefer mihomo's EXPLICIT level token. The native forwarder prefixes each core
+  // line with `[<level>]` (and mihomo also emits `level=<x>`). Scanning the whole
+  // message for the word "error" mis-tagged routine `[warning] [TCP] dial … error:
+  // … i/o timeout` (a node unreachable) as ERROR. The first `[level]` bracket is
+  // the real level; our own lines use non-level tags ([service]/[connect]) so they
+  // fall through to the keyword heuristic below.
+  const marker = /\[(fatal|panic|error|warning|warn|info|debug)\]|level=(fatal|panic|error|warning|info|debug)/i.exec(line)
+  if (marker) {
+    const m = (marker[1] || marker[2] || '').toLowerCase()
+    level = m === 'panic' ? 'fatal' : m === 'warning' ? 'warn' : m
+  } else {
+    const lower = line.toLowerCase()
+    if (/\b(fatal|panic)\b/.test(lower)) level = 'fatal'
+    else if (/\berror\b|ошибка/.test(lower)) level = 'error'
+    else if (/\bwarn(ing)?\b/.test(lower)) level = 'warn'
+    else if (/\bdebug\b/.test(lower)) level = 'debug'
+  }
   // Leading ISO-8601 timestamp, if present.
   const iso = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/.exec(line)
   const time = iso ? Date.parse(iso[1]!) || Date.now() : Date.now()
