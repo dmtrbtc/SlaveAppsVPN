@@ -76,7 +76,11 @@ export interface ConfigGenerationContext {
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
 const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
-const URL_TEST_URL = 'http://www.gstatic.com/generate_204'
+// HTTPS (not http) — mihomo warns that HTTP health-check URLs can be hijacked by
+// proxies and that some don't handle the repeated HEAD requests, causing false
+// «context deadline exceeded» health-check failures. HTTPS is the recommended,
+// more reliable probe target.
+const URL_TEST_URL = 'https://www.gstatic.com/generate_204'
 const URL_TEST_INTERVAL = 300
 // Autobalancer (SLAVE-AUTO) tuning: only re-pick a faster node when it beats the
 // current one by >50ms (tolerance) to avoid flapping between near-equal servers;
