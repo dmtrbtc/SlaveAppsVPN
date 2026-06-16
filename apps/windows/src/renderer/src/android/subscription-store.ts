@@ -147,19 +147,33 @@ export interface AddSubscriptionOptions {
   autoUpdateMinutes?: AndroidSubscriptionEntry['autoUpdateMinutes']
 }
 
+// A raw proxy key (vless://, vmess://, ss://, trojan://, hysteria2://, tuic://, …)
+// vs a subscription URL (http/https). When the user pastes a KEY into the URL
+// field, it must be stored as 'single-proxy' — otherwise fetchEntry tries an HTTP
+// GET on "vless://…" and fails. Subscription URLs are http(s); remnawave-key is a
+// bare token (kept as-is).
+const PROXY_URI_RE = /^(vless|vmess|ss|ssr|trojan|hysteria2?|hy2|tuic|wireguard|socks5?|anytls|mieru):\/\//i
+
+/** Effective source type for an input, auto-detecting a pasted proxy-URI key. */
+export function detectInputType(input: string, fallback: AndroidSubscriptionType): AndroidSubscriptionType {
+  return PROXY_URI_RE.test(input.trim()) ? 'single-proxy' : fallback
+}
+
 export async function addSubscription(options: AddSubscriptionOptions): Promise<AndroidSubscriptionEntry> {
   const id = randomId()
+  // Auto-correct a proxy-URI key pasted into the URL field → 'single-proxy'.
+  const type = detectInputType(options.input, options.type)
   const entry: AndroidSubscriptionEntry = {
     id,
-    name: options.name?.trim() || defaultName(options),
-    type: options.type,
+    name: options.name?.trim() || defaultName({ ...options, type }),
+    type,
     enabled: true,
     autoUpdateMinutes: options.autoUpdateMinutes ?? 360,
     addedAt: Date.now(),
     lastFetchedAt: null,
     lastError: null,
     nodeCount: null,
-    ...(options.type === 'subscription-url'
+    ...(type === 'subscription-url'
       ? { urlDomain: safeUrlDomain(options.input) ?? '' }
       : {}),
   }
