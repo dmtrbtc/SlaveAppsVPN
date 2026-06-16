@@ -91,6 +91,18 @@ function buildProtocolMap(entries: ServerListEntry[]): Record<string, number> {
 }
 
 class ConfigSourceService {
+  // Cache for getServerList(): for a subscription-url source it FETCHES the
+  // subscription over the network. getProxyList() (called by the 5s tray re-sync
+  // in bootstrap.ts) and the servers list/probe handlers call this frequently —
+  // without a cache that was a subscription fetch every ~5s ("subscription fetch"
+  // log storm + engine thrash). TTL-cached; invalidated when the source changes.
+  private serverListCache: { at: number; entries: ServerListEntry[] } | null = null
+  private readonly SERVER_LIST_TTL_MS = 60_000
+
+  invalidateServerListCache(): void {
+    this.serverListCache = null
+  }
+
   getMeta(): ConfigSourceMeta | null {
     const raw = getSecureStorage().read(STORAGE_KEY)
     if (!raw) return null
@@ -184,6 +196,7 @@ class ConfigSourceService {
     if (!result.valid) {
       throw new Error(result.error ?? 'Validation failed')
     }
+    this.invalidateServerListCache()  // new source → drop the cached server list
 
     let urlDomain: string | undefined
     let proxyProtocol: string | undefined
@@ -256,6 +269,15 @@ class ConfigSourceService {
   }
 
   async getServerList(): Promise<ServerListEntry[]> {
+    if (this.serverListCache && Date.now() - this.serverListCache.at < this.SERVER_LIST_TTL_MS) {
+      return this.serverListCache.entries
+    }
+    const entries = await this.computeServerList()
+    this.serverListCache = { at: Date.now(), entries }
+    return entries
+  }
+
+  private async computeServerList(): Promise<ServerListEntry[]> {
     const raw = getSecureStorage().read(STORAGE_KEY)
     if (!raw) return []
 
