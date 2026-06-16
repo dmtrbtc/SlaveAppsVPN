@@ -7,8 +7,10 @@ import { okResult } from '../../../shared/ipc/types'
 import type { ServerLatencyPayload } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
 import { handleIpc, services } from '../registry'
-import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
+import { getConfigSourceService, extractProxiesFromYaml } from '../../services/impl/ConfigSourceService'
 import type { ServerListEntry } from '../../services/impl/ConfigSourceService'
+import { getSubscriptionStore } from '../../services/SubscriptionStore'
+import { getSubscriptionAggregator } from '../../services/SubscriptionAggregatorService'
 import { getLogger } from '../../logger'
 import { sendToRenderer } from '../../window'
 
@@ -200,13 +202,33 @@ function toServer(entry: ServerListEntry): Server {
 
 const healthTracker = new NodeHealthTracker()
 
+// Server list source of truth. Mirrors the CONNECTION path (RuntimeServiceImpl):
+// when the user has enabled multi-subscription entries, the list comes from the
+// aggregated snapshot (key + all subscriptions coexist, deduped); otherwise it
+// falls back to the single legacy config-source. This is what makes the Windows
+// list match what's actually connected and stops a pasted key from "disappearing"
+// when a subscription is added.
+async function resolveServerListEntries(): Promise<ServerListEntry[]> {
+  const hasSubs = getSubscriptionStore().list().some(e => e.enabled)
+  if (hasSubs) {
+    try {
+      const snap = await getSubscriptionAggregator().fetchAggregatedYaml()
+      const entries = extractProxiesFromYaml(snap.yaml)
+      if (entries.length > 0) return entries
+    } catch (err) {
+      getLogger().warn({ err }, 'Aggregated server list failed — falling back to config source')
+    }
+  }
+  return getConfigSourceService().getServerList()
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 export function registerServersHandlers(): void {
   handleIpc(IpcChannel.SERVERS_LIST, EmptySchema, async () => {
     const log = getLogger()
     try {
-      const entries = await getConfigSourceService().getServerList()
+      const entries = await resolveServerListEntries()
       const servers = entries.map(toServer)
       await enrichCountriesByIp(servers, entries)
       return okResult(servers)
@@ -219,7 +241,7 @@ export function registerServersHandlers(): void {
   handleIpc(IpcChannel.SERVERS_PROBE, EmptySchema, async () => {
     const log = getLogger()
     try {
-      const entries = await getConfigSourceService().getServerList()
+      const entries = await resolveServerListEntries()
       if (entries.length === 0) return okResult(undefined)
 
       const runtime = services.resolve<RuntimeService>('runtime')

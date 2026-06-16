@@ -302,7 +302,7 @@ export interface ServerListEntry {
 
 // ─── YAML proxy extractor (line-by-line, no yaml lib dependency) ──────────────
 
-function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
+export function extractProxiesFromYaml(yaml: string): ServerListEntry[] {
   const results: ServerListEntry[] = []
   const lines = yaml.split('\n')
 
