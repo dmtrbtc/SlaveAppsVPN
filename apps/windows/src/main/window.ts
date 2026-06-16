@@ -155,7 +155,11 @@ function applyContentSecurityPolicy(): void {
         ].join('; ')
       : [
           "default-src 'self'",
-          "script-src 'self'",
+          // The sha256 allows ONLY index.html's inline early-error handler (the
+          // dismissible error overlay). Keeps the strict 'self' policy (no
+          // 'unsafe-inline') while silencing the CSP violation that script logged
+          // on Windows. If that inline script changes, recompute the hash.
+          "script-src 'self' 'sha256-VsrOp9meg+PpoDCATk/X3Gw3FYkdsIG4S0fLYru8ZHQ='",
           "style-src 'self' 'unsafe-inline'",
           "img-src 'self' data: blob:",
           "font-src 'self' data:",
