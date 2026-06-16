@@ -1,4 +1,5 @@
 import type { Server } from '@slave-vpn/shared'
+import { lookup as dnsLookup } from 'node:dns/promises'
 import { NodeProber, NodeHealthTracker } from '@slave-vpn/runtime'
 import { IpcChannel } from '../../../shared/ipc/channels'
 import { EmptySchema } from '../../../shared/ipc/schemas'
@@ -134,10 +135,16 @@ async function lookupCountryByIp(server: string): Promise<CountryInfo | null> {
   if (!host) return null
   if (geoCache.has(host)) return geoCache.get(host) ?? null
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 3000)
+  const timer = setTimeout(() => ctrl.abort(), 4000)
   try {
+    // ipwho.is geolocates IPs, not domains — resolve a hostname to an IP first
+    // (node can do this natively, unlike the Android renderer which uses DoH).
+    let ip = host
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host) && !host.includes(':')) {
+      try { ip = (await dnsLookup(host)).address } catch { geoCache.set(host, null); return null }
+    }
     const res = await fetch(
-      `https://ipwho.is/${encodeURIComponent(host)}?fields=success,country,country_code,flag`,
+      `https://ipwho.is/${encodeURIComponent(ip)}?fields=success,country,country_code,flag`,
       { signal: ctrl.signal },
     )
     const d = (await res.json()) as { success?: boolean; country?: string; country_code?: string; flag?: { emoji?: string } }

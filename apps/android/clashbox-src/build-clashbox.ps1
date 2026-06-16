@@ -29,8 +29,9 @@ Set-Location E:\dev\src\mihomo
 Remove-Item E:\dev\src\mihomo\clashbox.aar -ErrorAction SilentlyContinue
 $t0 = Get-Date
 
-# arm64-v8a is the primary ABI; append ,android/arm for armeabi-v7a if needed.
-gomobile bind --% -v -target=android/arm64 -androidapi=21 -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor -o E:\dev\src\mihomo\clashbox.aar ./clashbox
+# arm64-v8a + armeabi-v7a covers all real phones (64- and 32-bit ARM). x86/x86_64
+# (emulators / Intel-Android) intentionally omitted to keep the APK smaller.
+gomobile bind --% -v -target=android/arm64,android/arm -androidapi=21 -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor -o E:\dev\src\mihomo\clashbox.aar ./clashbox
 
 Write-Host "=== exit=$LASTEXITCODE elapsed=$([int]((Get-Date)-$t0).TotalSeconds)s ==="
 Get-ChildItem E:\dev\src\mihomo\clashbox.aar -ErrorAction SilentlyContinue |

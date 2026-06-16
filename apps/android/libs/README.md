@@ -11,11 +11,11 @@ push (the bind requires Go + Android NDK).
 | Property | Value |
 |---|---|
 | Source | https://github.com/MetaCubeX/mihomo `Alpha` @ `2c6ff72` (2026-06-15) |
-| Build cmd | `gomobile bind -target=android/arm64 -androidapi=21 -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor -o clashbox.aar ./clashbox` |
+| Build cmd | `gomobile bind -target=android/arm64,android/arm -androidapi=21 -javapkg=com.slavevpn.clash -tags=cmfa,with_gvisor -o clashbox.aar ./clashbox` |
 | Go version | 1.26.3 |
-| Targets | arm64-v8a |
+| Targets | arm64-v8a + armeabi-v7a (covers all real phones; x86/x86_64 omitted) |
 | License | GPL-3.0 (from mihomo) |
-| Size | ~30 MB |
+| Size | ~59 MB |
 
 The exported Go API (Clashbox / LogHandler / Protector) is consumed by
 `apps/android/sample-native/SlaveVpnPlugin/ClashBridge.kt`. Keeping `clashbox.go`

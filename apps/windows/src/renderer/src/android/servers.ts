@@ -165,7 +165,7 @@ async function enrichCountriesByIp(servers: Server[], proxies: ProxyEntry[]): Pr
   })
   await Promise.race([
     Promise.allSettled(tasks),
-    new Promise<void>(r => setTimeout(r, 3000)),
+    new Promise<void>(r => setTimeout(r, 6000)),
   ])
 }
 

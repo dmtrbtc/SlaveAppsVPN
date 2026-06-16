@@ -39,20 +39,41 @@ function normalizeHost(server: string): string {
   return server.replace(/:\d+$/, '').trim()
 }
 
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
+
+async function httpGetJson(url: string, headers?: Record<string, string>): Promise<unknown> {
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.get({ url, ...(headers ? { headers } : {}) })
+    return typeof res.data === 'string' ? JSON.parse(res.data) : res.data
+  }
+  const res = await fetch(url, headers ? { headers } : undefined)
+  return res.json()
+}
+
+// ipwho.is geolocates IPs, NOT domains (a domain → 404). Most nodes use a
+// hostname, so resolve it to an A record via Cloudflare DoH first, then geoip
+// the IP. IPs are passed through unchanged.
+async function resolveToIp(host: string): Promise<string | null> {
+  if (IPV4_RE.test(host) || host.includes(':')) return host
+  try {
+    const data = await httpGetJson(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`,
+      { accept: 'application/dns-json' },
+    ) as { Answer?: Array<{ type?: number; data?: string }> }
+    const a = (data?.Answer ?? []).find(x => x.type === 1 && x.data)
+    return a?.data ?? null
+  } catch { return null }
+}
+
 async function fetchGeo(host: string): Promise<GeoEntry | null> {
-  const url = `https://ipwho.is/${encodeURIComponent(host)}?fields=success,country,country_code,flag`
-  const timeout = new Promise<null>(r => setTimeout(() => r(null), 3000))
+  const timeout = new Promise<null>(r => setTimeout(() => r(null), 5000))
   const req = (async (): Promise<GeoEntry | null> => {
     try {
-      let payload: unknown
-      if (Capacitor.isNativePlatform()) {
-        const res = await CapacitorHttp.get({ url })
-        payload = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
-      } else {
-        const res = await fetch(url)
-        payload = await res.json()
-      }
-      const d = payload as { success?: boolean; country?: string; country_code?: string; flag?: { emoji?: string } }
+      const ip = await resolveToIp(host)
+      if (!ip) return null
+      const d = await httpGetJson(
+        `https://ipwho.is/${encodeURIComponent(ip)}?fields=success,country,country_code,flag`,
+      ) as { success?: boolean; country?: string; country_code?: string; flag?: { emoji?: string } }
       if (!d || d.success === false || !d.country_code) return null
       return {
         code: String(d.country_code).toUpperCase(),
