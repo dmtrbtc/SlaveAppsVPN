@@ -211,8 +211,16 @@ const healthTracker = new NodeHealthTracker()
 async function resolveServerListEntries(): Promise<ServerListEntry[]> {
   const hasSubs = getSubscriptionStore().list().some(e => e.enabled)
   if (hasSubs) {
+    const agg = getSubscriptionAggregator()
+    // Prefer the CACHED snapshot (built at connect + on subscription changes).
+    // The ServersPage polls this list/probe every few seconds for live latency —
+    // calling fetchAggregatedYaml() here would re-fetch EVERY subscription over the
+    // network on every poll (+ the alt-format recovery fetch), which floods the
+    // log with "subscription fetch", thrashes the engine, and broke DNS after the
+    // resulting reloads. Only fetch once if no snapshot exists yet.
     try {
-      const snap = await getSubscriptionAggregator().fetchAggregatedYaml()
+      let snap = agg.getLastSnapshot()
+      if (!snap) snap = await agg.fetchAggregatedYaml()
       const entries = extractProxiesFromYaml(snap.yaml)
       if (entries.length > 0) return entries
     } catch (err) {
