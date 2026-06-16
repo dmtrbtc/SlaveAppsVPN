@@ -15,12 +15,15 @@
 package com.slavevpn.plugin
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 
@@ -34,15 +37,8 @@ import com.getcapacitor.annotation.Permission
 )
 class SlaveVpnPlugin : Plugin() {
 
-    companion object {
-        private const val REQ_VPN_PREPARE = 0x5AFE
-    }
-
-    // Pending calls awaiting the VpnService.prepare() consent dialog result.
-    // We track them in member fields (NOT bridge.savedCall, which has no
-    // public no-arg accessor in Capacitor 7 — savedCalls is a private Map).
-    private var pendingPermissionCall: PluginCall? = null
-    private var pendingConnectCall: PluginCall? = null
+    // Connect parameters stashed while the VpnService.prepare() consent dialog is
+    // shown — read back in onVpnConnectResult once consent returns.
     private var pendingConfig: String? = null
     private var pendingSelected: String? = null
     private var pendingSplitMode: String = "off"
@@ -62,35 +58,18 @@ class SlaveVpnPlugin : Plugin() {
             call.resolve(JSObject().put("granted", true))
             return
         }
-        // Persist the call so it survives the activity-result round-trip.
-        call.setKeepAlive(true)
-        pendingPermissionCall = call
-        activity.startActivityForResult(intent, REQ_VPN_PREPARE)
+        // Capacitor 7 routes the consent-dialog result back via @ActivityCallback —
+        // NOT the legacy Plugin.handleOnActivityResult (removed in Cap 5+). The old
+        // activity.startActivityForResult + handleOnActivityResult never fired, so
+        // the promise hung on the FIRST connect (consent needed); retries worked
+        // because prepare() then returns null. startActivityForResult keeps the call.
+        startActivityForResult(call, intent, "onVpnPrepareResult")
     }
 
-    override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.handleOnActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_VPN_PREPARE) return
-
-        val granted = resultCode == android.app.Activity.RESULT_OK
-
-        // Resolve a standalone requestPermission() call, if any.
-        pendingPermissionCall?.let { permCall ->
-            permCall.resolve(JSObject().put("granted", granted))
-            permCall.setKeepAlive(false)
-            pendingPermissionCall = null
-        }
-
-        // If a connect() was waiting on consent, resume or fail it.
-        pendingConnectCall?.let { connectCall ->
-            if (granted) {
-                startVpnService(connectCall)
-            } else {
-                connectCall.reject("VPN permission denied")
-            }
-            connectCall.setKeepAlive(false)
-            pendingConnectCall = null
-        }
+    @ActivityCallback
+    private fun onVpnPrepareResult(call: PluginCall?, result: ActivityResult) {
+        if (call == null) return
+        call.resolve(JSObject().put("granted", result.resultCode == Activity.RESULT_OK))
     }
 
     @PluginMethod
@@ -109,13 +88,21 @@ class SlaveVpnPlugin : Plugin() {
 
         val intent = VpnService.prepare(context)
         if (intent != null) {
-            // Need consent first — request, then resume connect on success
-            call.setKeepAlive(true)
-            pendingConnectCall = call
-            activity.startActivityForResult(intent, REQ_VPN_PREPARE)
+            // Need consent first — show the dialog; onVpnConnectResult resumes.
+            startActivityForResult(call, intent, "onVpnConnectResult")
             return
         }
         startVpnService(call)
+    }
+
+    @ActivityCallback
+    private fun onVpnConnectResult(call: PluginCall?, result: ActivityResult) {
+        if (call == null) return
+        if (result.resultCode == Activity.RESULT_OK) {
+            startVpnService(call)
+        } else {
+            call.reject("VPN permission denied")
+        }
     }
 
     private fun startVpnService(call: PluginCall) {
