@@ -32,17 +32,17 @@ interface ModeOption {
 
 const MODES: ModeOption[] = [
   {
-    mode: 'bypass',
-    Icon: Shield,
-    label: 'Обход',
-    description: 'Российские сайты и банки — напрямую, всё остальное (включая заблокированное) — через VPN.',
-    recommended: true,
-  },
-  {
     mode: 'blocked',
     Icon: Filter,
     label: 'Только заблокированное',
     description: 'Через VPN идут ТОЛЬКО заблокированные в РФ сайты (по спискам РКН). Всё остальное — напрямую. Минимальный туннель, максимум скорости.',
+    recommended: true,
+  },
+  {
+    mode: 'bypass',
+    Icon: Shield,
+    label: 'Обход',
+    description: 'Российские сайты и банки — напрямую, всё остальное (включая заблокированное) — через VPN.',
   },
   {
     mode: 'full',

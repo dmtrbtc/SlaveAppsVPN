@@ -241,7 +241,7 @@ function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
 
 // ─── Currently-selected proxy & mode (persisted in memory) ───────────────────
 
-let currentMode: VPNMode = 'bypass'
+let currentMode: VPNMode = 'blocked'
 let currentSelectedProxy: string | undefined
 let currentUtlsFingerprint: string = 'randomized'
 const SELECTED_PROXY_LS_KEY = 'slave.settings.selectedProxy.v1'
@@ -835,7 +835,7 @@ export function installAndroidBridge(): void {
       set: (payload: Record<string, unknown>) => wrap(async () => {
         if (typeof payload['vpnMode'] === 'string') {
           const m = payload['vpnMode'] as VPNMode
-          if (m === 'full' || m === 'bypass' || m === 'split' || m === 'custom') {
+          if (m === 'full' || m === 'bypass' || m === 'blocked' || m === 'split' || m === 'custom') {
             currentMode = m
           }
         }
@@ -1075,7 +1075,7 @@ export function installAndroidBridge(): void {
   void (async () => {
     const oldMode = await getSubscriptionInput('__pref_vpn_mode__')
     const seedMode =
-      oldMode === 'full' || oldMode === 'bypass' || oldMode === 'split' || oldMode === 'custom'
+      oldMode === 'full' || oldMode === 'bypass' || oldMode === 'blocked' || oldMode === 'split' || oldMode === 'custom'
         ? (oldMode as VPNMode)
         : undefined
     const s = await initAndroidSettings({

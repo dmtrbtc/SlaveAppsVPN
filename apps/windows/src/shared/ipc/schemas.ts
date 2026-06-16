@@ -52,7 +52,7 @@ export const CabinetAutopaySchema = z.object({
 })
 
 export const VpnSetModeSchema = z.object({
-  mode: z.enum(['full', 'bypass', 'split', 'custom']),
+  mode: z.enum(['full', 'bypass', 'blocked', 'split', 'custom']),
 })
 
 export const RemoveDeviceSchema = z.object({
@@ -62,7 +62,7 @@ export const RemoveDeviceSchema = z.object({
 export const SettingsSetSchema = z
   .object({
     language: z.enum(['ru', 'en']).optional(),
-    vpnMode: z.enum(['full', 'bypass', 'split', 'custom']).optional(),
+    vpnMode: z.enum(['full', 'bypass', 'blocked', 'split', 'custom']).optional(),
     autoStart: z.boolean().optional(),
     minimizeToTray: z.boolean().optional(),
     notificationsEnabled: z.boolean().optional(),

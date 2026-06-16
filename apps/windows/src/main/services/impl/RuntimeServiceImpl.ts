@@ -196,7 +196,7 @@ export class RuntimeServiceImpl implements RuntimeService {
   private readonly binaryPath: string
   private readonly workingDir: string
 
-  private currentMode: VPNMode = 'bypass'
+  private currentMode: VPNMode = 'blocked'
   private connectedAt: number | null = null
   private lastError: string | null = null
   private lastHealthDegradation: RuntimeEventKind | null = null

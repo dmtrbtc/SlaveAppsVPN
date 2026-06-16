@@ -9,7 +9,9 @@ import type { AppSettings } from './types.js'
 export function createDefaultSettings(overrides: Partial<AppSettings> = {}): AppSettings {
   const base: AppSettings = {
     language: 'ru',
-    vpnMode: 'bypass',
+    // «Только заблокированное» — default: minimal tunnel, only RKN-blocked
+    // resources go through the VPN; everything else direct (max speed).
+    vpnMode: 'blocked',
     autoStart: false,
     minimizeToTray: true,
     notificationsEnabled: true,

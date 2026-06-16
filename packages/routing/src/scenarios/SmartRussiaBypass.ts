@@ -63,6 +63,14 @@ function buildRules(): readonly RoutingRule[] {
     rules.push(rule('domain_suffix', domain, 'direct', p++, 'ru-local'))
   }
 
+  // Priority 1400-1401: Telegram → proxy via BOTH geosite (domains) and geoip
+  // (its DC IP ranges). Critical for the «Только заблокированное» mode: the
+  // Telegram app dials its DC IPs DIRECTLY (no domain to match), so a domain-only
+  // list misses it → under a direct-default policy Telegram would go DIRECT and be
+  // RKN-blocked. geoip:telegram catches the app; geosite:telegram catches web.
+  rules.push(rule('geosite', 'telegram', 'proxy', 1400, 'blocked-in-ru'))
+  rules.push(rule('geoip', 'telegram', 'proxy', 1401, 'blocked-in-ru', true))
+
   // Priority 1500-1999: Blocked-in-RU services → proxy
   // Reuse the existing curated list, reassigning priorities
   p = 1500
