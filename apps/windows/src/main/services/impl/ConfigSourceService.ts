@@ -11,6 +11,18 @@ import { buildSubscriptionHeaders, getEngineUserAgents } from './sources/subscri
 
 const STORAGE_KEY = 'config-source'
 
+// A pasted proxy-URI key (vless://, vmess://, ss://, trojan://, hysteria2://,
+// tuic://, …) vs a subscription URL (http/https). When the user pastes a KEY into
+// the URL field, treat it as 'single-proxy' — otherwise SubscriptionUrlSource
+// tries to GET "vless://…" and fails. Mirrors the Android subscription-store fix.
+const PROXY_URI_RE = /^(vless|vmess|ss|ssr|trojan|hysteria2?|hy2|tuic|wireguard|socks5?|anytls|mieru):\/\//i
+function effectiveType(type: ConfigSourceType, input: string): ConfigSourceType {
+  if ((type === 'subscription-url' || type === 'single-proxy') && PROXY_URI_RE.test(input.trim())) {
+    return 'single-proxy'
+  }
+  return type
+}
+
 interface StoredConfigSource {
   type: ConfigSourceType
   input: string
@@ -97,8 +109,9 @@ class ConfigSourceService {
     }
   }
 
-  async validate(type: ConfigSourceType, input: string): Promise<ConfigSourceValidateResult> {
+  async validate(typeArg: ConfigSourceType, input: string): Promise<ConfigSourceValidateResult> {
     const log = getLogger()
+    const type = effectiveType(typeArg, input)  // auto-detect a pasted proxy-URI key
 
     if (type === 'provider') {
       return { valid: false, error: 'Provider type cannot be set via config source API' }
@@ -165,7 +178,8 @@ class ConfigSourceService {
     }
   }
 
-  async set(type: ConfigSourceType, input: string): Promise<ConfigSourceMeta> {
+  async set(typeArg: ConfigSourceType, input: string): Promise<ConfigSourceMeta> {
+    const type = effectiveType(typeArg, input)  // auto-detect a pasted proxy-URI key
     const result = await this.validate(type, input)
     if (!result.valid) {
       throw new Error(result.error ?? 'Validation failed')
