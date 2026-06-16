@@ -12,11 +12,15 @@ export interface DohProvider {
   doh: string
 }
 
+// NOTE: AdGuard (dns.adguard-dns.com) was dropped — its servers (94.140.x) are
+// unreliable / RKN-throttled when queried directly from Russia, so picking it
+// killed all DNS for RU users (other providers reachable, AdGuard not). Power
+// users can still point «Свой DoH» at it. resolveDohUrl() falls back to
+// Cloudflare for an unknown id, so installs that persisted {id:'adguard'} self-heal.
 export const DOH_PROVIDERS: DohProvider[] = [
   { id: 'cloudflare', label: 'Cloudflare', doh: 'https://dns.cloudflare.com/dns-query' },
   { id: 'google',     label: 'Google',     doh: 'https://dns.google/dns-query' },
   { id: 'quad9',      label: 'Quad9',      doh: 'https://dns.quad9.net/dns-query' },
-  { id: 'adguard',    label: 'AdGuard',    doh: 'https://dns.adguard-dns.com/dns-query' },
 ]
 
 export interface DohProviderSetting {
