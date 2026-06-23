@@ -81,7 +81,12 @@ const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
 // «context deadline exceeded» health-check failures. HTTPS is the recommended,
 // more reliable probe target.
 const URL_TEST_URL = 'https://www.gstatic.com/generate_204'
-const URL_TEST_INTERVAL = 300
+// 120s (was 300s): after the app is backgrounded and the device dozes, the
+// proxy TCP connections die; a shorter health-check interval re-picks a live
+// node sooner on resume, so Telegram/etc reconnect quickly instead of stalling
+// on a stale node for up to 5 minutes. lazy=true keeps probing only while the
+// group is actively carrying traffic, so idle battery cost stays low.
+const URL_TEST_INTERVAL = 120
 // Autobalancer (SLAVE-AUTO) tuning: only re-pick a faster node when it beats the
 // current one by >50ms (tolerance) to avoid flapping between near-equal servers;
 // lazy=true skips health checks while the group isn't actively carrying traffic.
@@ -154,6 +159,12 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     'log-level': 'info',
     'unified-delay': true,
     'tcp-concurrent': true,
+    // TCP keep-alive on mihomo's connections (seconds). Without it, sockets that
+    // die silently while the device is in Doze (app backgrounded) linger until a
+    // long OS/app timeout, so the first request after resume hangs. A 30s probe
+    // detects and recycles dead connections fast → snappier reconnect, the main
+    // fix for «Telegram doesn't reconnect immediately after minimize/restore».
+    'keep-alive-interval': 30,
     'external-controller': `127.0.0.1:${ctx.apiPort}`,
     secret: ctx.apiSecret,
     // Geo databases: Android auto-downloads from MetaCubeX (no rulesDir, files

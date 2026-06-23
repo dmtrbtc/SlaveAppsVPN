@@ -90,14 +90,20 @@ test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plainte
   assert.ok(!fakeFilter.includes('+.ru'), '+.ru must NOT be fake-ip-excluded in full tunnel')
 })
 
-test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () => {
-  const doc = require('js-yaml').load(gen('smart')) as { 'proxy-groups': Array<Record<string, unknown>> }
+test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + interval:120', () => {
+  const doc = require('js-yaml').load(gen('smart')) as {
+    'proxy-groups': Array<Record<string, unknown>>
+    'keep-alive-interval'?: number
+  }
   const auto = doc['proxy-groups'].find(g => g['name'] === 'SLAVE-AUTO')
   assert.ok(auto, 'SLAVE-AUTO group present')
   assert.equal(auto!['type'], 'url-test')
   assert.equal(auto!['tolerance'], 50)
   assert.equal(auto!['lazy'], true)
-  assert.equal(auto!['interval'], 300)
+  // 120s (was 300s) so a live node is re-picked quickly after the device wakes
+  assert.equal(auto!['interval'], 120)
+  // TCP keep-alive recycles connections that die during Doze → fast reconnect
+  assert.equal(doc['keep-alive-interval'], 30)
 })
 
 test('R2: roscomvpn-default carries curated RU-direct (banks/gov/payments) DIRECT, before geoip:RU', () => {

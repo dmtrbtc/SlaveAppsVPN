@@ -16,7 +16,7 @@ import type {
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
 const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
 const URL_TEST_URL = 'https://www.gstatic.com/generate_204'
-const URL_TEST_INTERVAL = '5m'
+const URL_TEST_INTERVAL = '2m'
 
 function buildInbounds(ctx: ConfigGenerationContext): SingboxInbound[] {
   const inbounds: SingboxInbound[] = []
