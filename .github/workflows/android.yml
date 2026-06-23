@@ -103,6 +103,11 @@ jobs:
           cp -r brand-res/mipmap-anydpi-v26 brand-res/mipmap-mdpi brand-res/mipmap-hdpi \
                 brand-res/mipmap-xhdpi brand-res/mipmap-xxhdpi brand-res/mipmap-xxxhdpi \
                 brand-res/values $RES/
+          # Vector drawables (Quick Settings tile icon, etc.) — merge into res/drawable.
+          if [ -d brand-res/drawable ]; then
+            mkdir -p $RES/drawable
+            cp brand-res/drawable/*.xml $RES/drawable/
+          fi
           echo "=== launcher icons applied ==="
           ls -R $RES/mipmap-anydpi-v26 $RES/mipmap-xxxhdpi $RES/values | grep -i ic_launcher || true
 
@@ -183,7 +188,7 @@ jobs:
           # Quick Settings tile (notification-shade toggle). Separate guard so it
           # is added even on a manifest that already had the VPN service.
           if ! grep -q 'SlaveVpnTileService' AndroidManifest.xml; then
-            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnTileService"\n            android:icon="@mipmap/ic_launcher"\n            android:label="SLAVE VPN"\n            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\n            </intent-filter>\n        </service>\n    </application>|' AndroidManifest.xml
+            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnTileService"\n            android:icon="@drawable/ic_tile_vpn"\n            android:label="SLAVE VPN"\n            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\n            </intent-filter>\n        </service>\n    </application>|' AndroidManifest.xml
           fi
 
       - name: Add Kotlin coroutines + androidx-core + libbox dependencies

@@ -37,6 +37,11 @@ import com.getcapacitor.annotation.Permission
 )
 class SlaveVpnPlugin : Plugin() {
 
+    // Prompt to add the QS tile at most once per app session (and never again
+    // once the tile is added). MIUI/HyperOS hides third-party tiles from the
+    // edit tray, so we surface them via the system requestAddTileService dialog.
+    private var tilePromptedThisSession = false
+
     // Connect parameters stashed while the VpnService.prepare() consent dialog is
     // shown — read back in onVpnConnectResult once consent returns.
     private var pendingConfig: String? = null
@@ -130,7 +135,46 @@ class SlaveVpnPlugin : Plugin() {
         } else {
             context.startService(serviceIntent)
         }
+        // The app is foreground here (user just hit Connect) — a good moment to
+        // offer the Quick Settings tile via the system dialog, since MIUI won't
+        // list it in the edit tray on its own.
+        maybePromptAddTile()
         call.resolve()
+    }
+
+    /**
+     * Offer to add the SLAVE VPN Quick Settings tile via the system
+     * requestAddTileService dialog (API 33+). Shown at most once per app session,
+     * and never again once the tile is added/already present. Best-effort: any
+     * failure is swallowed so it never blocks a connect.
+     */
+    private fun maybePromptAddTile() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        if (tilePromptedThisSession) return
+        val act = activity ?: return
+        val prefs = act.getSharedPreferences("slavevpn_tile", android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean("added", false)) return
+        tilePromptedThisSession = true
+        try {
+            val sbm = act.getSystemService(android.app.StatusBarManager::class.java) ?: return
+            val iconId = act.resources.getIdentifier("ic_tile_vpn", "drawable", act.packageName)
+            if (iconId == 0) return
+            val icon = android.graphics.drawable.Icon.createWithResource(act, iconId)
+            val component = android.content.ComponentName(act, SlaveVpnTileService::class.java)
+            sbm.requestAddTileService(
+                component,
+                "SLAVE VPN",
+                icon,
+                { r -> act.runOnUiThread(r) },
+                java.util.function.Consumer { result ->
+                    if (result == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED ||
+                        result == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED
+                    ) {
+                        prefs.edit().putBoolean("added", true).apply()
+                    }
+                },
+            )
+        } catch (_: Exception) { /* best-effort — never block connect */ }
     }
 
     @PluginMethod
