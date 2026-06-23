@@ -180,6 +180,12 @@ jobs:
             sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnService"\n            android:permission="android.permission.BIND_VPN_SERVICE"\n            android:foregroundServiceType="specialUse"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.net.VpnService" />\n            </intent-filter>\n            <property\n                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\n                android:value="VPN tunnel for SLAVE VPN" />\n        </service>\n    </application>|' AndroidManifest.xml
           fi
 
+          # Quick Settings tile (notification-shade toggle). Separate guard so it
+          # is added even on a manifest that already had the VPN service.
+          if ! grep -q 'SlaveVpnTileService' AndroidManifest.xml; then
+            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnTileService"\n            android:icon="@mipmap/ic_launcher"\n            android:label="SLAVE VPN"\n            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\n            </intent-filter>\n        </service>\n    </application>|' AndroidManifest.xml
+          fi
+
       - name: Add Kotlin coroutines + androidx-core + libbox dependencies
         working-directory: apps/android/android/app
         run: |

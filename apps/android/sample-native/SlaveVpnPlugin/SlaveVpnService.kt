@@ -19,10 +19,13 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
 import com.slavevpn.app.MainActivity
 import kotlinx.coroutines.CoroutineScope
@@ -83,6 +86,60 @@ class SlaveVpnService : VpnService() {
                 return logRing.toList().takeLast(tail)
             }
         }
+
+        // ─── Last-config cache (for the Quick Settings tile) ─────────────────
+        // The mihomo config is compiled by the JS renderer and handed to the
+        // service via EXTRA_CONFIG. The QS tile can start the service when the
+        // app is closed, where no fresh config exists — so we persist the last
+        // successfully-connected config bundle here. The tile reads it for a
+        // one-tap connect; if absent (never connected) it opens the app instead.
+        private const val PREFS = "slavevpn_last_config"
+        private const val K_CONFIG = "config"
+        private const val K_SELECTED = "selected"
+        private const val K_SPLIT_MODE = "splitMode"
+        private const val K_SPLIT_APPS = "splitApps" // newline-joined package names
+
+        data class CachedConfig(
+            val config: String,
+            val selected: String?,
+            val splitMode: String,
+            val splitApps: List<String>,
+        )
+
+        @JvmStatic
+        fun cacheConfig(ctx: Context, config: String, selected: String?, splitMode: String, splitApps: List<String>) {
+            if (config.isBlank()) return
+            try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString(K_CONFIG, config)
+                    .putString(K_SELECTED, selected)
+                    .putString(K_SPLIT_MODE, splitMode)
+                    .putString(K_SPLIT_APPS, splitApps.joinToString("\n"))
+                    .apply()
+            } catch (_: Exception) { }
+        }
+
+        @JvmStatic
+        fun readCachedConfig(ctx: Context): CachedConfig? {
+            return try {
+                val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                val cfg = p.getString(K_CONFIG, null)
+                if (cfg.isNullOrBlank()) return null
+                val apps = p.getString(K_SPLIT_APPS, "")
+                    ?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
+                CachedConfig(cfg, p.getString(K_SELECTED, null), p.getString(K_SPLIT_MODE, "off") ?: "off", apps)
+            } catch (_: Exception) { null }
+        }
+
+        // Ask the QS tile to re-read state and redraw. Cheap no-op when the tile
+        // isn't added; keeps the shade toggle in sync without opening the app.
+        @JvmStatic
+        fun requestTileUpdate(ctx: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+            try {
+                TileService.requestListeningState(ctx, ComponentName(ctx, SlaveVpnTileService::class.java))
+            } catch (_: Exception) { }
+        }
     }
 
     override fun onCreate() {
@@ -129,6 +186,7 @@ class SlaveVpnService : VpnService() {
         if (currentState == "connected" || currentState == "connecting") return
         currentState = "connecting"
         currentError = null  // fresh attempt — clear any prior failure reason
+        requestTileUpdate(applicationContext)
         appendLog("[service] starting VPN (mihomo)")
 
         startForeground(NOTIF_ID, buildNotification("Подключение..."))
@@ -184,6 +242,10 @@ class SlaveVpnService : VpnService() {
                     }
                     currentState = "connected"
                     currentError = null
+                    // Persist this known-good config so the QS tile can re-connect
+                    // with one tap even when the app process is gone.
+                    cacheConfig(applicationContext, configYaml, selectedProxy, splitMode, splitApps)
+                    requestTileUpdate(applicationContext)
                     appendLog("[service] connected · mihomo ${ClashBridge.version()}")
                     notify("Подключено · mihomo ${ClashBridge.version()}")
                 } catch (e: Exception) {
@@ -191,6 +253,7 @@ class SlaveVpnService : VpnService() {
                     android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
                     currentState = "error"
                     currentError = "mihomo: $msg"
+                    requestTileUpdate(applicationContext)
                     appendLog("[service] mihomo start failed: $msg")
                     notify("Ошибка: $msg")
                     cleanupTun()
@@ -202,6 +265,7 @@ class SlaveVpnService : VpnService() {
             android.util.Log.e("SlaveVpnService", "VPN setup failed", e)
             currentState = "error"
             currentError = "tun: $msg"
+            requestTileUpdate(applicationContext)
             appendLog("[service] VPN setup failed: $msg")
             notify("Ошибка: $msg")
             cleanupTun()
@@ -290,6 +354,7 @@ class SlaveVpnService : VpnService() {
         coreJob = null
         cleanupTun()
         currentState = "disconnected"
+        requestTileUpdate(applicationContext)
         notify("Отключено")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
