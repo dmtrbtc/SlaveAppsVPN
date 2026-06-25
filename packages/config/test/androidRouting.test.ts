@@ -106,6 +106,19 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + inter
   assert.equal(doc['keep-alive-interval'], 30)
 })
 
+test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8080 sniff-wait)', () => {
+  const doc = require('js-yaml').load(gen('smart')) as {
+    ipv6?: boolean
+    sniffer?: { sniff?: { HTTP?: { ports?: unknown[] } } }
+  }
+  // No working IPv6 uplink → mihomo must reject v6 destinations immediately
+  // instead of attempting connect() and falling back after «network unreachable».
+  assert.equal(doc.ipv6, false, 'root ipv6 must be false')
+  // HTTP sniff only on :80 — the old 8080-8880 range stalled on non-HTTP traffic.
+  const httpPorts = doc.sniffer?.sniff?.HTTP?.ports
+  assert.deepEqual(httpPorts, [80], 'HTTP sniff ports must be exactly [80]')
+})
+
 test('R2: roscomvpn-default carries curated RU-direct (banks/gov/payments) DIRECT, before geoip:RU', () => {
   // «Обход» resolves to roscomvpn-default on both platforms. Banks/gov on foreign
   // CDNs leak into the tunnel under fake-ip unless an explicit DIRECT domain rule

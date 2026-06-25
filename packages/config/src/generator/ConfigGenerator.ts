@@ -153,6 +153,14 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
     'allow-lan': false,
+    // Global IPv6 OFF. The device/uplink has no working IPv6 route, yet apps with
+    // their own DoH resolve AAAA and dial v6 into the tunnel (the TUN advertises
+    // ::/0). mihomo would then attempt the v6 destination and only fail with
+    // «network is unreachable» before the app's happy-eyeballs falls back to IPv4
+    // — a wasted connect leg on every dual-stack host (slowdown + log spam). With
+    // ipv6:false mihomo rejects v6 destinations immediately, so IPv4 is used
+    // without the stall. (dns.ipv6 is already false; this is the global switch.)
+    ipv6: false,
     // A routingPolicy implies rule-based routing; otherwise honor the Android
     // smart/global/direct mode, else default to 'rule'.
     mode: ctx.routingPolicy ? 'rule' : ctx.androidRouting ? androidClashMode(ctx.androidRouting.mode) : 'rule',
@@ -241,7 +249,13 @@ function buildSnifferSection(): Record<string, unknown> {
     enable: true,
     sniff: {
       TLS: { ports: [443, 8443] },
-      HTTP: { ports: [80, '8080-8880'], 'override-destination': true },
+      // HTTP sniff only on :80. The old [80, '8080-8880'] range caught masses of
+      // non-HTTP / server-speaks-first traffic (ad/analytics SDKs hammer :8080),
+      // where the sniffer waits for client data that never comes → «may not have
+      // any sent data» ERROR spam + a per-connection sniff-wait stall before the
+      // connection proceeds. TLS/QUIC sniff (443/8443) still recovers SNI for all
+      // HTTPS, so domain rules keep working; plain-HTTP only really lives on :80.
+      HTTP: { ports: [80], 'override-destination': true },
       QUIC: { ports: [443, 8443] },
     },
     'skip-domain': [
