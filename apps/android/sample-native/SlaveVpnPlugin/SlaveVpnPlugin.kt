@@ -42,6 +42,9 @@ class SlaveVpnPlugin : Plugin() {
     // edit tray, so we surface them via the system requestAddTileService dialog.
     private var tilePromptedThisSession = false
 
+    // Request code for the POST_NOTIFICATIONS runtime grant (Android 13+).
+    private val REQ_POST_NOTIFICATIONS = 8201
+
     // Connect parameters stashed while the VpnService.prepare() consent dialog is
     // shown — read back in onVpnConnectResult once consent returns.
     private var pendingConfig: String? = null
@@ -135,9 +138,13 @@ class SlaveVpnPlugin : Plugin() {
         } else {
             context.startService(serviceIntent)
         }
-        // The app is foreground here (user just hit Connect) — a good moment to
-        // offer the Quick Settings tile via the system dialog, since MIUI won't
-        // list it in the edit tray on its own.
+        // The app is foreground here (user just hit Connect) — the moment to
+        // (1) request POST_NOTIFICATIONS so the foreground-service notification
+        // (status + live speed + Reconnect/Disconnect) is actually shown; on
+        // Android 13+ the notification is silently HIDDEN until this is granted,
+        // which is why the shade looked empty. (2) offer the QS tile via the
+        // system dialog, since MIUI won't list it in the edit tray on its own.
+        maybeRequestNotificationPermission()
         maybePromptAddTile()
         call.resolve()
     }
@@ -173,6 +180,28 @@ class SlaveVpnPlugin : Plugin() {
                         prefs.edit().putBoolean("added", true).apply()
                     }
                 },
+            )
+        } catch (_: Exception) { /* best-effort — never block connect */ }
+    }
+
+    /**
+     * Ask for the POST_NOTIFICATIONS runtime permission (Android 13+). Without it
+     * the system suppresses the VPN foreground-service notification entirely, so
+     * the shade shows nothing — no status, no live speed, no Reconnect/Disconnect
+     * actions. Best-effort and silent if already granted or pre-Tiramisu. The
+     * grant result doesn't need a callback: once allowed, the next notify() (the
+     * 2s speed tick) renders the notification.
+     */
+    private fun maybeRequestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val act = activity ?: return
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            act, Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        try {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                act, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS,
             )
         } catch (_: Exception) { /* best-effort — never block connect */ }
     }
