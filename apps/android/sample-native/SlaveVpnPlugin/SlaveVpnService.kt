@@ -33,16 +33,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tunInterface: ParcelFileDescriptor? = null
     private var coreJob: Job? = null
+    // Polls the core's live traffic and refreshes the notification text with the
+    // current ↓/↑ speed while connected. Cancelled on stop/reconnect/destroy.
+    private var trafficJob: Job? = null
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
         const val ACTION_STOP  = "com.slavevpn.STOP"
+        // Notification «Переподключить» — full core restart with the cached config
+        // (re-establishes the tunnel and re-picks a live node; fixes a stale node
+        // held after Doze). Carries no extras; reconnect() reads the last config.
+        const val ACTION_RECONNECT = "com.slavevpn.RECONNECT"
         const val EXTRA_CONFIG = "config"
         const val EXTRA_SELECTED = "selectedProxy"
         const val EXTRA_SPLIT_MODE = "splitMode"   // off | include | exclude
@@ -173,6 +183,7 @@ class SlaveVpnService : VpnService() {
                 )
             }
             ACTION_STOP -> stopVpn()
+            ACTION_RECONNECT -> reconnect()
         }
         return START_STICKY
     }
@@ -248,6 +259,8 @@ class SlaveVpnService : VpnService() {
                     requestTileUpdate(applicationContext)
                     appendLog("[service] connected · mihomo ${ClashBridge.version()}")
                     notify("Подключено · mihomo ${ClashBridge.version()}")
+                    // Begin live ↓/↑ speed updates in the notification.
+                    startTrafficUpdates()
                 } catch (e: Exception) {
                     val msg = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
@@ -347,6 +360,8 @@ class SlaveVpnService : VpnService() {
     }
 
     private fun stopVpn() {
+        trafficJob?.cancel()
+        trafficJob = null
         scope.launch {
             try { ClashBridge.stop() } catch (_: Exception) { }
         }
@@ -360,6 +375,81 @@ class SlaveVpnService : VpnService() {
         stopSelf()
     }
 
+    /**
+     * «Переподключить» from the notification: a full core restart reusing the
+     * last cached config. Stops mihomo + tears down the TUN, then re-establishes
+     * and starts again — so a node held stale after Doze is dropped and a live
+     * one re-picked, and all sockets are rebuilt. If there's no cached config
+     * (never connected this install) we open the app instead of failing silently.
+     */
+    private fun reconnect() {
+        val bundle = readCachedConfig(applicationContext)
+        if (bundle == null) {
+            appendLog("[service] reconnect: no cached config — opening app")
+            openAppFromService()
+            return
+        }
+        appendLog("[service] reconnect requested")
+        trafficJob?.cancel(); trafficJob = null
+        currentState = "connecting"
+        requestTileUpdate(applicationContext)
+        notify("Переподключение…")
+        val prevJob = coreJob
+        coreJob = null
+        scope.launch {
+            try { ClashBridge.stop() } catch (_: Exception) { }
+            prevJob?.cancel()
+            cleanupTun()
+            // Let the native core + TUN fully release before re-establishing.
+            delay(400)
+            currentState = "disconnected" // clear the startVpn re-entry guard
+            startVpn(bundle.config, bundle.selected, bundle.splitMode, bundle.splitApps)
+        }
+    }
+
+    /** Bring the app to the foreground (used when the shade asks to act but no
+     *  cached config exists to act on). */
+    private fun openAppFromService() {
+        try {
+            val i = Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+        } catch (_: Exception) { }
+    }
+
+    /**
+     * Poll the mihomo traffic API every 2s and refresh the notification with the
+     * live ↓/↑ speed. getTraffic() returns {up,down,...} in bytes-per-second.
+     * setOnlyAlertOnce on the notification keeps these updates silent.
+     */
+    private fun startTrafficUpdates() {
+        trafficJob?.cancel()
+        trafficJob = scope.launch {
+            while (isActive && currentState == "connected") {
+                val text = try {
+                    val t = JSONObject(ClashBridge.getTraffic())
+                    val down = t.optLong("down", 0L)
+                    val up = t.optLong("up", 0L)
+                    "↓ ${formatSpeed(down)}   ↑ ${formatSpeed(up)}"
+                } catch (_: Exception) { "" }
+                if (text.isNotEmpty()) {
+                    notify(text)
+                }
+                delay(2000)
+            }
+        }
+    }
+
+    /** Human-readable bytes-per-second (Б/с, КБ/с, МБ/с). */
+    private fun formatSpeed(bytesPerSec: Long): String {
+        val b = if (bytesPerSec < 0) 0L else bytesPerSec
+        return when {
+            b < 1024L -> "$b Б/с"
+            b < 1024L * 1024L -> String.format("%.0f КБ/с", b / 1024.0)
+            else -> String.format("%.1f МБ/с", b / (1024.0 * 1024.0))
+        }
+    }
+
     private fun cleanupTun() {
         try { tunInterface?.close() } catch (_: Exception) { }
         tunInterface = null
@@ -367,6 +457,8 @@ class SlaveVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        trafficJob?.cancel()
+        trafficJob = null
         scope.cancel()
         try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()
@@ -392,13 +484,20 @@ class SlaveVpnService : VpnService() {
         val stopIntent = Intent(this, SlaveVpnService::class.java).apply { action = ACTION_STOP }
         val stopPi = PendingIntent.getService(this, 1, stopIntent, flags)
 
+        val reconnectIntent = Intent(this, SlaveVpnService::class.java).apply { action = ACTION_RECONNECT }
+        val reconnectPi = PendingIntent.getService(this, 2, reconnectIntent, flags)
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("SLAVE VPN")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pi)
             .setOngoing(true)
+            // Speed updates fire every 2s — alert only on the first post so the
+            // shade doesn't buzz/peek on every refresh.
+            .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(android.R.drawable.ic_popup_sync, "Переподключить", reconnectPi)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отключить", stopPi)
             .build()
     }
