@@ -16,9 +16,23 @@ package com.slavevpn.plugin
 
 import android.Manifest
 import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
+import android.net.Uri
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import androidx.activity.result.ActivityResult
+import androidx.core.content.ContextCompat
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -402,5 +416,132 @@ class SlaveVpnPlugin : Plugin() {
         val lines = org.json.JSONArray()
         for (line in SlaveVpnService.recentLogs(tail)) lines.put(line)
         call.resolve(JSObject().put("lines", lines))
+    }
+
+    // ─── In-app update: download the APK and launch the system installer ────────
+    // Downloads the release APK inside the app (emitting `updateProgress` events)
+    // and hands it to the platform PackageInstaller. Android still shows its
+    // mandatory "Install?" confirm sheet and needs the one-time "install unknown
+    // apps" grant — that is OS security and cannot be bypassed for a sideloaded
+    // APK — but there is NO browser hop: the download runs here with a progress
+    // bar and the system install sheet then appears directly.
+    @PluginMethod
+    fun downloadAndInstallUpdate(call: PluginCall) {
+        val url = call.getString("url")
+        if (url.isNullOrBlank()) { call.reject("no url"); return }
+
+        // Android O+: needs the user's "install unknown apps" grant. If missing,
+        // open that settings screen and ask the JS layer to retry afterwards.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()) {
+            try {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${context.packageName}"),
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (_: Exception) { }
+            call.reject("NEEDS_INSTALL_PERMISSION")
+            return
+        }
+
+        Thread {
+            try {
+                val apk = File(context.cacheDir, "slavevpn-update.apk")
+                downloadApk(url, apk)
+                Handler(Looper.getMainLooper()).post {
+                    try { installApk(apk); call.resolve() }
+                    catch (e: Exception) { call.reject(e.message ?: "install failed") }
+                }
+            } catch (e: Exception) {
+                call.reject(e.message ?: "download failed")
+            }
+        }.start()
+    }
+
+    private fun downloadApk(url: String, dest: File) {
+        var conn = URL(url).openConnection() as HttpURLConnection
+        conn.instanceFollowRedirects = true
+        conn.connectTimeout = 20000
+        conn.readTimeout = 30000
+        conn.connect()
+        // GitHub asset URLs 302-redirect to a CDN; HttpURLConnection won't follow a
+        // cross-host redirect automatically, so chase it manually (bounded).
+        var redirects = 0
+        while (conn.responseCode in 300..399 && redirects < 5) {
+            val loc = conn.getHeaderField("Location") ?: break
+            conn.disconnect()
+            conn = URL(loc).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = true
+            conn.connectTimeout = 20000
+            conn.readTimeout = 30000
+            conn.connect()
+            redirects++
+        }
+        // getContentLengthLong() is API 24; minSdk is 21, so read the header directly
+        // (avoids a lintVitalRelease NewApi failure and handles >2 GB just in case).
+        val total = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+        conn.inputStream.use { input ->
+            dest.outputStream().use { out ->
+                val buf = ByteArray(64 * 1024)
+                var done = 0L
+                var lastPct = -1
+                var read = input.read(buf)
+                while (read >= 0) {
+                    out.write(buf, 0, read)
+                    done += read
+                    if (total > 0) {
+                        val pct = ((done * 100) / total).toInt()
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            notifyListeners("updateProgress", JSObject().put("percent", pct))
+                        }
+                    }
+                    read = input.read(buf)
+                }
+            }
+        }
+        conn.disconnect()
+    }
+
+    private fun installApk(apk: File) {
+        val pkg = context.packageName
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        val sessionId = installer.createSession(params)
+        installer.openSession(sessionId).use { session ->
+            session.openWrite("pkg", 0, apk.length()).use { out ->
+                apk.inputStream().use { it.copyTo(out) }
+                session.fsync(out)
+            }
+            val action = "$pkg.APK_INSTALL_STATUS"
+            // Dynamically-registered (not exported) receiver: when the installer
+            // reports STATUS_PENDING_USER_ACTION it hands back the confirm Intent we
+            // must launch to show the system "Install?" sheet. No manifest provider
+            // needed (PackageInstaller streams the bytes; no FileProvider/file://).
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) {
+                    val status = i.getIntExtra(PackageInstaller.EXTRA_STATUS, Int.MIN_VALUE)
+                    if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                        @Suppress("DEPRECATION")
+                        val confirm = i.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                        confirm?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try { context.startActivity(confirm) } catch (_: Exception) { }
+                    } else {
+                        try { c.unregisterReceiver(this) } catch (_: Exception) { }
+                    }
+                }
+            }
+            ContextCompat.registerReceiver(
+                context, receiver, IntentFilter(action),
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            val pi = PendingIntent.getBroadcast(
+                context, sessionId, Intent(action).setPackage(pkg),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+            )
+            session.commit(pi.intentSender)
+        }
     }
 }

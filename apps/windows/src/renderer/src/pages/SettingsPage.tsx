@@ -4,6 +4,7 @@ import {
   LogOut, User, CreditCard, Monitor, Bell, Shield, Smartphone, Sun,
   RefreshCw, Download, Link, Key, CheckCircle, XCircle,
   Trash2, Edit3, Server, Clock, Cpu, Bot, ChevronRight,
+  RotateCw, Loader2,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '../components/ui/button'
@@ -20,6 +21,7 @@ import { useUIStore, type ThemeMode } from '../stores/ui.store'
 import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import { useSubscription } from '../hooks/useSubscription'
 import { checkForUpdate, openUpdate, type UpdateInfo } from '../android/update-check'
+import { useInAppUpdate } from '../hooks/useInAppUpdate'
 import { configSourceApi, cacheApi } from '../lib/api'
 import type { AppSettings, ConfigSourceValidateResult, SelectedEngine, BalancerMode, UtlsFingerprintName } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
@@ -465,6 +467,11 @@ function UpdateSection() {
   const tone: 'ok' | 'warn' | 'neutral' = info ? 'warn' : upToDate ? 'ok' : 'neutral'
   const label = checking ? 'Проверяется…' : info ? 'Доступно обновление' : upToDate ? 'Актуальная версия' : '—'
 
+  // In-app download + install (no browser): Windows via electron-updater, Android
+  // via the native PackageInstaller. Same controller as the dashboard banner.
+  const { phase, progress, error: updateError, start, restart } = useInAppUpdate(info, channel)
+  const updateBusy = phase === 'checking' || phase === 'downloading'
+
   return (
     <CardRow>
       <div className="p-4 flex flex-col gap-3">
@@ -501,18 +508,39 @@ function UpdateSection() {
           </p>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => void runCheck(channel)} loading={checking}>
             <RefreshCw className="h-3.5 w-3.5" />
             Проверить
           </Button>
-          {info && (
-            <Button variant="primary" size="sm" onClick={() => openUpdate(info)}>
+          {info && phase === 'ready' && (
+            <Button variant="primary" size="sm" onClick={() => void restart()}>
+              <RotateCw className="h-3.5 w-3.5" />
+              Перезапустить и установить
+            </Button>
+          )}
+          {info && phase === 'installing' && (
+            <span className="text-[11px] text-text-secondary">Подтвердите установку в системном окне</span>
+          )}
+          {info && updateBusy && (
+            <span className="flex items-center gap-1.5 text-[12px] text-text-secondary tabular-nums">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {phase === 'downloading' ? `Загрузка ${progress}%` : 'Подготовка…'}
+            </span>
+          )}
+          {info && (phase === 'idle' || phase === 'error') && (
+            <Button variant="primary" size="sm" onClick={() => void start()}>
               <Download className="h-3.5 w-3.5" />
-              Скачать
+              {phase === 'error' ? 'Повторить' : 'Обновить'}
             </Button>
           )}
         </div>
+        {phase === 'error' && (
+          <p className="text-[11px] text-error">
+            {updateError ?? 'Не удалось обновить'}{' '}
+            {info && <button onClick={() => openUpdate(info)} className="underline">скачать в браузере</button>}
+          </p>
+        )}
       </div>
     </CardRow>
   )
