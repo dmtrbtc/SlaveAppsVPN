@@ -50,6 +50,40 @@ function buildTimestampMs(): number {
   } catch { return 0 }
 }
 
+// ─── semver compare (handles -dev.N/-rc.N prereleases) ─────────────────────────
+interface ParsedVer { rel: [number, number, number]; pre: Array<string | number> }
+
+function parseVer(v: string): ParsedVer | null {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(v.trim())
+  if (!m) return null
+  const pre = m[4] ? m[4].split('.').map((p) => (/^\d+$/.test(p) ? Number(p) : p)) : []
+  return { rel: [Number(m[1]), Number(m[2]), Number(m[3])], pre }
+}
+
+/** -1 / 0 / +1 for a<b / a==b / a>b. A release (no prerelease) outranks a prerelease of the same x.y.z. */
+function cmpVer(a: string, b: string): number {
+  const pa = parseVer(a)
+  const pb = parseVer(b)
+  if (!pa || !pb) return 0
+  for (let i = 0; i < 3; i++) {
+    if (pa.rel[i]! !== pb.rel[i]!) return pa.rel[i]! < pb.rel[i]! ? -1 : 1
+  }
+  if (pa.pre.length === 0 && pb.pre.length === 0) return 0
+  if (pa.pre.length === 0) return 1 // a is a release, b a prerelease
+  if (pb.pre.length === 0) return -1
+  const n = Math.max(pa.pre.length, pb.pre.length)
+  for (let i = 0; i < n; i++) {
+    const x = pa.pre[i]
+    const y = pb.pre[i]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    if (x === y) continue
+    if (typeof x === 'number' && typeof y === 'number') return x < y ? -1 : 1
+    return String(x) < String(y) ? -1 : 1
+  }
+  return 0
+}
+
 async function fetchReleases(): Promise<GhRelease[]> {
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'SlaveVPN-update' }
   if (Capacitor.isNativePlatform()) {
@@ -88,9 +122,20 @@ export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise
     // release this channel is allowed to offer.
     const latest = releases[0]!
     const publishedAt = new Date(latest.published_at).getTime()
-    const built = buildTimestampMs()
     if (!Number.isFinite(publishedAt)) return null
-    if (built > 0 && publishedAt <= built + NEWER_BUFFER_MS) return null // we're current
+
+    // Primary: compare the release TAG to the installed version (semver). Reliable
+    // across rapid dev builds, where the published_at+1h heuristic below wrongly
+    // suppressed a release cut <1h after the running build (two dev tags an hour
+    // apart never surfaced). Fall back to the timestamp buffer only when a version
+    // can't be parsed (e.g. an oddly-named tag).
+    const installed = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+    if (parseVer(latest.tag_name) && parseVer(installed)) {
+      if (cmpVer(latest.tag_name, installed) <= 0) return null // not newer than what's installed
+    } else {
+      const built = buildTimestampMs()
+      if (built > 0 && publishedAt <= built + NEWER_BUFFER_MS) return null // we're current
+    }
 
     // Pick the asset for THIS platform: .apk on Android, the Windows installer
     // (Setup .exe) on desktop.
