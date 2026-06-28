@@ -62,12 +62,6 @@ export function useCabinetLogout() {
   })
 }
 
-export function useCabinetImportSubscription() {
-  return useMutation({
-    mutationFn: () => cabinetApi.importSubscription(),
-  })
-}
-
 // ── Account extras (balance / devices / renewal) ─────────────────────────────
 
 export function useCabinetTransactions(enabled: boolean) {

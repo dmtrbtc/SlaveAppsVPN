@@ -226,7 +226,6 @@ export const selectVpnStatus = (s: VpnStore) => s.status
 export const selectVpnTraffic = (s: VpnStore) => s.traffic
 export const selectVpnHealth = (s: VpnStore) => s.health
 export const selectConnectionState = (s: VpnStore) => s.status.state
-export const selectVpnMode = (s: VpnStore) => s.status.mode
 export const selectEngineVersion = (s: VpnStore) => s.engineVersion
 export const selectReconnectAttempts = (s: VpnStore) => s.reconnectAttempts
 export const selectConnectionStartedAt = (s: VpnStore) => s.connectionStartedAt
