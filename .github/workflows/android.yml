@@ -234,10 +234,25 @@ jobs:
             if ! grep -q "signingConfigs" build.gradle; then
               sed -i 's|android {|android {\n    signingConfigs {\n        release {\n            storeFile file("release.keystore")\n            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n            keyAlias System.getenv("ANDROID_KEY_ALIAS")\n            keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n        }\n    }|' build.gradle
             fi
-            # Attach to the release buildType (the line right after minifyEnabled,
-            # which lives inside buildTypes.release).
+            # Attach the signingConfig to the release buildType. Preferred anchor:
+            # the line right after `minifyEnabled` (Capacitor's default template has
+            # it only inside buildTypes.release). Fallback (if a future template drops
+            # minifyEnabled): inject right after the `release {` that sits INSIDE the
+            # buildTypes block — the range guard /buildTypes {/,/^    }/ keeps it from
+            # matching the signingConfigs.release block above. Both verified by dry-run.
             if ! grep -q "signingConfig signingConfigs.release" build.gradle; then
-              sed -i '/minifyEnabled/a\            signingConfig signingConfigs.release' build.gradle
+              if grep -q "minifyEnabled" build.gradle; then
+                sed -i '/minifyEnabled/a\            signingConfig signingConfigs.release' build.gradle
+              else
+                sed -i '/buildTypes {/,/^    }/ s|release {|release {\n            signingConfig signingConfigs.release|' build.gradle
+              fi
+            fi
+            # Fail LOUDLY if either piece is missing — never silently ship an unsigned
+            # release APK (which would break install-over-top, the whole point of this).
+            if ! grep -q "signingConfigs {" build.gradle || ! grep -q "signingConfig signingConfigs.release" build.gradle; then
+              echo "ERROR: signing injection failed — build.gradle below:"
+              grep -nE 'android \{|buildTypes|release \{|minifyEnabled|signingConfig' build.gradle || true
+              exit 1
             fi
             echo "signed=true" >> "$GITHUB_OUTPUT"
             echo "Release signing configured."
@@ -259,6 +274,27 @@ jobs:
           else
             ./gradlew assembleDebug --no-daemon
           fi
+
+      - name: Verify release APK is signed by our keystore (signed builds)
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: apps/android/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -e
+          APK=app/build/outputs/apk/release/app-release.apk
+          test -f "$APK" || { echo "ERROR: signed app-release.apk not produced"; ls -R app/build/outputs/apk || true; exit 1; }
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          # Cert SHA-256 the APK was actually signed with, vs the one in the keystore.
+          # Deriving the expected value from the decoded keystore (not a hardcoded
+          # constant) keeps this correct across future key rotations.
+          GOT=$("$BT/apksigner" verify --print-certs "$APK" | grep -ioE 'SHA-256 digest: [0-9a-f]+' | head -1 | awk '{print $NF}')
+          EXP=$(keytool -list -keystore app/release.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" -v | grep -i 'SHA256:' | head -1 | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')
+          echo "expected (keystore): $EXP"
+          echo "actual   (apk):      $GOT"
+          { [ -n "$GOT" ] && [ "$GOT" = "$EXP" ]; } || { echo "ERROR: APK is NOT signed by the release key — install-over-top would break"; exit 1; }
+          echo "OK: APK signed by the SLAVE VPN release key (install-over-top works)."
 
       - name: Rename APK
         run: |
