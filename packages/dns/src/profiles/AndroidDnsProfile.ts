@@ -11,8 +11,9 @@ import type { DnsProfile, DnsResolver, DnsRule } from './DnsProfile'
  *     then catch the .ru long-tail; node domains avoid the fake-ip loop).
  *   - DoH-only `nameserver` pool (the chosen provider + Google), carried through
  *     the tunnel (respect-rules); `proxy-server-nameserver` = the same DoH pool.
- *   - plaintext `default-nameserver` bootstrap (AliDNS + Yandex) for the DoH
- *     hostnames + direct lookups; `prefer-h3: false` to keep DoH on TCP/443.
+ *   - plaintext `default-nameserver` bootstrap (Yandex + Google) for residual
+ *     direct lookups; `prefer-h3: false` to keep DoH on TCP/443. (IP-literal DoH
+ *     means the DoH endpoints themselves need no bootstrap resolution.)
  *   - nameserver-policy: RU TLDs/geosite → Yandex+Google direct; geosite:private
  *     → system; each node domain → system+Google so it resolves before the tunnel.
  */
@@ -50,14 +51,27 @@ export interface AndroidDnsProfileOptions {
 }
 
 export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfile {
-  const primaryDoh = opts.dohUrl || 'https://dns.cloudflare.com/dns-query'
-  // DoH pool: primary + Google, deduped. preferH3:false → no `#h3=true` suffix.
-  const dohUrls = Array.from(new Set([primaryDoh, 'https://dns.google/dns-query']))
+  const primaryDoh = opts.dohUrl || 'https://1.1.1.1/dns-query'
+  // DoH pool: the chosen provider + Cloudflare + Google IP-literal fallbacks, deduped
+  // (so the pool keeps ≥2 distinct providers even if the primary equals one of them).
+  // IP-literal endpoints need no plaintext bootstrap a hostile ISP could poison.
+  // preferH3:false → DoH on TCP/443 (QUIC/UDP is the first thing RU ISPs throttle),
+  // no `#h3=true` suffix.
+  const dohUrls = Array.from(new Set([
+    primaryDoh,
+    'https://1.1.1.1/dns-query',
+    'https://8.8.8.8/dns-query',
+  ]))
   const dohPool: DnsResolver[] = dohUrls.map((url) => ({ url, type: 'doh', preferH3: false }))
 
+  // Plaintext bootstrap (default-nameserver). With IP-literal DoH (see dohProviders)
+  // the DoH endpoints no longer need resolving, so this is only used for the rare
+  // direct lookup / last-resort fallback. AliDNS 223.5.5.5 (China) was DROPPED — it
+  // is frequently slow/unreachable from RU and only added a wasted query leg; RU-
+  // reachable Yandex + Google plaintext are enough for the residual cases.
   const bootstrap: DnsResolver[] = [
-    { url: '223.5.5.5', type: 'udp' },
     { url: '77.88.8.8', type: 'udp' },
+    { url: '8.8.8.8', type: 'udp' },
   ]
 
   const ruDirectDns = opts.ruDirectDns ?? true

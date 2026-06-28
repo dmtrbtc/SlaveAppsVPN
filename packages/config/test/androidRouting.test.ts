@@ -25,10 +25,10 @@ function gen(mode: 'smart' | 'global' | 'direct'): string {
   return generateMihomoConfig({
     subscriptionYaml: SUB,
     vpnMode: 'full',
-    settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://cloudflare-dns.com/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
+    settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://1.1.1.1/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
     apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
     dnsProfile: buildAndroidDnsProfile({
-      dohUrl: 'https://cloudflare-dns.com/dns-query',
+      dohUrl: 'https://1.1.1.1/dns-query',
       nodeDomainSuffixes: ['nl.example.online'],
       ruDirectDns: mode === 'smart',
     }),
@@ -61,8 +61,15 @@ test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plain
   const ns = doc.dns['nameserver'] as string[]
   assert.ok(Array.isArray(ns) && ns.length >= 2, 'nameserver is a DoH pool (>=2)')
   assert.ok(ns.every(s => s.startsWith('https://')), 'main nameserver pool MUST be DoH-only (no plaintext)')
-  assert.ok(ns.some(s => s.includes('dns.google')), 'Google DoH present in pool')
+  // IP-literal DoH only — a hostname endpoint would need a plaintext bootstrap a
+  // hostile ISP (Rostelekom) can hijack. /^https:\/\/\d+\.\d+\.\d+\.\d+\// matches
+  // https://1.1.1.1/ , https://8.8.8.8/ etc.
+  assert.ok(ns.every(s => /^https:\/\/\d{1,3}(\.\d{1,3}){3}\//.test(s)), 'DoH pool MUST be IP-literal (no hostname bootstrap)')
+  assert.ok(ns.some(s => s.includes('8.8.8.8')), 'Google IP-DoH present in pool')
   assert.ok(Array.isArray(doc.dns['proxy-server-nameserver']))
+  // Bootstrap (default-nameserver) must NOT contain the dropped China AliDNS.
+  const boot = (doc.dns['default-nameserver'] ?? []) as string[]
+  assert.ok(!boot.some(s => s.includes('223.5.5.5')), 'AliDNS 223.5.5.5 dropped from bootstrap')
 })
 
 test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
@@ -78,7 +85,7 @@ test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, n
   const nodeList = Array.isArray(nodePolicy) ? nodePolicy : [nodePolicy]
   assert.ok(nodeList.every(u => typeof u === 'string' && u.startsWith('https://')),
     'node domain → DoH pool (no plaintext/system)')
-  assert.ok(nodeList.some(u => (u as string).includes('dns.google')), 'node DoH pool includes Google')
+  assert.ok(nodeList.some(u => (u as string).includes('8.8.8.8')), 'node DoH pool includes Google IP-DoH')
 })
 
 test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plaintext leak', () => {
@@ -133,6 +140,27 @@ test('R2: roscomvpn-default carries curated RU-direct (banks/gov/payments) DIREC
   assert.ok(geoipRu, 'geoip:RU rule present')
   // every curated RU-direct rule must sort BEFORE geoip:RU (lower priority = first)
   assert.ok(ruDirect.every(r => r.priority < geoipRu!.priority), 'RU-direct evaluated before geoip:RU')
+})
+
+test('messengers → proxy in BOTH bypass bases (WhatsApp/Telegram calls work in default mode)', () => {
+  // The default mode «Только заблокированное» = smart-russia-bypass (direct-default).
+  // WhatsApp was missing → calls dialed DIRECT and got RKN-throttled. Both bases must
+  // proxy the major messengers incl. the call-media geoip ranges.
+  for (const base of ['smart-russia-bypass', 'roscomvpn-default']) {
+    const { providerRules } = composeScenarios([base]).policy
+    const proxied = (type: string, value: string) =>
+      providerRules.some(r => r.target.type === type && r.target.value === value && r.action === 'proxy')
+    assert.ok(proxied('geosite', 'whatsapp'), `${base}: geosite:whatsapp → proxy`)
+    assert.ok(proxied('geoip', 'facebook'), `${base}: geoip:facebook (WhatsApp media) → proxy`)
+    assert.ok(proxied('geosite', 'telegram'), `${base}: geosite:telegram → proxy`)
+    assert.ok(proxied('geoip', 'telegram'), `${base}: geoip:telegram (voice DCs) → proxy`)
+    assert.ok(proxied('geosite', 'signal'), `${base}: geosite:signal → proxy`)
+    assert.ok(proxied('geosite', 'discord'), `${base}: geosite:discord → proxy`)
+    // call-media geoip must sort BEFORE geoip:RU→direct so it can't slip out direct
+    const geoipRu = providerRules.find(r => r.target.type === 'geoip' && r.target.value === 'RU')
+    const fb = providerRules.find(r => r.target.type === 'geoip' && r.target.value === 'facebook')
+    assert.ok(geoipRu && fb && fb.priority < geoipRu.priority, `${base}: messenger media before geoip:RU`)
+  }
 })
 
 test('global mode → clash mode:RULE (never global) + MATCH proxy; direct mode → mode:direct', () => {

@@ -1,8 +1,11 @@
 import type { DnsProfile, DnsResolver } from './DnsProfile'
 import { DEFAULT_FAKE_IP_FILTER } from './FakeIpFilter'
 
-const DOH_GOOGLE: DnsResolver = { url: 'https://dns.google/dns-query', type: 'doh', preferH3: true }
-const DOH_CLOUDFLARE: DnsResolver = { url: 'https://cloudflare-dns.com/dns-query', type: 'doh', preferH3: true }
+// IP-literal DoH endpoints (not hostnames) so the resolver needs no plaintext
+// bootstrap that a hostile ISP could hijack/poison — the cert carries the IP in
+// its SAN, so TLS validates directly. Mirrors the cross-platform DOH_PROVIDERS.
+const DOH_GOOGLE: DnsResolver = { url: 'https://8.8.8.8/dns-query', type: 'doh', preferH3: true }
+const DOH_CLOUDFLARE: DnsResolver = { url: 'https://1.1.1.1/dns-query', type: 'doh', preferH3: true }
 const DOT_GOOGLE: DnsResolver = { url: 'tls://dns.google', type: 'dot' }
 const DOT_CLOUDFLARE: DnsResolver = { url: 'tls://1dot1dot1dot1.cloudflare-dns.com', type: 'dot' }
 const UDP_GOOGLE: DnsResolver = { url: '8.8.8.8', type: 'udp' }

@@ -1,6 +1,7 @@
 import type { RoutingRule, RuleTargetType, RuleAction } from '../models/RoutingRule'
 import { RUSSIA_BYPASS_RULES, RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
 import { RU_DIRECT_RULES } from '../data/ru-direct'
+import { MESSENGER_PROXY_RULES } from '../data/messengers'
 import type { RoutingScenario } from './types'
 
 // Russia-specific direct routes for local services that MUST stay direct
@@ -63,13 +64,13 @@ function buildRules(): readonly RoutingRule[] {
     rules.push(rule('domain_suffix', domain, 'direct', p++, 'ru-local'))
   }
 
-  // Priority 1400-1401: Telegram → proxy via BOTH geosite (domains) and geoip
-  // (its DC IP ranges). Critical for the «Только заблокированное» mode: the
-  // Telegram app dials its DC IPs DIRECTLY (no domain to match), so a domain-only
-  // list misses it → under a direct-default policy Telegram would go DIRECT and be
-  // RKN-blocked. geoip:telegram catches the app; geosite:telegram catches web.
-  rules.push(rule('geosite', 'telegram', 'proxy', 1400, 'blocked-in-ru'))
-  rules.push(rule('geoip', 'telegram', 'proxy', 1401, 'blocked-in-ru', true))
+  // Priority 1300-1399: messengers → proxy (WhatsApp/Telegram/Signal/Discord/Viber)
+  // via BOTH geosite (domains) and geoip (call-media IP ranges). Critical for the
+  // «Только заблокированное» mode: a messenger app dials its media IPs DIRECTLY (no
+  // domain to match), so a domain-only list misses it → under a direct-default
+  // policy the call would go DIRECT and be RKN-throttled. geoip:telegram /
+  // geoip:facebook (WhatsApp media) catch the raw-IP media; geosite catches chat.
+  for (const r of MESSENGER_PROXY_RULES) rules.push(r)
 
   // Priority 1500-1999: Blocked-in-RU services → proxy
   // Reuse the existing curated list, reassigning priorities

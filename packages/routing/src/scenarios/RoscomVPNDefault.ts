@@ -1,6 +1,7 @@
 import type { RoutingRule } from '../models/RoutingRule'
 import { RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
 import { RU_DIRECT_RULES } from '../data/ru-direct'
+import { MESSENGER_PROXY_RULES } from '../data/messengers'
 import type { RoutingScenario } from './types'
 
 /**
@@ -60,6 +61,13 @@ function buildRules(): readonly RoutingRule[] {
       source: { provider: 'scenario:roscomvpn-default', category: 'proxy' },
     })
   }
+
+  // ─── Messengers → PROXY (chat + CALLS) ──────────────────────────────────
+  // Priority 1300-1399 (shared module). defaultAction here is already proxy, but
+  // the explicit geoip:telegram / geoip:facebook (no-resolve) guarantee that the
+  // raw-IP call MEDIA is tunnelled BEFORE geoip:RU below, so WhatsApp/Telegram
+  // voice can't slip out DIRECT and get RKN-throttled.
+  for (const r of MESSENGER_PROXY_RULES) rules.push(r)
 
   // ─── DIRECT (RU services, gaming, OS vendors) ───────────────────────────
   // Priority 400-599
