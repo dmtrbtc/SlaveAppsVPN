@@ -8,6 +8,7 @@ import { cn } from '../../lib/utils'
 import { vpnApi } from '../../lib/api'
 import { useVpnStore, selectConnectionState } from '../../stores/vpn.store'
 import { useUIStore } from '../../stores/ui.store'
+import { IS_MOBILE } from '../../lib/platform'
 import type { ActiveConnection, ActiveConnectionsSnapshot } from '@shared/ipc/types'
 
 const POLL_INTERVAL_MS = 2000
@@ -34,7 +35,7 @@ function chainLabel(chain: string): string {
   return chain.length > 24 ? chain.slice(0, 21) + '…' : chain
 }
 
-function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose: () => void }) {
+function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose?: (() => void) | undefined }) {
   const dur = durationMs(conn.start)
   const isDirect = conn.chain === 'DIRECT' || conn.chain === ''
 
@@ -76,13 +77,18 @@ function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose: () 
         </span>
       </div>
 
-      <button
-        onClick={onClose}
-        className="shrink-0 p-1 rounded text-text-muted hover:text-error hover:bg-error/5 transition-colors"
-        title="Закрыть соединение"
-      >
-        <X className="h-3 w-3" />
-      </button>
+      {/* Close button only where the core supports it (desktop mihomo API). The
+          Android clashbox build doesn't export a per-connection close, so the row
+          is read-only there instead of showing a button that errors. */}
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="shrink-0 p-1 rounded text-text-muted hover:text-error hover:bg-error/5 transition-colors"
+          title="Закрыть соединение"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      )}
     </div>
   )
 }
@@ -212,7 +218,7 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.15 }}
               >
-                <ConnectionRow conn={conn} onClose={() => void handleClose(conn.id)} />
+                <ConnectionRow conn={conn} onClose={IS_MOBILE ? undefined : () => void handleClose(conn.id)} />
               </motion.div>
             ))}
           </AnimatePresence>
