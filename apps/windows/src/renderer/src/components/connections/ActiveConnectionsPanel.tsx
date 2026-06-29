@@ -35,9 +35,34 @@ function chainLabel(chain: string): string {
   return chain.length > 24 ? chain.slice(0, 21) + '…' : chain
 }
 
+function isDirectChain(chain: string): boolean {
+  return chain === 'DIRECT' || chain === ''
+}
+
+// Plain-language reason WHY a connection took its route, derived from the matched
+// rule. Turns cryptic engine rules («GEOIP,RU,DIRECT», «RULE-SET,inside-raw,…»)
+// into something a user understands. Falls back to the raw (truncated) rule.
+function humanizeRule(rule: string, isDirect: boolean): string {
+  const r = (rule || '').toUpperCase()
+  if (!r) return 'по умолчанию'
+  if (r.includes('PRIVATE') || r.startsWith('IP-CIDR') && isDirect) return 'локальная сеть'
+  if (r.includes('GEOIP,RU') || r.includes('CATEGORY-RU') || r.includes('GEOSITE,RU')) return 'РФ-ресурс'
+  if (r.startsWith('RULE-SET')) return 'заблокировано в РФ'
+  if (r.includes('TELEGRAM')) return 'Telegram'
+  if (r.includes('WHATSAPP') || r.includes('FACEBOOK')) return 'WhatsApp/Meta'
+  if (r.includes('SIGNAL')) return 'Signal'
+  if (r.includes('DISCORD')) return 'Discord'
+  if (r.includes('GEOSITE')) {
+    const m = /GEOSITE,([^,]+)/.exec(r)
+    return m ? m[1]!.toLowerCase() : 'сайт'
+  }
+  if (r.startsWith('MATCH')) return 'по умолчанию'
+  return rule.length > 28 ? rule.slice(0, 25) + '…' : rule
+}
+
 function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose?: (() => void) | undefined }) {
   const dur = durationMs(conn.start)
-  const isDirect = conn.chain === 'DIRECT' || conn.chain === ''
+  const isDirect = isDirectChain(conn.chain)
 
   return (
     <div className="flex items-center gap-2 border-b border-border last:border-b-0 px-3 py-2 hover:bg-bg-secondary/40 transition-colors">
@@ -48,7 +73,7 @@ function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose?: ((
             {conn.host}{conn.destinationPort ? `:${conn.destinationPort}` : ''}
           </span>
           <Badge tone={isDirect ? 'neutral' : 'accent'} className="text-[9px] shrink-0">
-            {chainLabel(conn.chain)}
+            {isDirect ? 'напрямую' : 'через VPN'}
           </Badge>
           {conn.network && conn.network !== 'tcp' && (
             <Badge tone="neutral" className="text-[9px] shrink-0">{conn.network.toUpperCase()}</Badge>
@@ -62,7 +87,14 @@ function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose?: ((
             </span>
           )}
           <span>{formatDuration(dur)}</span>
-          {conn.rule && <span className="truncate max-w-[200px]">{conn.rule}</span>}
+          {/* Why this route — plain-language reason from the matched rule, with the
+              exit node on hover (raw rule + chain) for power users. */}
+          <span
+            className="truncate max-w-[200px]"
+            title={`${conn.rule || 'нет правила'}${isDirect ? '' : ` · ${chainLabel(conn.chain)}`}`}
+          >
+            {humanizeRule(conn.rule, isDirect)}{!isDirect && conn.chain && conn.chain !== 'DIRECT' ? ` · ${chainLabel(conn.chain)}` : ''}
+          </span>
         </div>
       </div>
 
@@ -162,6 +194,18 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
     return sorted.slice(0, TOP_N)
   }, [snapshot, filter, sortKey])
 
+  // «Куда идёт трафик» — how many live connections go through the VPN vs direct.
+  const routeSummary = useMemo(() => {
+    if (!snapshot) return null
+    let vpn = 0
+    let direct = 0
+    for (const c of snapshot.connections) {
+      if (isDirectChain(c.chain)) direct++
+      else vpn++
+    }
+    return { vpn, direct }
+  }, [snapshot])
+
   return (
     <div className={cn('rounded-lg border border-border bg-bg-primary overflow-hidden', className)}>
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
@@ -170,6 +214,13 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
           <span className="text-[12px] font-semibold text-text-primary">Активные соединения</span>
           {snapshot && (
             <Badge tone="neutral" className="text-[10px]">{snapshot.count}</Badge>
+          )}
+          {routeSummary && (routeSummary.vpn > 0 || routeSummary.direct > 0) && (
+            <span className="text-[10px] text-text-muted">
+              <span className="text-accent">{routeSummary.vpn} через VPN</span>
+              {' · '}
+              <span>{routeSummary.direct} напрямую</span>
+            </span>
           )}
         </div>
         <div className="flex items-center gap-1.5">
