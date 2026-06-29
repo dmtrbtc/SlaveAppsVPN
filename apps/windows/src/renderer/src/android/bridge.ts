@@ -55,7 +55,7 @@ interface NativeSlaveVpn {
   checkPermission(): Promise<{ granted: boolean }>
   requestPermission(): Promise<{ granted: boolean }>
   connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode; splitMode?: string; splitApps?: string[] }): Promise<void>
-  listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean }[] }>
+  listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean; icon?: string }[] }>
   disconnect(): Promise<void>
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>

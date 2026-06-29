@@ -947,6 +947,8 @@ export interface SplitAppInfo {
   packageName: string
   label: string
   system: boolean
+  /** App launcher icon as a `data:image/png;base64,...` string (Android only). */
+  icon?: string
 }
 export type SplitListAppsResult = IpcResult<SplitAppInfo[]>
 

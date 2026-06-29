@@ -398,7 +398,8 @@ class SlaveVpnPlugin : Plugin() {
                     JSObject()
                         .put("packageName", ai.packageName)
                         .put("label", label)
-                        .put("system", isSystem),
+                        .put("system", isSystem)
+                        .put("icon", appIconBase64(ai)),
                 )
             }
         } catch (e: Exception) {
@@ -406,6 +407,26 @@ class SlaveVpnPlugin : Plugin() {
             return
         }
         call.resolve(JSObject().put("apps", apps))
+    }
+
+    /**
+     * The app's launcher icon as a small `data:image/png;base64,...` string for the
+     * split-tunnel picker. Downscaled to 48px so the (potentially 100+) icons stay a
+     * lean payload. Returns "" on any failure so the row just shows no icon.
+     */
+    private fun appIconBase64(ai: android.content.pm.ApplicationInfo): String {
+        return try {
+            val d = context.packageManager.getApplicationIcon(ai)
+            val size = 48
+            val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            d.setBounds(0, 0, size, size)
+            d.draw(canvas)
+            val out = java.io.ByteArrayOutputStream()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            bmp.recycle()
+            "data:image/png;base64," + android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+        } catch (_: Exception) { "" }
     }
 
     @PluginMethod

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Search, Check, SplitSquareVertical, Landmark, AlertTriangle } from 'lucide-react'
+import { Search, Check, SplitSquareVertical, Landmark, AlertTriangle, RotateCw, Eraser, Loader2 } from 'lucide-react'
 import { Segmented } from '../ui/segmented'
 import { Input } from '../ui/input'
 import { Button } from '../ui/button'
@@ -61,13 +61,21 @@ export function AndroidSplitTunnel() {
 
 function AndroidSplitTunnelInner() {
   const { notify } = useUIStore()
-  const vpnMode = useVpnStore(selectVpnStatus).mode
+  const status = useVpnStore(selectVpnStatus)
+  const vpnMode = status.mode
+  const isConnected = status.state === 'connected'
+  const connect = useVpnStore(s => s.connect)
+  const disconnect = useVpnStore(s => s.disconnect)
   const [mode, setMode] = useState<Mode>('off')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [apps, setApps] = useState<SplitAppInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [showSystem, setShowSystem] = useState(false)
+  // Split-tunnel changes apply at connect time; when already connected, surface a
+  // one-tap «Применить» (reconnect) instead of making the user toggle the VPN.
+  const [dirty, setDirty] = useState(false)
+  const [applying, setApplying] = useState(false)
 
   useEffect(() => {
     settingsApi.get()
@@ -103,7 +111,30 @@ function AndroidSplitTunnelInner() {
 
   const changeMode = (m: Mode) => {
     setMode(m)
+    setDirty(true)
     void settingsApi.set({ splitTunnelMode: m } as Parameters<typeof settingsApi.set>[0])
+  }
+
+  const clearSelection = () => {
+    setSelected(new Set())
+    setDirty(true)
+    void splitApi.setProcessList({ processList: [] })
+  }
+
+  // Re-establish the tunnel so the new split-tunnel filter takes effect live.
+  const applyNow = async (): Promise<void> => {
+    setApplying(true)
+    try {
+      await disconnect()
+      await new Promise(r => setTimeout(r, 400))
+      await connect()
+      setDirty(false)
+      notify({ type: 'success', title: 'Применено', message: 'Раздельный туннель обновлён' })
+    } catch (e) {
+      notify({ type: 'error', title: 'Ошибка', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setApplying(false)
+    }
   }
 
   // One-tap: route every installed banking app MIMO the VPN (exclude mode).
@@ -115,6 +146,7 @@ function AndroidSplitTunnelInner() {
       return
     }
     setMode('exclude')
+    setDirty(true)
     await settingsApi.set({ splitTunnelMode: 'exclude' } as Parameters<typeof settingsApi.set>[0])
     setSelected(prev => {
       const next = new Set(prev)
@@ -122,10 +154,11 @@ function AndroidSplitTunnelInner() {
       void splitApi.setProcessList({ processList: [...next] })
       return next
     })
-    notify({ type: 'success', title: 'Банки — мимо VPN', message: `Исключено приложений: ${banks.length}. Переподключитесь.` })
+    notify({ type: 'success', title: 'Банки — мимо VPN', message: `Исключено приложений: ${banks.length}.` })
   }
 
   const toggleApp = (pkg: string) => {
+    setDirty(true)
     setSelected(prev => {
       const next = new Set(prev)
       if (next.has(pkg)) next.delete(pkg)
@@ -137,11 +170,18 @@ function AndroidSplitTunnelInner() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return apps.filter(a =>
+    const list = apps.filter(a =>
       (showSystem || !a.system) &&
       (!q || a.label.toLowerCase().includes(q) || a.packageName.toLowerCase().includes(q)),
     )
-  }, [apps, query, showSystem])
+    // Selected apps first so the current choice is visible without scrolling.
+    return list.sort((a, b) => {
+      const sa = selected.has(a.packageName) ? 0 : 1
+      const sb = selected.has(b.packageName) ? 0 : 1
+      if (sa !== sb) return sa - sb
+      return a.label.localeCompare(b.label)
+    })
+  }, [apps, query, showSystem, selected])
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-primary p-4">
@@ -204,6 +244,9 @@ function AndroidSplitTunnelInner() {
                       on ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-secondary',
                     )}
                   >
+                    {app.icon
+                      ? <img src={app.icon} alt="" className="h-7 w-7 shrink-0 rounded" />
+                      : <span className="h-7 w-7 shrink-0 rounded bg-bg-secondary" />}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12px] text-text-primary">{app.label}</span>
                       <span className="block truncate font-mono text-[10px] text-text-muted">{app.packageName}</span>
@@ -223,10 +266,31 @@ function AndroidSplitTunnelInner() {
             </div>
           )}
 
-          <p className="text-[10px] text-text-muted">
-            Выбрано: {selected.size}. Применится при следующем подключении.
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-text-muted">
+              Выбрано: {selected.size}.{!isConnected && ' Применится при подключении.'}
+            </p>
+            {selected.size > 0 && (
+              <button
+                onClick={clearSelection}
+                className="flex items-center gap-1 text-[10px] text-text-muted hover:text-text-secondary"
+              >
+                <Eraser className="h-3 w-3" /> Очистить
+              </button>
+            )}
+          </div>
         </>
+      )}
+
+      {/* Live-apply when connected: a split change needs a reconnect to take effect. */}
+      {isConnected && dirty && (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-connecting/30 bg-connecting/10 px-3 py-2">
+          <span className="text-[11px] text-connecting">Изменения применятся после переподключения</span>
+          <Button variant="secondary" size="sm" onClick={() => void applyNow()} disabled={applying}>
+            {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
+            Применить
+          </Button>
+        </div>
       )}
     </div>
   )
