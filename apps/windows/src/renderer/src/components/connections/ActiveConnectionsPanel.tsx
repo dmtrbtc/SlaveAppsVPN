@@ -131,6 +131,7 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
   const [snapshot, setSnapshot] = useState<ActiveConnectionsSnapshot | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('download')
   const [filter, setFilter] = useState('')
+  const [routeFilter, setRouteFilter] = useState<'all' | 'vpn' | 'direct'>('all')
 
   const isConnected = state === 'connected'
 
@@ -175,12 +176,17 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
   const sortedFiltered = useMemo(() => {
     if (!snapshot) return []
     const norm = filter.trim().toLowerCase()
-    const filtered = norm
+    const byText = norm
       ? snapshot.connections.filter(c =>
           c.host.toLowerCase().includes(norm) ||
           (c.process?.toLowerCase().includes(norm) ?? false) ||
           c.chain.toLowerCase().includes(norm))
       : snapshot.connections
+
+    // Route filter: «через VPN» / «напрямую» / все.
+    const filtered = routeFilter === 'all'
+      ? byText
+      : byText.filter(c => routeFilter === 'direct' ? isDirectChain(c.chain) : !isDirectChain(c.chain))
 
     const sorted = [...filtered].sort((a, b) => {
       switch (sortKey) {
@@ -192,7 +198,7 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
     })
 
     return sorted.slice(0, TOP_N)
-  }, [snapshot, filter, sortKey])
+  }, [snapshot, filter, sortKey, routeFilter])
 
   // «Куда идёт трафик» — how many live connections go through the VPN vs direct.
   const routeSummary = useMemo(() => {
@@ -214,13 +220,6 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
           <span className="text-[12px] font-semibold text-text-primary">Активные соединения</span>
           {snapshot && (
             <Badge tone="neutral" className="text-[10px]">{snapshot.count}</Badge>
-          )}
-          {routeSummary && (routeSummary.vpn > 0 || routeSummary.direct > 0) && (
-            <span className="text-[10px] text-text-muted">
-              <span className="text-accent">{routeSummary.vpn} через VPN</span>
-              {' · '}
-              <span>{routeSummary.direct} напрямую</span>
-            </span>
           )}
         </div>
         <div className="flex items-center gap-1.5">
@@ -246,6 +245,35 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
         </div>
       </div>
 
+      {/* «Куда идёт трафик» — tap a chip to filter by route. */}
+      {isConnected && routeSummary && (routeSummary.vpn > 0 || routeSummary.direct > 0) && (
+        <div className="flex items-center gap-1.5 px-4 py-2 border-b border-border">
+          {([
+            ['all',    'Все',        routeSummary.vpn + routeSummary.direct],
+            ['vpn',    'Через VPN',  routeSummary.vpn],
+            ['direct', 'Напрямую',   routeSummary.direct],
+          ] as const).map(([key, label, n]) => {
+            const active = routeFilter === key
+            return (
+              <button
+                key={key}
+                onClick={() => setRouteFilter(key)}
+                className={cn(
+                  'rounded-full px-2.5 py-0.5 text-[11px] font-medium border transition-colors',
+                  active
+                    ? key === 'vpn'
+                      ? 'border-accent/40 bg-accent/15 text-accent'
+                      : 'border-border-strong bg-bg-secondary text-text-primary'
+                    : 'border-border text-text-muted hover:text-text-secondary hover:bg-bg-secondary',
+                )}
+              >
+                {label} <span className="tabular-nums opacity-70">{n}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       <div className="max-h-[380px] overflow-y-auto">
         {!isConnected ? (
           <div className="px-4 py-8 text-center text-[12px] text-text-muted">
@@ -257,7 +285,7 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
           </div>
         ) : sortedFiltered.length === 0 ? (
           <div className="px-4 py-8 text-center text-[12px] text-text-muted">
-            {filter ? 'Ничего не найдено' : 'Нет активных соединений'}
+            {filter || routeFilter !== 'all' ? 'Ничего не найдено' : 'Нет активных соединений'}
           </div>
         ) : (
           <AnimatePresence initial={false}>
