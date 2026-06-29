@@ -27,7 +27,10 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
 import com.slavevpn.app.MainActivity
+import com.slavevpn.app.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +62,9 @@ class SlaveVpnService : VpnService() {
         const val EXTRA_SPLIT_APPS = "splitApps"    // package names
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
+        // Brand accent (app UI accent blue) — tints the notification small icon + title.
+        // Not `const` because .toInt() isn't a constant expression.
+        val BRAND_COLOR = 0xFF5B8DEF.toInt()
         const val TUN_MTU      = 9000
 
         @JvmStatic var currentState: String = "disconnected"
@@ -487,10 +493,13 @@ class SlaveVpnService : VpnService() {
         val reconnectIntent = Intent(this, SlaveVpnService::class.java).apply { action = ACTION_RECONNECT }
         val reconnectPi = PendingIntent.getService(this, 2, reconnectIntent, flags)
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("SLAVE VPN")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            // Branded status-bar icon: the monochrome SLAVE shield (Android tints
+            // it with setColor below) instead of the generic system padlock.
+            .setSmallIcon(R.drawable.ic_tile_vpn)
+            .setColor(BRAND_COLOR)
             .setContentIntent(pi)
             .setOngoing(true)
             // Speed updates fire every 2s — alert only on the first post so the
@@ -499,7 +508,15 @@ class SlaveVpnService : VpnService() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .addAction(android.R.drawable.ic_popup_sync, "Переподключить", reconnectPi)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отключить", stopPi)
-            .build()
+
+        // Full-colour app logo as the large icon (right side of the notification).
+        try {
+            ContextCompat.getDrawable(this, R.mipmap.ic_launcher)
+                ?.toBitmap(width = 128, height = 128)
+                ?.let { builder.setLargeIcon(it) }
+        } catch (_: Exception) { /* fall back to no large icon */ }
+
+        return builder.build()
     }
 
     private fun notify(text: String) {
