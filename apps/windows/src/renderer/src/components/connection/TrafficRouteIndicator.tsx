@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Globe, Shield, SplitSquareVertical, Settings2, ChevronRight, Filter, type LucideIcon } from 'lucide-react'
-import { useVpnStore, selectVpnStatus } from '../../stores/vpn.store'
+import { Globe, Shield, SplitSquareVertical, Settings2, ChevronRight, Filter, ArrowUpRight, ArrowRight, type LucideIcon } from 'lucide-react'
+import { useVpnStore, selectVpnStatus, selectConnectionState } from '../../stores/vpn.store'
+import { vpnApi } from '../../lib/api'
 import { cn } from '../../lib/utils'
 
 // «Куда идёт трафик» — a glanceable indicator of the active VPN mode and what it
@@ -49,8 +51,35 @@ const MODE_INFO: Record<string, ModeInfo> = {
 export function TrafficRouteIndicator() {
   const navigate = useNavigate()
   const status = useVpnStore(selectVpnStatus)
+  const isConnected = useVpnStore(selectConnectionState) === 'connected'
   const info = MODE_INFO[status.mode] ?? MODE_INFO.bypass!
   const Icon = info.icon
+
+  // Live «куда идёт трафик» glance: how many active connections go through the VPN
+  // vs direct right now. Polled from the same connections snapshot the panel uses.
+  const [live, setLive] = useState<{ vpn: number; direct: number } | null>(null)
+  useEffect(() => {
+    if (!isConnected) { setLive(null); return }
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async (): Promise<void> => {
+      try {
+        const snap = await vpnApi.getConnections()
+        if (alive && snap) {
+          let vpn = 0
+          let direct = 0
+          for (const c of snap.connections) {
+            if (c.chain === '' || c.chain === 'DIRECT') direct++
+            else vpn++
+          }
+          setLive({ vpn, direct })
+        }
+      } catch { /* non-fatal */ }
+      finally { if (alive) timer = setTimeout(() => void tick(), 3000) }
+    }
+    void tick()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [isConnected])
 
   return (
     <button
@@ -76,6 +105,18 @@ export function TrafficRouteIndicator() {
         <div className="mt-2.5 grid grid-cols-2 gap-1.5">
           <FlowChip text={info.flow.left} tone="direct" />
           <FlowChip text={info.flow.right} tone="vpn" />
+        </div>
+      )}
+
+      {/* Live split of what's actually flowing right now. */}
+      {live && (live.vpn > 0 || live.direct > 0) && (
+        <div className="mt-2 flex items-center gap-3 text-[10px]">
+          <span className="inline-flex items-center gap-1 text-accent">
+            <ArrowUpRight className="h-3 w-3" /> {live.vpn} через VPN
+          </span>
+          <span className="inline-flex items-center gap-1 text-text-muted">
+            <ArrowRight className="h-3 w-3" /> {live.direct} напрямую
+          </span>
         </div>
       )}
     </button>
