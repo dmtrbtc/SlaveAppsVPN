@@ -97,7 +97,7 @@ test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plainte
   assert.ok(!fakeFilter.includes('+.ru'), '+.ru must NOT be fake-ip-excluded in full tunnel')
 })
 
-test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + interval:120', () => {
+test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + interval:60', () => {
   const doc = require('js-yaml').load(gen('smart')) as {
     'proxy-groups': Array<Record<string, unknown>>
     'keep-alive-interval'?: number
@@ -107,10 +107,10 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + inter
   assert.equal(auto!['type'], 'url-test')
   assert.equal(auto!['tolerance'], 50)
   assert.equal(auto!['lazy'], true)
-  // 120s (was 300s) so a live node is re-picked quickly after the device wakes
-  assert.equal(auto!['interval'], 120)
+  // 60s so a live node is re-picked quickly after the device wakes
+  assert.equal(auto!['interval'], 60)
   // TCP keep-alive recycles connections that die during Doze → fast reconnect
-  assert.equal(doc['keep-alive-interval'], 30)
+  assert.equal(doc['keep-alive-interval'], 15)
 })
 
 test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8080 sniff-wait)', () => {
