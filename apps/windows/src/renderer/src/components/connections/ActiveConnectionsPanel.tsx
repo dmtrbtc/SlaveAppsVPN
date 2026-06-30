@@ -8,7 +8,6 @@ import { cn } from '../../lib/utils'
 import { vpnApi } from '../../lib/api'
 import { useVpnStore, selectConnectionState } from '../../stores/vpn.store'
 import { useUIStore } from '../../stores/ui.store'
-import { IS_MOBILE } from '../../lib/platform'
 import type { ActiveConnection, ActiveConnectionsSnapshot } from '@shared/ipc/types'
 
 const POLL_INTERVAL_MS = 2000
@@ -109,9 +108,9 @@ function ConnectionRow({ conn, onClose }: { conn: ActiveConnection; onClose?: ((
         </span>
       </div>
 
-      {/* Close button only where the core supports it (desktop mihomo API). The
-          Android clashbox build doesn't export a per-connection close, so the row
-          is read-only there instead of showing a button that errors. */}
+      {/* Close this connection — supported on both platforms (desktop mihomo API +
+          the clashbox.aar CloseConnection export). onClose stays optional so the row
+          can also render read-only if a caller omits it. */}
       {onClose && (
         <button
           onClick={onClose}
@@ -297,7 +296,7 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
                 exit={{ opacity: 0, height: 0 }}
                 transition={{ duration: 0.15 }}
               >
-                <ConnectionRow conn={conn} onClose={IS_MOBILE ? undefined : () => void handleClose(conn.id)} />
+                <ConnectionRow conn={conn} onClose={() => void handleClose(conn.id)} />
               </motion.div>
             ))}
           </AnimatePresence>

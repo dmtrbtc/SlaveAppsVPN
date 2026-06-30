@@ -100,6 +100,15 @@ object ClashBridge {
     fun getConnections(): String =
         try { Clashbox.getConnections() } catch (_: Throwable) { "{}" }
 
+    /** Close a single tracked connection by id (clash API DELETE /connections/{id}). */
+    fun closeConnection(id: String): Boolean =
+        try { Clashbox.closeConnection(id) } catch (_: Throwable) { false }
+
+    /** Close every tracked connection. */
+    fun closeAllConnections() {
+        try { Clashbox.closeAllConnections() } catch (_: Throwable) { }
+    }
+
     /** Proxy latency (ms) via URL test; -1 on error/timeout. */
     fun testDelay(name: String, url: String, timeoutMs: Int): Long =
         try { Clashbox.testDelay(name, url, timeoutMs.toLong()) } catch (_: Throwable) { -1L }

@@ -60,6 +60,7 @@ interface NativeSlaveVpn {
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
   getConnections(): Promise<{ snapshot: string }>
+  closeConnection(options: { id: string }): Promise<void>
   getRuleProviders(): Promise<{ providers: string }>
   updateRuleProviders(): Promise<{ providers: string }>
   testDelay(options: { name: string; url?: string; timeout?: number }): Promise<{ delay: number }>
@@ -615,7 +616,16 @@ export function installAndroidBridge(): void {
           return null
         }
       }),
-      closeConnection: notImplemented('vpn.closeConnection'),
+      closeConnection: (payload: { id?: string }) => wrap(async () => {
+        // Real per-connection close — the rebuilt clashbox.aar exports
+        // Clashbox.closeConnection(id) (DELETE /connections/{id}). No-op if not
+        // connected or the id is gone (the row is removed optimistically anyway).
+        const id = payload?.id
+        if (id && coreReady()) {
+          try { await SlaveVpn.closeConnection({ id }) } catch { /* non-fatal */ }
+        }
+        return undefined
+      }),
       getBalancerState: notImplemented('vpn.getBalancerState'),
       setBalancerEnabled: notImplemented('vpn.setBalancerEnabled'),
       setBalancerMode: notImplemented('vpn.setBalancerMode'),

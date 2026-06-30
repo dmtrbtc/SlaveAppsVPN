@@ -156,6 +156,28 @@ func closeAllConnections() {
 	})
 }
 
+// CloseConnection closes a single tracked connection by its id (clash API
+// DELETE /connections/{id}). Returns true if a matching connection was found
+// and closed. Exposed to the Android plugin's «закрыть соединение» action.
+func CloseConnection(id string) bool {
+	closed := false
+	statistic.DefaultManager.Range(func(c statistic.Tracker) bool {
+		if c.ID() == id {
+			_ = c.Close()
+			closed = true
+			return false // stop iterating
+		}
+		return true
+	})
+	return closed
+}
+
+// CloseAllConnections drops every tracked connection — exported wrapper over the
+// internal helper for the «закрыть все» action.
+func CloseAllConnections() {
+	closeAllConnections()
+}
+
 // ─── Telemetry (dashboard) ──────────────────────────────────────────────────
 
 // GetTraffic returns live up/down speed (bytes/s) and cumulative totals as JSON:

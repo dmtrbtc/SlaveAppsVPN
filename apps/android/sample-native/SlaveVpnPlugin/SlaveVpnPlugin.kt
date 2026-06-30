@@ -294,6 +294,22 @@ class SlaveVpnPlugin : Plugin() {
         call.resolve(JSObject().put("snapshot", ClashBridge.getConnections()))
     }
 
+    /** Close a single active connection by id («закрыть соединение»). */
+    @PluginMethod
+    fun closeConnection(call: PluginCall) {
+        val id = call.getString("id")
+        if (id.isNullOrBlank()) { call.reject("no id"); return }
+        ClashBridge.closeConnection(id)
+        call.resolve()
+    }
+
+    /** Close every active connection («закрыть все»). */
+    @PluginMethod
+    fun closeAllConnections(call: PluginCall) {
+        ClashBridge.closeAllConnections()
+        call.resolve()
+    }
+
     /** Current rule-providers (bypass lists) status JSON, without refreshing. */
     @PluginMethod
     fun getRuleProviders(call: PluginCall) {
