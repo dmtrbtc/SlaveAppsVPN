@@ -61,7 +61,7 @@ jobs:
         run: pnpm --filter "./packages/**" build
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-      - name: Run package tests (config: parsers, uTLS, routing, DNS, RU-direct)
+      - name: "Run package tests (config: parsers, uTLS, routing, DNS, RU-direct)"
         run: pnpm --filter @slave-vpn/config test
 
   audit:
