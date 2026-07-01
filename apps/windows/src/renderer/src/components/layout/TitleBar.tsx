@@ -1,7 +1,12 @@
 import { Minus, X, Square } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { IS_MOBILE } from '../../lib/platform'
 
 export function TitleBar() {
+  // Desktop window chrome (minimize/maximize/close) — meaningless on Android,
+  // where there's no window frame. Guard here so ANY render site is safe (the
+  // Onboarding route renders TitleBar directly, outside the mobile-aware AppShell).
+  if (IS_MOBILE) return null
   return (
     <div className="drag-region flex h-9 items-center justify-between bg-bg-base px-4 shrink-0 border-b border-border/40">
       <div className="flex items-center gap-2 no-drag">

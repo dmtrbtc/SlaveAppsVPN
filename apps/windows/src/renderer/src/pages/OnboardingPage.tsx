@@ -316,7 +316,12 @@ export function OnboardingPage() {
   }
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden bg-bg-base">
+    <div
+      className="relative flex h-full flex-col overflow-hidden bg-bg-base"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}
+    >
+      {/* Desktop-only window chrome; renders null on Android (guarded inside). The
+          safe-area padding above keeps the first-run content clear of the notch. */}
       <TitleBar />
 
       {/* Decorative blobs */}
