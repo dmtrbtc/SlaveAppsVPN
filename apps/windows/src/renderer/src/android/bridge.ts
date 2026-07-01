@@ -648,6 +648,10 @@ export function installAndroidBridge(): void {
       // turn on "Always-on VPN" + "Block connections without VPN" for us — the
       // strongest guarantee, enforced by Android even when our process is dead.
       openAlwaysOnVpnSettings: () => wrap(() => SlaveVpn.openAlwaysOnVpnSettings()),
+      // mihomo url-test of a node through the running tunnel (delay ms). Powers the
+      // synthesized connection-health probe (Android has no native health events).
+      testDelay: (payload: { name: string; url?: string; timeout?: number }) =>
+        wrap(() => SlaveVpn.testDelay(payload)),
       // T1 «Обновить списки»: force-refresh the RKN bypass rule-providers in the
       // running mihomo core and report per-provider count/errors. Rejects (native)
       // when the core isn't running — the lists live in the engine.

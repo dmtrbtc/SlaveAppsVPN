@@ -145,6 +145,12 @@ export const vpnApi = {
     const vpn = requireBridge().vpn
     return vpn.openAlwaysOnVpnSettings ? unwrap(vpn.openAlwaysOnVpnSettings()) : Promise.resolve()
   },
+  // Android-only through-tunnel url-test. Resolves to null on Windows (native
+  // health is used there) so callers can no-op cleanly.
+  testDelay: (payload: { name: string; url?: string; timeout?: number }): Promise<{ delay: number } | null> => {
+    const vpn = requireBridge().vpn
+    return vpn.testDelay ? unwrap(vpn.testDelay(payload)) : Promise.resolve(null)
+  },
 }
 
 export const subscriptionApi = {

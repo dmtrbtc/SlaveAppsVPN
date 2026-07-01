@@ -24,7 +24,11 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
   const tier = useConnectionQualityTier()
   const config = TIER_CONFIG[tier]
 
-  const label = health ? HEALTH_STATE_LABELS[health.state] : 'Хорошее'
+  // Don't fabricate a quality reading: with no real health data (e.g. before the
+  // first health probe lands) show nothing rather than a misleading «Хорошее».
+  if (!health) return null
+
+  const label = HEALTH_STATE_LABELS[health.state]
 
   return (
     <motion.div

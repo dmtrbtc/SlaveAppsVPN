@@ -36,6 +36,7 @@ interface VpnStore {
   maybeAutoConnect: () => Promise<void>
   setMode: (mode: VPNMode) => Promise<void>
   fetchStatus: () => Promise<void>
+  setHealth: (health: VpnHealthPayload | null) => void
   setEngineVersion: (v: string | null) => void
   fetchProxyList: () => Promise<void>
   setProxy: (name: string) => Promise<void>
@@ -145,6 +146,8 @@ export const useVpnStore = create<VpnStore>()(
         // Non-fatal
       }
     },
+
+    setHealth: (health) => set({ health }),
 
     setEngineVersion: (v) => set({ engineVersion: v }),
 

@@ -9,6 +9,7 @@ import { NotificationStack } from '../notifications/NotificationStack'
 import { WhatsNewModal } from '../update/WhatsNewModal'
 import { ClipboardSuggestionBanner } from '../subscriptions/ClipboardSuggestionBanner'
 import { useSubscriptionsStore } from '../../stores/subscriptions.store'
+import { useAndroidConnectionHealth } from '../../hooks/useAndroidConnectionHealth'
 import { IS_MOBILE } from '../../lib/platform'
 
 export function AppShell() {
@@ -18,6 +19,10 @@ export function AppShell() {
     initSubs()
     return () => disposeSubs()
   }, [initSubs, disposeSubs])
+
+  // Android: synthesize real connection health from a through-tunnel url-test
+  // (no-op on Windows / while disconnected). Drives the quality badge.
+  useAndroidConnectionHealth()
 
   if (IS_MOBILE) {
     return (
