@@ -48,6 +48,8 @@ class SlaveVpnService : VpnService() {
     // Polls the core's live traffic and refreshes the notification text with the
     // current ↓/↑ speed while connected. Cancelled on stop/reconnect/destroy.
     private var trafficJob: Job? = null
+    // Watches the active (non-VPN) network so the tunnel follows Wi-Fi↔mobile switches.
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
@@ -267,6 +269,8 @@ class SlaveVpnService : VpnService() {
                     notify("Подключено · mihomo ${ClashBridge.version()}")
                     // Begin live ↓/↑ speed updates in the notification.
                     startTrafficUpdates()
+                    // Follow Wi-Fi↔mobile switches so the tunnel reconnects fast.
+                    registerNetworkMonitor()
                 } catch (e: Exception) {
                     val msg = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
@@ -366,6 +370,7 @@ class SlaveVpnService : VpnService() {
     }
 
     private fun stopVpn() {
+        unregisterNetworkMonitor()
         trafficJob?.cancel()
         trafficJob = null
         scope.launch {
@@ -423,6 +428,52 @@ class SlaveVpnService : VpnService() {
         } catch (_: Exception) { }
     }
 
+    // ─── Network monitor (Wi-Fi ↔ mobile hand-off) ──────────────────────────────
+    // When the active internet network changes (e.g. leaving Wi-Fi for mobile), the
+    // tunnel's protected sockets are still bound to the dead network and every app
+    // hangs until something times out. We (1) point the VpnService's underlying
+    // network at the new one so fresh dials egress correctly, and (2) drop the stale
+    // connections so apps re-dial immediately — a fast, automatic reconnect instead
+    // of the «долгие реконнекты при смене сети». Filtered to NOT_VPN so our own TUN
+    // never triggers it (no loop).
+    private fun registerNetworkMonitor() {
+        if (networkCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                        setUnderlyingNetworks(arrayOf(network))
+                    }
+                } catch (_: Exception) { }
+                if (currentState == "connected") {
+                    appendLog("[net] active network changed → rebind + drop stale connections")
+                    try { ClashBridge.closeAllConnections() } catch (_: Exception) { }
+                }
+            }
+            override fun onLost(network: android.net.Network) {
+                appendLog("[net] network lost")
+            }
+        }
+        val req = android.net.NetworkRequest.Builder()
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        try {
+            cm.registerNetworkCallback(req, cb)
+            networkCallback = cb
+        } catch (_: Exception) { }
+    }
+
+    private fun unregisterNetworkMonitor() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)
+                ?.unregisterNetworkCallback(cb)
+        } catch (_: Exception) { }
+    }
+
     /**
      * Poll the mihomo traffic API every 2s and refresh the notification with the
      * live ↓/↑ speed. getTraffic() returns {up,down,...} in bytes-per-second.
@@ -463,6 +514,7 @@ class SlaveVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterNetworkMonitor()
         trafficJob?.cancel()
         trafficJob = null
         scope.cancel()
