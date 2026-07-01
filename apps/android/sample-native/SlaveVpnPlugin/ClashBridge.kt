@@ -74,5 +74,26 @@ object ClashBridge {
 
     fun isRunning(): Boolean = running
 
+    /**
+     * Switch the active member of a select group (default SLAVE-SELECT) to a
+     * specific node. New connections egress through it. Throws if the core is
+     * not running or the name is unknown.
+     */
+    fun selectProxy(name: String, group: String = SELECT_GROUP) {
+        // Runtime diagnostics → Диагностика→Логи: prove whether the choice
+        // reaches the core and what the active leaf is before/after.
+        val before = currentProxy(group)
+        SlaveVpnService.appendLog("[selector] selectProxy($group, $name) — current before=$before")
+        Clashbox.selectProxy(group, name)
+        SlaveVpnService.appendLog("[selector] selectProxy done — current after=${currentProxy(group)}")
+    }
+
+    /** Effective active proxy (leaf node) of a group, "" if unknown / not running. */
+    fun currentProxy(group: String = SELECT_GROUP): String =
+        try { Clashbox.currentProxy(group) } catch (_: Throwable) { "" }
+
     fun version(): String = try { Clashbox.version() } catch (_: Throwable) { "unknown" }
+
+    // Must match SLAVE_SELECT_GROUP in @slave-vpn/config generateMihomoConfig.
+    const val SELECT_GROUP = "SLAVE-SELECT"
 }
