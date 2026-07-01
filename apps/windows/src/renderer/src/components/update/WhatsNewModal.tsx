@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react'
 import { X, Sparkles } from 'lucide-react'
 import { getInstalledVersionNotes, getCurrentVersion } from '../../android/update-check'
 
-const LS_KEY = 'slave.whatsnew.lastSeenVersion.v1'
+// v2: v1 was seeded on first launch even for users updating FROM a pre-whatsnew
+// build (marker was missing → treated as a fresh install → silently seeded → the
+// card never showed). Bumping the key resets that one-time bad seed so the card
+// can appear on the update that ships this fix.
+const LS_KEY = 'slave.whatsnew.lastSeenVersion.v2'
 
 /**
  * Post-update «Что нового» card. Compares the version this build was launched as
@@ -26,15 +30,23 @@ export function WhatsNewModal() {
     let lastSeen: string | null = null
     try { lastSeen = window.localStorage.getItem(LS_KEY) } catch { /* ignore */ }
 
-    // First-ever launch: seed the marker, don't announce (nothing changed for them).
-    if (!lastSeen) {
-      try { window.localStorage.setItem(LS_KEY, current) } catch { /* ignore */ }
-      return
-    }
     if (lastSeen === current) return // already seen the current version
 
-    // Updated since the last launch. Advance the marker NOW (no nagging), then try
-    // to surface this version's notes — silently skips if offline or none exist.
+    // No marker yet: distinguish a GENUINELY fresh install (empty storage → seed
+    // silently, nothing to announce) from a user updating from a pre-whatsnew build
+    // (marker missing but prior app data exists → show the notes once). Any other
+    // localStorage key is evidence the app was used before.
+    if (!lastSeen) {
+      let hasPriorData = false
+      try { hasPriorData = Object.keys(window.localStorage).some(k => k !== LS_KEY) } catch { /* ignore */ }
+      if (!hasPriorData) {
+        try { window.localStorage.setItem(LS_KEY, current) } catch { /* ignore */ }
+        return
+      }
+    }
+
+    // Updated (or returning from a pre-whatsnew build). Advance the marker NOW (no
+    // nagging), then surface this version's notes — silently skips if offline / none.
     try { window.localStorage.setItem(LS_KEY, current) } catch { /* ignore */ }
     void (async () => {
       const info = await getInstalledVersionNotes()
