@@ -12,7 +12,7 @@ import {
 } from './subscription-store'
 import { buildAggregatedYaml } from './aggregator'
 import { listAndroidServers, invalidateServerCache } from './servers'
-import { compileSingboxConfigForAndroid } from './compile-config'
+import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
 
 // ─── Native plugin interface ──────────────────────────────────────────────────
@@ -144,13 +144,13 @@ export function installAndroidBridge(): void {
           const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
           if (!requested.granted) throw new Error('Android VPN permission denied')
         }
-        const compiled = await compileSingboxConfigForAndroid({
+        const compiled = await compileMihomoConfigForAndroid({
           vpnMode: currentMode,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           utlsFingerprint: currentUtlsFingerprint,
         })
         await SlaveVpn.connect({
-          config: compiled.json,
+          config: compiled.config,
           ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
           vpnMode: currentMode,
         })
