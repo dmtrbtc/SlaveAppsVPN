@@ -50,6 +50,8 @@ class SlaveVpnService : VpnService() {
     private var trafficJob: Job? = null
     // Watches the active (non-VPN) network so the tunnel follows Wi-Fi↔mobile switches.
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+    private var networkInitialized = false
+    private var lastNetworkReconnectAt = 0L
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
@@ -429,16 +431,16 @@ class SlaveVpnService : VpnService() {
     }
 
     // ─── Network monitor (Wi-Fi ↔ mobile hand-off) ──────────────────────────────
-    // When the active internet network changes (e.g. leaving Wi-Fi for mobile), the
-    // tunnel's protected sockets are still bound to the dead network and every app
-    // hangs until something times out. We (1) point the VpnService's underlying
-    // network at the new one so fresh dials egress correctly, and (2) drop the stale
-    // connections so apps re-dial immediately — a fast, automatic reconnect instead
-    // of the «долгие реконнекты при смене сети». Filtered to NOT_VPN so our own TUN
-    // never triggers it (no loop).
+    // When the DEFAULT network changes (e.g. leaving Wi-Fi for mobile), the tunnel's
+    // protected sockets stay bound to the dead network and every app hangs — mihomo
+    // can't self-recover (its health checks dial over the dead network and all fail),
+    // so the user had to reconnect by hand. We watch the default network via
+    // registerDefaultNetworkCallback and, on a real hand-off, rebind the underlying
+    // network and do a full reconnect automatically (debounced).
     private fun registerNetworkMonitor() {
         if (networkCallback != null) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+        networkInitialized = false
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
                 try {
@@ -446,21 +448,39 @@ class SlaveVpnService : VpnService() {
                         setUnderlyingNetworks(arrayOf(network))
                     }
                 } catch (_: Exception) { }
-                if (currentState == "connected") {
-                    appendLog("[net] active network changed → rebind + drop stale connections")
-                    try { ClashBridge.closeAllConnections() } catch (_: Exception) { }
-                }
+                // First callback = the network we're already on (registration echo) →
+                // just bind the underlying network. A LATER default-network change
+                // (Wi-Fi↔mobile) is a real hand-off: the proxy sockets are stuck on the
+                // dead network and mihomo can't self-recover (health checks all fail), so
+                // do a FULL reconnect — exactly what the user had to do by hand — debounced
+                // to avoid thrashing on flapping networks.
+                if (!networkInitialized) { networkInitialized = true; return }
+                if (currentState != "connected") return
+                val now = System.currentTimeMillis()
+                if (now - lastNetworkReconnectAt < 5000) return
+                lastNetworkReconnectAt = now
+                appendLog("[net] default network changed → auto-reconnect")
+                Handler(Looper.getMainLooper()).post { reconnect() }
             }
             override fun onLost(network: android.net.Network) {
                 appendLog("[net] network lost")
             }
         }
-        val req = android.net.NetworkRequest.Builder()
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-            .build()
         try {
-            cm.registerNetworkCallback(req, cb)
+            // registerDefaultNetworkCallback fires onAvailable whenever the app's
+            // DEFAULT network changes (Wi-Fi→mobile and back) — the actual hand-off.
+            // A plain registerNetworkCallback(request) only fires when a *new* network
+            // appears, so leaving Wi-Fi for already-active mobile never triggered it
+            // (the v0.2.26-dev.1 bug). Fallback to the request form on API < 24.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(cb)
+            } else {
+                val req = android.net.NetworkRequest.Builder()
+                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                    .build()
+                cm.registerNetworkCallback(req, cb)
+            }
             networkCallback = cb
         } catch (_: Exception) { }
     }
