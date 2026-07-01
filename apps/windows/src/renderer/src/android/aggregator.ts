@@ -5,6 +5,9 @@ import {
   parseXrayConfigArray,
   type ProxyEntry,
 } from '@slave-vpn/config'
+// Shared aggregation kernel (dedup + uniquify + source-tag) — the SAME logic the
+// Windows SubscriptionAggregatorService uses. Was duplicated here (P0.5 cleanup).
+import { aggregateProxies, type FetchedEntry } from '@slave-vpn/core'
 import {
   listSubscriptions,
   getSubscriptionInput,
@@ -108,44 +111,6 @@ async function fetchEntry(
   }
 }
 
-function pickField(extra: Record<string, unknown>, ...keys: string[]): string {
-  for (const k of keys) {
-    const v = extra[k]
-    if (typeof v === 'string' && v.length > 0) return v
-  }
-  return ''
-}
-
-function dedupKey(e: ProxyEntry): string {
-  const identity = pickField(e.extra, 'uuid', 'password', 'cipher')
-  const flow = pickField(e.extra, 'flow')
-  const sni = pickField(e.extra, 'sni', 'servername')
-  return [e.type, e.server, e.port, identity, flow, sni].join('|')
-}
-
-function dedup(entries: ProxyEntry[]): ProxyEntry[] {
-  const seen = new Map<string, ProxyEntry>()
-  for (const e of entries) {
-    const k = dedupKey(e)
-    if (!seen.has(k)) seen.set(k, e)
-  }
-  return [...seen.values()]
-}
-
-function uniquifyNames(entries: ProxyEntry[]): ProxyEntry[] {
-  const used = new Set<string>()
-  return entries.map(e => {
-    let name = e.name
-    let n = 1
-    while (used.has(name)) {
-      n++
-      name = `${e.name} #${n}`
-    }
-    used.add(name)
-    return name === e.name ? e : { ...e, name }
-  })
-}
-
 export interface AggregatedProxies {
   proxies: ProxyEntry[]
   warnings: string[]
@@ -169,25 +134,21 @@ export async function buildAggregatedProxies(): Promise<AggregatedProxies> {
   if (entries.length === 0) {
     throw new Error('Add a subscription first (Подписки)')
   }
-  const warnings: string[] = []
-  const all: ProxyEntry[] = []
+  // Fetch each enabled subscription (Android-specific: WebView HTTP + UDP recovery),
+  // then hand the raw results to the shared core kernel, which does the dedup +
+  // uniquify + per-source tagging identically to Windows (throws if no nodes).
+  const results: FetchedEntry[] = []
   for (const entry of entries) {
     const input = await getSubscriptionInput(entry.id)
     if (!input) {
-      warnings.push(`${entry.name}: input missing`)
+      results.push({ entry: { id: entry.id, name: entry.name }, proxies: [], error: 'input missing' })
       continue
     }
     const { proxies, error } = await fetchEntry(entry, input)
-    if (error) warnings.push(`${entry.name}: ${error}`)
-    for (const p of proxies) {
-      all.push({ ...p, extra: { ...p.extra, 'slave-source': entry.id } })
-    }
+    results.push({ entry: { id: entry.id, name: entry.name }, proxies, error })
   }
-  if (all.length === 0) {
-    throw new Error(`No usable nodes (${warnings.join('; ') || 'no warnings'})`)
-  }
-  const deduped = uniquifyNames(dedup(all))
-  return { proxies: deduped, warnings }
+  const { proxies, warnings } = aggregateProxies(results)
+  return { proxies, warnings }
 }
 
 export async function buildAggregatedYaml(): Promise<AggregatedYaml> {
