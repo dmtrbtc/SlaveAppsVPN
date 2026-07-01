@@ -7,7 +7,7 @@
 **Кроссплатформенный VPN-клиент для Windows и Android на ядре mihomo (Clash.Meta).**
 Современные протоколы обхода блокировок, умная маршрутизация и российские сервисы, которые работают как обычно.
 
-[![Релиз](https://img.shields.io/badge/релиз-v0.2.25-5b8def)](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)
+[![Релиз](https://img.shields.io/badge/релиз-v0.2.26-5b8def)](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)
 [![Платформы](https://img.shields.io/badge/платформы-Windows%20%7C%20Android-0fa86b)]()
 [![Статус](https://img.shields.io/badge/статус-stable-0fa86b)]()
 [![Ядро](https://img.shields.io/badge/ядро-mihomo%20(Clash.Meta)-ff7a59)]()
@@ -25,8 +25,8 @@
 | Платформа | Файл | Прямая ссылка |
 |---|---|---|
 | 🤖 **Android** (arm64 + armv7) | `SlaveAppsVPN-Android.apk` | [Скачать APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest/download/SlaveAppsVPN-Android.apk) |
-| 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.25.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.25/SlaveAppsVPN-Setup-v0.2.25.exe) |
-| 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.25.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.25/SlaveAppsVPN-Portable-v0.2.25.exe) |
+| 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.26.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.26/SlaveAppsVPN-Setup-v0.2.26.exe) |
+| 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.26.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.26/SlaveAppsVPN-Portable-v0.2.26.exe) |
 
 > Сборки пока **без цифровой подписи**: Android попросит разрешить «установку из неизвестных источников»; Windows SmartScreen покажет предупреждение («Подробнее → Выполнить в любом случае»). Это ожидаемо. Windows требует прав администратора (создание TUN-адаптера).
 
