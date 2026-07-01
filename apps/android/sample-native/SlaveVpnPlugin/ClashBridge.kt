@@ -74,5 +74,38 @@ object ClashBridge {
 
     fun isRunning(): Boolean = running
 
+    /**
+     * Switch the active member of a select group (default SLAVE-SELECT) to a
+     * specific node. New connections egress through it. Throws if the core is
+     * not running or the name is unknown.
+     */
+    fun selectProxy(name: String, group: String = SELECT_GROUP) {
+        // Runtime diagnostics → Диагностика→Логи: prove whether the choice
+        // reaches the core and what the active leaf is before/after.
+        val before = currentProxy(group)
+        SlaveVpnService.appendLog("[selector] selectProxy($group, $name) — current before=$before")
+        Clashbox.selectProxy(group, name)
+        SlaveVpnService.appendLog("[selector] selectProxy done — current after=${currentProxy(group)}")
+    }
+
+    /** Effective active proxy (leaf node) of a group, "" if unknown / not running. */
+    fun currentProxy(group: String = SELECT_GROUP): String =
+        try { Clashbox.currentProxy(group) } catch (_: Throwable) { "" }
+
+    /** Live traffic as JSON {up,down,upTotal,downTotal} (bytes / bytes-per-sec). */
+    fun getTraffic(): String =
+        try { Clashbox.getTraffic() } catch (_: Throwable) { "{}" }
+
+    /** Active connections snapshot as clash-API JSON. */
+    fun getConnections(): String =
+        try { Clashbox.getConnections() } catch (_: Throwable) { "{}" }
+
+    /** Proxy latency (ms) via URL test; -1 on error/timeout. */
+    fun testDelay(name: String, url: String, timeoutMs: Int): Long =
+        try { Clashbox.testDelay(name, url, timeoutMs.toLong()) } catch (_: Throwable) { -1L }
+
     fun version(): String = try { Clashbox.version() } catch (_: Throwable) { "unknown" }
+
+    // Must match SLAVE_SELECT_GROUP in @slave-vpn/config generateMihomoConfig.
+    const val SELECT_GROUP = "SLAVE-SELECT"
 }
