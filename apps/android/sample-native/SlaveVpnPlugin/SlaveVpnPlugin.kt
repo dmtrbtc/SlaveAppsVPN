@@ -16,6 +16,7 @@ package com.slavevpn.plugin
 
 import android.Manifest
 import android.app.Activity
+import android.app.DownloadManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -25,14 +26,13 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -483,63 +483,59 @@ class SlaveVpnPlugin : Plugin() {
             return
         }
 
+        // Use the system DownloadManager so the download SURVIVES the app being
+        // backgrounded/minimized (the reported bug: a plain in-process thread gets
+        // frozen by the OS when the app leaves the foreground). DownloadManager runs
+        // the transfer in the system process and follows the GitHub→CDN redirects
+        // itself. Destination = app-specific external dir (no storage permission).
+        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dest = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "slavevpn-update.apk")
+        try { dest.delete() } catch (_: Exception) { } // no accumulation — one file, replaced
+        val downloadId = try {
+            dm.enqueue(
+                DownloadManager.Request(Uri.parse(url))
+                    .setTitle("SLAVE VPN — обновление")
+                    .setDescription("Загрузка новой версии")
+                    .setMimeType("application/vnd.android.package-archive")
+                    .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "slavevpn-update.apk")
+                    .setAllowedOverMetered(true)
+                    .setAllowedOverRoaming(true),
+            )
+        } catch (e: Exception) { call.reject(e.message ?: "download failed"); return }
+
+        // Poll progress + completion. The transfer keeps running while backgrounded;
+        // our poll thread may be frozen then, but on resume it catches up and installs
+        // in the foreground (a background startActivity for the install sheet is blocked).
         Thread {
-            try {
-                val apk = File(context.cacheDir, "slavevpn-update.apk")
-                downloadApk(url, apk)
-                Handler(Looper.getMainLooper()).post {
-                    try { installApk(apk); call.resolve() }
-                    catch (e: Exception) { call.reject(e.message ?: "install failed") }
+            while (true) {
+                var status = -1
+                var done = 0L
+                var total = -1L
+                val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                        done = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                        total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                    }
                 }
-            } catch (e: Exception) {
-                call.reject(e.message ?: "download failed")
+                when (status) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        notifyListeners("updateProgress", JSObject().put("percent", 100))
+                        Handler(Looper.getMainLooper()).post {
+                            try { installApk(dest); call.resolve() }
+                            catch (e: Exception) { call.reject(e.message ?: "install failed") }
+                        }
+                        return@Thread
+                    }
+                    DownloadManager.STATUS_FAILED, -1 -> { call.reject("download failed"); return@Thread }
+                    else -> if (total > 0) {
+                        notifyListeners("updateProgress", JSObject().put("percent", ((done * 100) / total).toInt()))
+                    }
+                }
+                try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
             }
         }.start()
-    }
-
-    private fun downloadApk(url: String, dest: File) {
-        var conn = URL(url).openConnection() as HttpURLConnection
-        conn.instanceFollowRedirects = true
-        conn.connectTimeout = 20000
-        conn.readTimeout = 30000
-        conn.connect()
-        // GitHub asset URLs 302-redirect to a CDN; HttpURLConnection won't follow a
-        // cross-host redirect automatically, so chase it manually (bounded).
-        var redirects = 0
-        while (conn.responseCode in 300..399 && redirects < 5) {
-            val loc = conn.getHeaderField("Location") ?: break
-            conn.disconnect()
-            conn = URL(loc).openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.connectTimeout = 20000
-            conn.readTimeout = 30000
-            conn.connect()
-            redirects++
-        }
-        // getContentLengthLong() is API 24; minSdk is 21, so read the header directly
-        // (avoids a lintVitalRelease NewApi failure and handles >2 GB just in case).
-        val total = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-        conn.inputStream.use { input ->
-            dest.outputStream().use { out ->
-                val buf = ByteArray(64 * 1024)
-                var done = 0L
-                var lastPct = -1
-                var read = input.read(buf)
-                while (read >= 0) {
-                    out.write(buf, 0, read)
-                    done += read
-                    if (total > 0) {
-                        val pct = ((done * 100) / total).toInt()
-                        if (pct != lastPct) {
-                            lastPct = pct
-                            notifyListeners("updateProgress", JSObject().put("percent", pct))
-                        }
-                    }
-                    read = input.read(buf)
-                }
-            }
-        }
-        conn.disconnect()
     }
 
     private fun installApk(apk: File) {
