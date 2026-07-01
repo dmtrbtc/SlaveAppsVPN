@@ -338,3 +338,66 @@ device-free checks above all pass; the steps below are for the operator.
 ### Success criteria
 Enc node (Slave-EE) brings up the tunnel and carries traffic (204 / browsing),
 AND a Reality node still works, AND the HWID device is stable in the panel.
+
+---
+
+# fix/android-server-selector — server switching + indication + name truncation
+
+## Phase 0 — root cause (confirmed, не на веру)
+- **Symptom 1 (any choice → traffic via EE):** `generateMihomoConfig` NEVER
+  references `ctx.selectedProxy`; the `SLAVE-SELECT` group's first member is
+  `SLAVE-AUTO` (url-test). mihomo `select` defaults to its first member →
+  SLAVE-AUTO → url-test picks the fastest = EE (co-located). And the renderer
+  `vpn.setProxy` only set a JS var (`currentSelectedProxy`) — it never told the
+  running core to switch. ⇒ selection fully inert.
+- **Symptom 3 (main screen "Серверы не загружены" / no active indicator):**
+  `vpn.getProxyList` returned `ok([])` on Android, so the shared
+  `ConnectionTargetSelector` (the Dashboard server list) had an empty list.
+  Active node was read from the dead model; `onProxyChanged` was a no-op.
+- **Symptom 2 (names ellipsised to "Slave-..."):** the selector name span used
+  the `truncate` class; the narrow mobile panel clipped short names.
+- **Switch path:** chose **B (clashbox wrapper method)**, NOT A (controller),
+  because our embedding calls `executor.ApplyConfig`, documented in mihomo as
+  "without ExternalController" — the HTTP controller is NEVER started, so a
+  RESTful PUT /proxies is impossible. The wrapper select call is the same op
+  the controller would do internally.
+
+## Phase 1 — real switching + persist
+- `clashbox.go` (+ committed src): added `SelectProxy(group,name)` (=
+  `tunnel.Proxies()[group].Adapter().(outboundgroup.SelectAble).Set(name)` — the
+  exact route-handler logic) and `CurrentProxy(group)` (resolves nested groups
+  to the leaf node). Rebuilt clashbox.aar (arm64, gomobile, exit 0); generated
+  API now has `selectProxy(String,String)` + `currentProxy(String):String`.
+- `ClashBridge.kt`: `selectProxy(name)` / `currentProxy()` (group SLAVE-SELECT).
+- `SlaveVpnService`: connect carries `EXTRA_SELECTED`; after `ClashBridge.start`
+  succeeds, applies the persisted choice (`selectProxy`) so the chosen server is
+  active from the start (overriding the url-test default).
+- `SlaveVpnPlugin`: `connect` forwards `selectedProxy`; new `selectProxy` method
+  (live switch; no-op pre-connect, reject on real error); `getStatus` now
+  returns `activeProxy` from `ClashBridge.currentProxy()`.
+- `bridge.ts`: `setProxy` → `SlaveVpn.selectProxy({name})` (live) + persist to
+  `localStorage`; persisted choice restored on install + sent in the connect
+  payload. (mihomo `store-selected:true` also persists natively across
+  reconnects → no reset to EE.)
+
+## Phase 2 — list + active indication
+- `bridge.ts getProxyList` → maps `listAndroidServers()` (the deduped sub nodes)
+  to ProxyEntry[]; works disconnected too → "Серверы не загружены" gone once a
+  sub exists.
+- `bridge.ts onProxyChanged` → was no-op; now seeds the persisted choice and
+  polls `getStatus().activeProxy` (the real SLAVE-SELECT leaf), emitting on
+  change → drives the store's `selectedProxy` → the selector highlights the
+  REAL active server.
+- `readNativeStatus` carries `activeProxy` through to VPNStatus.
+
+## Phase 3 — name truncation
+- `ConnectionTargetSelector`: `truncate` → `break-words` (full names; short
+  names render on one line on both platforms — no Windows regression).
+
+## Device-free verification
+- `mihomo -t` on the Android-generated config: **successful**;
+  `SLAVE-SELECT = [SLAVE-AUTO, Slave-FR, Slave-EE, Slave-NL  45]`; **Slave-EE(enc)
+  kept**; reality kept; geoip-db-free (config UNCHANGED — generator not touched).
+- clashbox host build + gomobile bind exit 0; new select API in the .aar.
+- renderer typecheck + build OK; 18 config tests green.
+- Live switch (different egress IP EE↔FR↔NL) is device-only — operator step.

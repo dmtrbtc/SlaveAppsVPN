@@ -105,7 +105,10 @@ export function ConnectionTargetSelector() {
               >
                 <span className="text-sm leading-none shrink-0">{flag || '🌐'}</span>
                 <span className={cn(
-                  'flex-1 text-[12px] font-medium truncate',
+                  // No `truncate`: server names are short (e.g. "Slave-EE") and
+                  // were being ellipsised to "Slave-..." in the narrow mobile
+                  // panel. Allow wrapping instead of clipping.
+                  'flex-1 text-[12px] font-medium break-words',
                   active ? 'text-accent' : 'text-text-primary'
                 )}>
                   {proxy.name}
