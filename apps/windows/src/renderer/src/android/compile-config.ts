@@ -35,13 +35,21 @@ function randomSecret(): string {
 }
 
 function androidDns(): DnsProfile {
-  // Two Android adjustments to the balanced preset:
+  // Android adjustments to the balanced preset:
   //  - drop fallback nameservers → mihomo emits no geoip `fallback-filter`
   //    (no Country DB ships on Android);
   //  - useSystemDns:true → mihomo does NOT emit `respect-rules`, which would
-  //    otherwise REQUIRE `proxy-server-nameserver` (and create a chicken-and-egg
-  //    resolving the proxy server's own domain). DNS resolves directly via the
-  //    configured DoH nameservers instead.
+  //    otherwise REQUIRE `proxy-server-nameserver` (chicken-and-egg resolving
+  //    the proxy server's own domain). DNS resolves directly via the configured
+  //    resolvers (DoH + a plaintext fallback so node domains always resolve).
+  //
+  // NOTE (DNS-leak follow-up, see issue): the balanced preset keeps a plaintext
+  // udp://8.8.8.8 in `nameserver` as a fallback — that is an open-DNS leak. The
+  // PROPER fix is `respect-rules` + `proxy-server-nameserver` (route user-domain
+  // DNS through the tunnel, resolve only the node domains directly) — that needs
+  // a MihomoDnsCompiler change (shared with Windows). A naive DoH-only override
+  // here was tried and REVERTED because it broke node resolution
+  // ("dns resolve failed: couldn't find ip") when the DoH/h3 endpoint is blocked.
   const base = DnsProfilePresets.balanced()
   return {
     ...base,
