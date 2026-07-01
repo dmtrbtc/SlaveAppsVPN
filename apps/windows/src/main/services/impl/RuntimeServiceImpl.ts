@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import { Notification } from 'electron'
 import { VPN, INITIAL_VPN_STATUS } from '@slave-vpn/shared'
 import type { VPNStatus, VPNMode, VPNConnectionState } from '@slave-vpn/shared'
 import { RuntimeManager } from '@slave-vpn/runtime'
@@ -231,6 +232,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         enableSystemProxy('127.0.0.1', VPN.MIHOMO_MIXED_PORT)
         sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
           makeEvent('vpn.connected', 'info', 'VPN connected'))
+        this.notifyOs('SLAVE VPN', 'Подключено')
         // Async: discover active proxy after engine is up
         this.refreshActiveProxy().catch(() => undefined)
         // Record success for active proxy
@@ -245,12 +247,14 @@ export class RuntimeServiceImpl implements RuntimeService {
         if (wasConnected) {
           sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
             makeEvent('vpn.disconnected', 'info', 'VPN disconnected'))
+          this.notifyOs('SLAVE VPN', 'Отключено')
         }
       } else if (state === 'error') {
         this.connectedAt = null
         this.activeProxy = null
         sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
           makeEvent('vpn.error', 'error', this.lastError ?? 'VPN error'))
+        this.notifyOs('SLAVE VPN — ошибка', this.lastError ?? 'Ошибка подключения')
       } else if (state === 'reconnecting' || state === 'crashed') {
         sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
           makeEvent('reconnect.attempt', 'warning', 'Attempting reconnect', { state }))
@@ -332,6 +336,21 @@ export class RuntimeServiceImpl implements RuntimeService {
         }
       }
     })
+  }
+
+  // ── OS notifications ───────────────────────────────────────────────────────
+  // Show a native desktop notification for connect/disconnect/error, gated by the
+  // «Уведомления» setting. Before this the toggle existed in the UI but nothing
+  // read it and no OS notification was ever emitted — a dead switch. Fully
+  // guarded (isSupported + settings) so a headless/unsupported host is a no-op.
+  private notifyOs(title: string, body: string): void {
+    try {
+      if (!this.getSettings().notificationsEnabled) return
+      if (!Notification.isSupported()) return
+      new Notification({ title, body, silent: false }).show()
+    } catch {
+      // Never let a notification failure affect the connection lifecycle.
+    }
   }
 
   // ── Pre-flight validation ──────────────────────────────────────────────────

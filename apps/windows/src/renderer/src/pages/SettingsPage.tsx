@@ -829,20 +829,24 @@ export function SettingsPage() {
           </CardRow>
         </Section>
 
-        {/* Notifications */}
-        <Section label="Уведомления" icon={<Bell className="h-3.5 w-3.5" />}>
-          {settings ? (
-            <CardRow>
-              <ToggleRow
-                label="Уведомления"
-                sub="Показывать системные уведомления"
-                value={settings.notificationsEnabled}
-                onChange={v => handleToggle('notificationsEnabled', v)}
-                loading={isKeyPending('notificationsEnabled')}
-              />
-            </CardRow>
-          ) : null}
-        </Section>
+        {/* Notifications — Windows only. On Android the foreground-service
+            notification is mandatory (VpnService) and there are no other OS
+            notifications, so the toggle would be inert there → hidden. */}
+        {!IS_MOBILE && (
+          <Section label="Уведомления" icon={<Bell className="h-3.5 w-3.5" />}>
+            {settings ? (
+              <CardRow>
+                <ToggleRow
+                  label="Уведомления"
+                  sub="Показывать системные уведомления (подключение, отключение, ошибки)"
+                  value={settings.notificationsEnabled}
+                  onChange={v => handleToggle('notificationsEnabled', v)}
+                  loading={isKeyPending('notificationsEnabled')}
+                />
+              </CardRow>
+            ) : null}
+          </Section>
+        )}
 
         {/* Updates */}
         <Section label="Обновления" icon={<Download className="h-3.5 w-3.5" />}>
