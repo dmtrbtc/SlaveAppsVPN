@@ -65,6 +65,7 @@ class SlaveVpnPlugin : Plugin() {
     private var pendingSelected: String? = null
     private var pendingSplitMode: String = "off"
     private var pendingSplitApps: List<String> = emptyList()
+    private var pendingKillSwitch: Boolean = false
 
     @PluginMethod
     fun checkPermission(call: PluginCall) {
@@ -107,6 +108,8 @@ class SlaveVpnPlugin : Plugin() {
         pendingSplitApps = call.getArray("splitApps")?.let { arr ->
             (0 until arr.length()).mapNotNull { i -> try { arr.getString(i) } catch (_: Exception) { null } }
         } ?: emptyList()
+        pendingKillSwitch = call.getBoolean("killSwitch") ?: SlaveVpnService.killSwitchEnabled
+        SlaveVpnService.setKillSwitch(pendingKillSwitch)
 
         val intent = VpnService.prepare(context)
         if (intent != null) {
@@ -132,10 +135,12 @@ class SlaveVpnPlugin : Plugin() {
         val selected = pendingSelected
         val splitMode = pendingSplitMode
         val splitApps = pendingSplitApps
+        val killSwitch = pendingKillSwitch
         pendingConfig = null
         pendingSelected = null
         pendingSplitMode = "off"
         pendingSplitApps = emptyList()
+        pendingKillSwitch = false
         if (config.isNullOrBlank()) {
             call.reject("Missing config when starting VPN")
             return
@@ -146,6 +151,7 @@ class SlaveVpnPlugin : Plugin() {
             if (!selected.isNullOrBlank()) putExtra(SlaveVpnService.EXTRA_SELECTED, selected)
             putExtra(SlaveVpnService.EXTRA_SPLIT_MODE, splitMode)
             if (splitApps.isNotEmpty()) putExtra(SlaveVpnService.EXTRA_SPLIT_APPS, splitApps.toTypedArray())
+            putExtra(SlaveVpnService.EXTRA_KILL_SWITCH, if (killSwitch) "1" else "0")
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
@@ -354,6 +360,39 @@ class SlaveVpnPlugin : Plugin() {
         val engine = call.getString("engine") ?: return call.reject("engine required")
         SlaveVpnService.setEngine(engine)
         call.resolve()
+    }
+
+    /**
+     * Live-toggle the kill switch. Takes effect on the next VPN drop (core-start
+     * failure or reconnect) — the running service reads killSwitchEnabled at drop
+     * time, so flipping it while connected is honoured without a reconnect.
+     */
+    @PluginMethod
+    fun setKillSwitch(call: PluginCall) {
+        val enabled = call.getBoolean("enabled") ?: false
+        SlaveVpnService.setKillSwitch(enabled)
+        call.resolve()
+    }
+
+    /**
+     * Open the system VPN settings so the user can enable "Always-on VPN" +
+     * "Block connections without VPN" (OS-enforced lockdown) for us. Android
+     * forbids an app from turning lockdown on programmatically — this is the
+     * strongest kill switch and it's enforced even when our process is dead.
+     */
+    @PluginMethod
+    fun openAlwaysOnVpnSettings(call: PluginCall) {
+        try {
+            // Settings.ACTION_VPN_SETTINGS is API 24; use the literal so lintVital
+            // (minSdk 21) doesn't flag it. The string works on all levels; a device
+            // without the screen throws ActivityNotFound → caught below.
+            val intent = Intent("android.settings.VPN_SETTINGS")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            call.resolve()
+        } catch (e: Exception) {
+            call.reject("Cannot open VPN settings: ${e.message}")
+        }
     }
 
     // ─── Subscriptions — TODO Phase I-B ───────────────────────────────────────

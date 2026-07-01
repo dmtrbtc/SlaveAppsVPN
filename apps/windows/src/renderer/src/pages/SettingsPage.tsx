@@ -22,7 +22,8 @@ import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import { useSubscription } from '../hooks/useSubscription'
 import { checkForUpdate, openUpdate, type UpdateInfo } from '../android/update-check'
 import { useInAppUpdate } from '../hooks/useInAppUpdate'
-import { configSourceApi, cacheApi } from '../lib/api'
+import { configSourceApi, cacheApi, vpnApi } from '../lib/api'
+import { IS_MOBILE } from '../lib/platform'
 import type { AppSettings, ConfigSourceValidateResult, SelectedEngine, BalancerMode, UtlsFingerprintName } from '@shared/ipc/types'
 import type { SubscriptionStatus } from '@slave-vpn/shared'
 
@@ -661,20 +662,40 @@ export function SettingsPage() {
           ) : null}
         </Section>
 
-        {/* Security */}
-        <Section label="Безопасность" icon={<Shield className="h-3.5 w-3.5" />}>
-          {settings ? (
-            <CardRow>
-              <ToggleRow
-                label="Kill Switch"
-                sub="Блокировать весь трафик при разрыве VPN"
-                value={settings.killSwitch}
-                onChange={v => handleToggle('killSwitch', v)}
-                loading={isKeyPending('killSwitch')}
-              />
-            </CardRow>
-          ) : null}
-        </Section>
+        {/* Security — Kill Switch is Android-only for now (on Windows a correct
+            implementation needs elevated firewall rules; hidden rather than faked). */}
+        {IS_MOBILE && (
+          <Section label="Безопасность" icon={<Shield className="h-3.5 w-3.5" />}>
+            {settings ? (
+              <CardRow>
+                <div className="divide-y divide-border">
+                  <ToggleRow
+                    label="Kill Switch"
+                    sub="При разрыве VPN трафик блокируется, а не идёт напрямую"
+                    value={settings.killSwitch}
+                    onChange={v => handleToggle('killSwitch', v)}
+                    loading={isKeyPending('killSwitch')}
+                  />
+                  <div className="p-4 flex flex-col gap-2">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      Самая надёжная защита — системный «Always-on VPN» с блокировкой
+                      соединений без VPN. Android не даёт включить это из приложения —
+                      откройте настройки и выберите SLAVE VPN как постоянный.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="self-start"
+                      onClick={() => { void vpnApi.openAlwaysOnVpnSettings() }}
+                    >
+                      Настроить Always-on VPN
+                    </Button>
+                  </div>
+                </div>
+              </CardRow>
+            ) : null}
+          </Section>
+        )}
 
         {/* uTLS Fingerprint — anti-DPI (ТСПУ behavioural filter) */}
         <Section label="uTLS отпечаток" icon={<Shield className="h-3.5 w-3.5" />}>

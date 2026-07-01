@@ -33,6 +33,7 @@ interface VpnStore {
 
   connect: () => Promise<void>
   disconnect: () => Promise<void>
+  maybeAutoConnect: () => Promise<void>
   setMode: (mode: VPNMode) => Promise<void>
   fetchStatus: () => Promise<void>
   setEngineVersion: (v: string | null) => void
@@ -109,6 +110,25 @@ export const useVpnStore = create<VpnStore>()(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         set(s => ({ status: { ...s.status, state: 'error', lastError: message } }))
+      }
+    },
+
+    // Auto-connect on app launch, when the "Автоподключение" setting is on.
+    // Runs once at boot (from App Bootstrap) AFTER fetchStatus/fetchProxyList so
+    // we know both the live state and whether a connectable target exists. Guards:
+    // only fire when disconnected AND a server is known — otherwise a fresh install
+    // with no subscription would throw a "no server" error toast on every launch.
+    maybeAutoConnect: async () => {
+      try {
+        const settings = await settingsApi.get()
+        if (!settings.autoConnect) return
+        const st = get()
+        if (st.status.state !== 'disconnected' && st.status.state !== 'error') return
+        const hasTarget = st.proxyList.length > 0 || !!st.selectedProxy
+        if (!hasTarget) return
+        await get().connect()
+      } catch {
+        // Non-fatal — a failed auto-connect must never block app startup.
       }
     },
 

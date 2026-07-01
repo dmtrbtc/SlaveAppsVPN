@@ -1011,6 +1011,9 @@ export interface SlaveVPNBridge {
     setBalancerEnabled: (payload: BalancerSetEnabledPayload) => Promise<BalancerSetEnabledResult>
     setBalancerMode: (payload: BalancerSetModePayload) => Promise<BalancerSetModeResult>
     probeAll: () => Promise<BalancerProbeAllResult>
+    // Android-only: opens the system VPN settings so the user can enable
+    // "Always-on VPN" + lockdown (OS-enforced kill switch). Absent on Windows.
+    openAlwaysOnVpnSettings?: () => Promise<IpcResult<void>>
   }
   subscription: {
     get: () => Promise<SubscriptionGetResult>

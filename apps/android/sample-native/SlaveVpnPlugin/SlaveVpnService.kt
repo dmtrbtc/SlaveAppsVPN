@@ -66,6 +66,7 @@ class SlaveVpnService : VpnService() {
         const val EXTRA_SELECTED = "selectedProxy"
         const val EXTRA_SPLIT_MODE = "splitMode"   // off | include | exclude
         const val EXTRA_SPLIT_APPS = "splitApps"    // package names
+        const val EXTRA_KILL_SWITCH = "killSwitch"  // "1"/"0" — block traffic on VPN drop
         const val CHANNEL_ID   = "slavevpn_persistent"
         const val NOTIF_ID     = 100
         // Brand accent (app UI accent blue) — tints the notification small icon + title.
@@ -87,6 +88,14 @@ class SlaveVpnService : VpnService() {
 
         @JvmStatic fun setMode(mode: String) { currentMode = mode }
         @JvmStatic fun setEngine(engine: String) { currentEngine = engine }
+
+        // Kill switch: when ON, a VPN drop (core fails to start, or a reconnect)
+        // must NOT expose the raw network. We keep the blocking TUN interface up so
+        // packets are blackholed instead of leaking. Live-toggled from the bridge
+        // and carried on ACTION_START; the running service reads it at drop time.
+        @JvmStatic @Volatile var killSwitchEnabled: Boolean = false
+            private set
+        @JvmStatic fun setKillSwitch(enabled: Boolean) { killSwitchEnabled = enabled }
 
         // ─── In-memory log ring buffer ──────────────────────────────────────
         // mihomo core logs + our own lifecycle lines land here so the in-app
@@ -187,6 +196,9 @@ class SlaveVpnService : VpnService() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
+                // Kill-switch flag rides on the start intent ("1"/"0"); default to
+                // the last live-toggled value if the extra is absent.
+                intent.getStringExtra(EXTRA_KILL_SWITCH)?.let { setKillSwitch(it == "1" || it == "true") }
                 startVpn(
                     config,
                     intent.getStringExtra(EXTRA_SELECTED),
@@ -230,9 +242,16 @@ class SlaveVpnService : VpnService() {
             // exclude → all apps EXCEPT these. Empty list / "off" ⇒ all apps tunnel.
             applySplitTunnel(builder, splitMode, splitApps)
 
+            // A kill-switch reconnect keeps the previous TUN up (blocking) so there's
+            // no leak gap. establish() atomically replaces the interface; we then
+            // release the old fd — a seamless handover with no window of raw traffic.
+            val previousTun = tunInterface
             val pfd = builder.establish()
                 ?: throw RuntimeException("VpnService.Builder.establish() returned null")
             tunInterface = pfd
+            if (previousTun != null && previousTun !== pfd) {
+                try { previousTun.close() } catch (_: Exception) { }
+            }
 
             // mihomo's sing-tun wraps the fd DIRECTLY (os.NewFile, no dup) and
             // closes it on Shutdown. Give it a DUP'd fd it owns exclusively, and
@@ -282,9 +301,18 @@ class SlaveVpnService : VpnService() {
                     currentError = "mihomo: $msg"
                     requestTileUpdate(applicationContext)
                     appendLog("[service] mihomo start failed: $msg")
-                    notify("Ошибка: $msg")
-                    cleanupTun()
-                    stopSelf()
+                    if (killSwitchEnabled) {
+                        // Kill switch ON: DON'T tear down the TUN. The blocking
+                        // interface stays up so every packet is blackholed — no leak
+                        // to the raw network. The service keeps running (foreground);
+                        // the user releases it from the «Отключить» notification action.
+                        appendLog("[service] kill-switch: ядро не поднялось → трафик заблокирован (TUN держим)")
+                        notify("Трафик заблокирован (kill switch) · нажмите «Отключить»")
+                    } else {
+                        notify("Ошибка: $msg")
+                        cleanupTun()
+                        stopSelf()
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -414,8 +442,11 @@ class SlaveVpnService : VpnService() {
         scope.launch {
             try { ClashBridge.stop() } catch (_: Exception) { }
             prevJob?.cancel()
-            cleanupTun()
-            // Let the native core + TUN fully release before re-establishing.
+            // Kill switch: keep the TUN up across the restart so there's NO leak
+            // window — startVpn's establish() replaces it (seamless handover) and
+            // closes the old fd. Otherwise tear it down (legacy: brief gap on reconnect).
+            if (!killSwitchEnabled) cleanupTun()
+            // Let the native core fully release before re-establishing.
             delay(400)
             currentState = "disconnected" // clear the startVpn re-entry guard
             startVpn(bundle.config, bundle.selected, bundle.splitMode, bundle.splitApps)

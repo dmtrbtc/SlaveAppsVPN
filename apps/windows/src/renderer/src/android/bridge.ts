@@ -54,7 +54,7 @@ function buildScenarioInfo(): unknown[] {
 interface NativeSlaveVpn {
   checkPermission(): Promise<{ granted: boolean }>
   requestPermission(): Promise<{ granted: boolean }>
-  connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode; splitMode?: string; splitApps?: string[] }): Promise<void>
+  connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode; splitMode?: string; splitApps?: string[]; killSwitch?: boolean }): Promise<void>
   listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean; icon?: string }[] }>
   disconnect(): Promise<void>
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
@@ -69,6 +69,8 @@ interface NativeSlaveVpn {
   appendLog(options: { line: string }): Promise<void>
   getLogs(options?: { tail?: number }): Promise<{ lines: string[] }>
   setEngine(options: { engine: 'mihomo' | 'singbox' }): Promise<void>
+  setKillSwitch(options: { enabled: boolean }): Promise<void>
+  openAlwaysOnVpnSettings(): Promise<void>
   addListener(
     eventName: 'statusChanged',
     listener: (status: VPNStatus) => void,
@@ -196,6 +198,8 @@ async function connectNative(): Promise<void> {
       // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
       splitMode: s.splitTunnelMode ?? 'off',
       splitApps: s.splitProcessList ?? [],
+      // Kill switch: hold the blocking TUN on a VPN drop instead of leaking.
+      killSwitch: s.killSwitch ?? false,
     })
     nativeLog('[connect] запрос на старт принят ядром')
   } catch (e) {
@@ -640,6 +644,10 @@ export function installAndroidBridge(): void {
           (r) => serverLatencyCb?.({ proxyName: r.name, latencyMs: r.latencyMs, success: r.latencyMs !== null }),
         )
       }),
+      // Kill switch (OS-enforced): open the system VPN settings so the user can
+      // turn on "Always-on VPN" + "Block connections without VPN" for us — the
+      // strongest guarantee, enforced by Android even when our process is dead.
+      openAlwaysOnVpnSettings: () => wrap(() => SlaveVpn.openAlwaysOnVpnSettings()),
       // T1 «Обновить списки»: force-refresh the RKN bypass rule-providers in the
       // running mihomo core and report per-provider count/errors. Rejects (native)
       // when the core isn't running — the lists live in the engine.
@@ -913,6 +921,11 @@ export function installAndroidBridge(): void {
           fingerprintChanged = next !== currentUtlsFingerprint
           currentUtlsFingerprint = next
           saveUtlsToLocalStorage(currentUtlsFingerprint)
+        }
+        // Kill switch is read by the running native service at drop time, so a
+        // live flip is honoured without a reconnect — push it through immediately.
+        if (typeof payload['killSwitch'] === 'boolean') {
+          await SlaveVpn.setKillSwitch({ enabled: payload['killSwitch'] }).catch(() => undefined)
         }
         // Persist the whole patch durably (dnsPreset/dnsStrategy/enabledScenarios/…).
         await patchAndroidSettings(payload as Partial<AppSettings>)

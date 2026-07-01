@@ -44,8 +44,13 @@ function Bootstrap({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isBootstrapping && !timedOut) return
-    void fetchStatus()
-    void useVpnStore.getState().fetchProxyList()
+    // Fetch live state + server list, THEN honour "Автоподключение" once: the
+    // auto-connect guard needs both (skip if already connected / no server known).
+    void (async () => {
+      await fetchStatus()
+      await useVpnStore.getState().fetchProxyList()
+      await useVpnStore.getState().maybeAutoConnect()
+    })()
 
     let unsubVpn = NOOP_UNSUB
     let unsubAuth = NOOP_UNSUB

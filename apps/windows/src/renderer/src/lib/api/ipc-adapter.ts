@@ -139,6 +139,12 @@ export const vpnApi = {
     unwrap(requireBridge().vpn.setBalancerMode(payload)),
   probeAll: () =>
     unwrap(requireBridge().vpn.probeAll()),
+  // Android-only (OS-enforced kill switch). No-op on Windows, where the bridge
+  // omits it — the Kill Switch UI section is Android-only anyway.
+  openAlwaysOnVpnSettings: () => {
+    const vpn = requireBridge().vpn
+    return vpn.openAlwaysOnVpnSettings ? unwrap(vpn.openAlwaysOnVpnSettings()) : Promise.resolve()
+  },
 }
 
 export const subscriptionApi = {
