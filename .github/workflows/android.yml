@@ -44,6 +44,18 @@ jobs:
       - name: Install monorepo deps
         run: pnpm install --no-frozen-lockfile
 
+      # Bake the git TAG into the app version BEFORE the web bundle is built, so
+      # __APP_VERSION__ (from npm_package_version) and the Android versionName carry
+      # the FULL version — including a -dev.N prerelease suffix. Without this a dev
+      # build reports the bare "0.2.29", which semver treats as NEWER than any
+      # "0.2.29-dev.N" prerelease → the in-app updater never offers dev builds.
+      - name: Sync app version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          npm --prefix apps/windows pkg set version="$VER"
+          echo "app version → $VER"
+
       - name: Build shared packages first (dep order matters)
         run: pnpm --filter "./packages/**" build
 

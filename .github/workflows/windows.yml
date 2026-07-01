@@ -32,6 +32,18 @@ jobs:
       - name: Install deps
         run: pnpm install --no-frozen-lockfile
 
+      # Bake the git TAG into the app version BEFORE the build, so __APP_VERSION__,
+      # the installer name and electron-updater's latest.yml carry the FULL version
+      # (incl. a -dev.N prerelease suffix). A bare "0.2.29" on a dev build reads as
+      # NEWER than any "0.2.29-dev.N" → the in-app updater never offers dev builds.
+      - name: Sync app version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          npm --prefix apps/windows pkg set version="$VER"
+          echo "app version → $VER"
+
       - name: Download engine binaries + geo databases
         run: pnpm download:binaries
 
