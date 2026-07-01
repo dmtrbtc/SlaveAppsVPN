@@ -84,6 +84,32 @@ function cmpVer(a: string, b: string): number {
   return 0
 }
 
+/** The version baked into this build (from package.json via the Vite define). */
+export function getCurrentVersion(): string {
+  return typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+}
+
+/**
+ * Release notes for the CURRENTLY INSTALLED version — powers the post-update
+ * «Что нового» card. Finds the GitHub release whose tag matches this build's
+ * version exactly (x.y.z, ignoring the `v` prefix; a -dev/-rc prerelease of the
+ * same x.y.z does NOT match, so a stable build shows the stable notes). Returns
+ * null when offline, no match, or the release has an empty body. Never throws.
+ */
+export async function getInstalledVersionNotes(): Promise<{ version: string; notes: string; releaseUrl: string } | null> {
+  try {
+    const installed = getCurrentVersion()
+    if (!parseVer(installed)) return null
+    const match = (await fetchReleases())
+      .filter(r => !r.draft)
+      .find(r => parseVer(r.tag_name) !== null && cmpVer(r.tag_name, installed) === 0)
+    if (!match || !match.body || !match.body.trim()) return null
+    return { version: match.tag_name || installed, notes: match.body, releaseUrl: match.html_url }
+  } catch {
+    return null
+  }
+}
+
 async function fetchReleases(): Promise<GhRelease[]> {
   const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'SlaveVPN-update' }
   if (Capacitor.isNativePlatform()) {

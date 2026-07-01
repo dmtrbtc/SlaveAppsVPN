@@ -6,6 +6,7 @@ import { MobileNav } from './MobileNav'
 import { OfflineBanner } from './OfflineBanner'
 import { SafeModeBanner } from './SafeModeBanner'
 import { NotificationStack } from '../notifications/NotificationStack'
+import { WhatsNewModal } from '../update/WhatsNewModal'
 import { ClipboardSuggestionBanner } from '../subscriptions/ClipboardSuggestionBanner'
 import { useSubscriptionsStore } from '../../stores/subscriptions.store'
 import { IS_MOBILE } from '../../lib/platform'
@@ -32,6 +33,7 @@ export function AppShell() {
         </main>
         <MobileNav />
         <NotificationStack />
+        <WhatsNewModal />
       </div>
     )
   }
@@ -49,6 +51,7 @@ export function AppShell() {
         </main>
       </div>
       <NotificationStack />
+      <WhatsNewModal />
     </div>
   )
 }
