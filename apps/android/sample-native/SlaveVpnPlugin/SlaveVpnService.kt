@@ -24,6 +24,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
