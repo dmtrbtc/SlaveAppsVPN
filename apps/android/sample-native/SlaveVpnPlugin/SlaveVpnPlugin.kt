@@ -395,6 +395,58 @@ class SlaveVpnPlugin : Plugin() {
         }
     }
 
+    /**
+     * Persist the «Подключаться при включении телефона» flag into native prefs so
+     * the BootReceiver can read it at boot (the WebView isn't running then).
+     */
+    @PluginMethod
+    fun setConnectOnBoot(call: PluginCall) {
+        val enabled = call.getBoolean("enabled") ?: false
+        SlaveVpnService.setConnectOnBoot(context, enabled)
+        call.resolve()
+    }
+
+    /**
+     * Ask the OS to exempt us from battery optimization (Doze/app-standby) so
+     * aggressive OEM killers (Xiaomi/Samsung) don't murder the VPN in the
+     * background. We're sideloaded, so the Play policy on this intent doesn't
+     * apply. Opens the per-app request dialog; falls back to the general battery
+     * settings screen if unavailable.
+     */
+    @PluginMethod
+    fun requestIgnoreBatteryOptimizations(call: PluginCall) {
+        // Battery optimization APIs are API 23+ (Doze didn't exist before). minSdk
+        // is 21, so guard — pre-23 there's nothing to exempt.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            call.resolve()
+            return
+        }
+        try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val alreadyExempt = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+            val action = if (alreadyExempt) {
+                // Already exempt → just show where the setting lives.
+                "android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS"
+            } else {
+                "android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+            }
+            val intent = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (!alreadyExempt) intent.data = Uri.parse("package:${context.packageName}")
+            context.startActivity(intent)
+            call.resolve()
+        } catch (e: Exception) {
+            try {
+                context.startActivity(
+                    Intent("android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                call.resolve()
+            } catch (e2: Exception) {
+                call.reject("Cannot open battery settings: ${e2.message}")
+            }
+        }
+    }
+
     // ─── Subscriptions — TODO Phase I-B ───────────────────────────────────────
     // Port apps/windows/src/main/services/SubscriptionStore.ts to Kotlin
     // using EncryptedSharedPreferences.

@@ -70,6 +70,8 @@ interface NativeSlaveVpn {
   getLogs(options?: { tail?: number }): Promise<{ lines: string[] }>
   setEngine(options: { engine: 'mihomo' | 'singbox' }): Promise<void>
   setKillSwitch(options: { enabled: boolean }): Promise<void>
+  setConnectOnBoot(options: { enabled: boolean }): Promise<void>
+  requestIgnoreBatteryOptimizations(): Promise<void>
   openAlwaysOnVpnSettings(): Promise<void>
   addListener(
     eventName: 'statusChanged',
@@ -652,6 +654,9 @@ export function installAndroidBridge(): void {
       // turn on "Always-on VPN" + "Block connections without VPN" for us — the
       // strongest guarantee, enforced by Android even when our process is dead.
       openAlwaysOnVpnSettings: () => wrap(() => SlaveVpn.openAlwaysOnVpnSettings()),
+      // Auto-connect after device restart — persists the flag natively so the
+      // BootReceiver can act at boot without the renderer running.
+      requestIgnoreBatteryOptimizations: () => wrap(() => SlaveVpn.requestIgnoreBatteryOptimizations()),
       // mihomo url-test of a node through the running tunnel (delay ms). Powers the
       // synthesized connection-health probe (Android has no native health events).
       testDelay: (payload: { name: string; url?: string; timeout?: number }) =>
@@ -934,6 +939,11 @@ export function installAndroidBridge(): void {
         // live flip is honoured without a reconnect — push it through immediately.
         if (typeof payload['killSwitch'] === 'boolean') {
           await SlaveVpn.setKillSwitch({ enabled: payload['killSwitch'] }).catch(() => undefined)
+        }
+        // Boot flag lives in native prefs too (BootReceiver reads it without the
+        // WebView) — mirror any change straight through.
+        if (typeof payload['connectOnBoot'] === 'boolean') {
+          await SlaveVpn.setConnectOnBoot({ enabled: payload['connectOnBoot'] }).catch(() => undefined)
         }
         // Persist the whole patch durably (dnsPreset/dnsStrategy/enabledScenarios/…).
         await patchAndroidSettings(payload as Partial<AppSettings>)

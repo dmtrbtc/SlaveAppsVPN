@@ -16,6 +16,7 @@ export function createDefaultSettings(overrides: Partial<AppSettings> = {}): App
     minimizeToTray: true,
     notificationsEnabled: true,
     autoConnect: false,
+    connectOnBoot: false,
     killSwitch: false,
     apiBaseUrl: 'https://change-me.example.com/api',
     telegramBotUsername: '',

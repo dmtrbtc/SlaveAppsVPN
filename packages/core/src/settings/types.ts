@@ -116,6 +116,10 @@ export interface AppSettings {
   minimizeToTray: boolean
   notificationsEnabled: boolean
   autoConnect: boolean
+  // Android only: reconnect the VPN after a device restart (BootReceiver). Ignored
+  // on Windows (no such lifecycle). Persisted natively too so the boot receiver
+  // can read it without the renderer running.
+  connectOnBoot: boolean
   killSwitch: boolean
   apiBaseUrl: string
   telegramBotUsername: string

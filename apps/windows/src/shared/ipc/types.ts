@@ -218,6 +218,7 @@ export interface AppSettings {
   minimizeToTray: boolean
   notificationsEnabled: boolean
   autoConnect: boolean
+  connectOnBoot: boolean
   killSwitch: boolean
   apiBaseUrl: string
   telegramBotUsername: string
@@ -1027,6 +1028,9 @@ export interface SlaveVPNBridge {
     // Android-only: opens the system VPN settings so the user can enable
     // "Always-on VPN" + lockdown (OS-enforced kill switch). Absent on Windows.
     openAlwaysOnVpnSettings?: () => Promise<IpcResult<void>>
+    // Android-only: request battery-optimization exemption (Doze) so OEM killers
+    // don't murder the background VPN. Absent on Windows.
+    requestIgnoreBatteryOptimizations?: () => Promise<IpcResult<void>>
     // Android-only: mihomo url-test of a node through the tunnel (delay ms).
     // Drives the synthesized connection-health probe. Windows uses native health.
     testDelay?: (payload: { name: string; url?: string; timeout?: number }) => Promise<IpcResult<{ delay: number }>>

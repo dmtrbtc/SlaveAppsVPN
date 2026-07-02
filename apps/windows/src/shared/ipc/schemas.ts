@@ -67,6 +67,7 @@ export const SettingsSetSchema = z
     minimizeToTray: z.boolean().optional(),
     notificationsEnabled: z.boolean().optional(),
     autoConnect: z.boolean().optional(),
+    connectOnBoot: z.boolean().optional(),
     killSwitch: z.boolean().optional(),
     apiBaseUrl: z.string().url().max(512).optional(),
     telegramBotUsername: z.string().max(64).optional(),

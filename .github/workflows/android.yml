@@ -203,6 +203,18 @@ jobs:
             sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnTileService"\n            android:icon="@drawable/ic_tile_vpn"\n            android:label="SLAVE VPN"\n            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\n            </intent-filter>\n        </service>\n    </application>|' AndroidManifest.xml
           fi
 
+          # Boot receiver — auto-connect after device restart (reads the
+          # connect_on_boot flag + cached config; no-op without VPN consent).
+          if ! grep -q 'BootReceiver' AndroidManifest.xml; then
+            sed -i 's|</application>|        <receiver\n            android:name="com.slavevpn.plugin.BootReceiver"\n            android:enabled="true"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.intent.action.BOOT_COMPLETED" />\n            </intent-filter>\n        </receiver>\n    </application>|' AndroidManifest.xml
+          fi
+
+          # Battery-optimization exemption (sideloaded app — Play policy N/A):
+          # lets the «Разрешить работу в фоне» button show the system dialog.
+          if ! grep -q 'REQUEST_IGNORE_BATTERY_OPTIMIZATIONS' AndroidManifest.xml; then
+            sed -i 's|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />|' AndroidManifest.xml
+          fi
+
       - name: Add Kotlin coroutines + androidx-core + libbox dependencies
         working-directory: apps/android/android/app
         run: |

@@ -129,6 +129,25 @@ class SlaveVpnService : VpnService() {
         private const val K_SELECTED = "selected"
         private const val K_SPLIT_MODE = "splitMode"
         private const val K_SPLIT_APPS = "splitApps" // newline-joined package names
+        // Auto-connect after device restart. Lives in the SAME native prefs the
+        // BootReceiver can read WITHOUT the WebView (renderer isn't running at boot).
+        private const val K_CONNECT_ON_BOOT = "connectOnBoot"
+
+        @JvmStatic
+        fun setConnectOnBoot(ctx: Context, enabled: Boolean) {
+            try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putBoolean(K_CONNECT_ON_BOOT, enabled)
+                    .apply()
+            } catch (_: Exception) { }
+        }
+
+        @JvmStatic
+        fun connectOnBootEnabled(ctx: Context): Boolean {
+            return try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(K_CONNECT_ON_BOOT, false)
+            } catch (_: Exception) { false }
+        }
 
         data class CachedConfig(
             val config: String,

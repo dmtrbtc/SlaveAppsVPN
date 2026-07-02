@@ -657,6 +657,32 @@ export function SettingsPage() {
                   onChange={v => handleToggle('autoConnect', v)}
                   loading={isKeyPending('autoConnect')}
                 />
+                {/* Android-only: OS auto-starts our BootReceiver after a restart. */}
+                {IS_MOBILE && (
+                  <ToggleRow
+                    label="Подключаться при включении телефона"
+                    sub="Поднимать VPN автоматически после перезагрузки устройства"
+                    value={settings.connectOnBoot}
+                    onChange={v => handleToggle('connectOnBoot', v)}
+                    loading={isKeyPending('connectOnBoot')}
+                  />
+                )}
+                {IS_MOBILE && (
+                  <div className="p-4 flex flex-col gap-2">
+                    <p className="text-xs text-text-muted leading-relaxed">
+                      На Xiaomi/Samsung система может убивать VPN в фоне. Разрешите
+                      работу без ограничений, чтобы соединение не обрывалось.
+                    </p>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="self-start"
+                      onClick={() => { void vpnApi.requestIgnoreBatteryOptimizations() }}
+                    >
+                      Разрешить работу в фоне
+                    </Button>
+                  </div>
+                )}
               </div>
             </CardRow>
           ) : null}
