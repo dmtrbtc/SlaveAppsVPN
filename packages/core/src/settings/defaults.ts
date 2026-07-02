@@ -34,6 +34,7 @@ export function createDefaultSettings(overrides: Partial<AppSettings> = {}): App
     splitTunnelMode: 'off',
     ruleProviders: [],
     enabledScenarios: getDefaultEnabledScenarios() as string[],
+    customRoutingRules: [],
     utlsFingerprint: 'randomized',
   }
   return { ...base, ...overrides }

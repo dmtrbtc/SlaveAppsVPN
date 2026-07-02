@@ -201,6 +201,16 @@ export interface DohProviderSetting {
   customUrl?: string | undefined
 }
 
+// User per-domain routing override («Свои правила») — mirrors core's
+// CustomRoutingRule. 'suffix' covers subdomains (DOMAIN-SUFFIX); 'exact'
+// matches the single host (DOMAIN).
+export interface CustomRoutingRuleInfo {
+  id: string
+  domain: string
+  matchType: 'suffix' | 'exact'
+  action: 'proxy' | 'direct' | 'reject'
+}
+
 export interface AppSettings {
   language: 'ru' | 'en'
   vpnMode: VPNMode
@@ -230,6 +240,9 @@ export interface AppSettings {
   ruleProviders: RuleProvider[]
   // Routing scenarios (Karing-style recipes; A.3)
   enabledScenarios: string[]
+  // User per-domain routing overrides («Свои правила») — applied in every mode,
+  // above scenario rules.
+  customRoutingRules: CustomRoutingRuleInfo[]
   // uTLS fingerprint used by sing-box / Mihomo when establishing TLS to
   // remote servers. "randomized" rotates the Client Hello on every
   // handshake — anti-DPI baseline since ТСПУ behavioural filtering (2026).

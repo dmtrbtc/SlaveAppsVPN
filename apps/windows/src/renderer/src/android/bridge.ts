@@ -190,6 +190,10 @@ async function connectNative(): Promise<void> {
       routingMode: currentRoutingMode,
     })
     nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
+    // Surface compile warnings (failed subscriptions, dropped geosite rules,
+    // scenario composition notes) in the in-app log so «правило молча выпало»
+    // is diagnosable instead of invisible.
+    for (const w of compiled.warnings ?? []) nativeLog(`[connect] ⚠ ${w}`)
     const s = androidSettings()
     await SlaveVpn.connect({
       config: compiled.config,

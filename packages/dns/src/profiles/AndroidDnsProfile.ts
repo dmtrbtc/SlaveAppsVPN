@@ -48,6 +48,12 @@ export interface AndroidDnsProfileOptions {
    * also tunnels and must resolve via DoH (no plaintext RU DNS leak). Default on.
    */
   ruDirectDns?: boolean
+  /**
+   * Extra fake-ip-filter entries (e.g. domains of user DIRECT rules — they must
+   * resolve to REAL IPs or the app gets a synthetic 198.18.x despite routing
+   * DIRECT). `+.domain` for suffix matches, bare domain for exact.
+   */
+  extraFakeIpFilter?: readonly string[]
 }
 
 export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfile {
@@ -120,6 +126,7 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
         ...ANDROID_FAKE_IP_FILTER_BASE,
         ...(ruDirectDns ? ANDROID_FAKE_IP_FILTER_RU : []),
         ...opts.nodeDomainSuffixes.map((s) => `+.${s}`),
+        ...(opts.extraFakeIpFilter ?? []),
       ],
     },
     // respect-rules on (useSystemDns:false) but no fallback-filter (no fallback pool).

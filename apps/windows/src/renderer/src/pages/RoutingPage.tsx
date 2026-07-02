@@ -10,14 +10,15 @@ import { splitApi } from '../lib/api'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { Input } from '../components/ui/input'
+import { Segmented } from '../components/ui/segmented'
 import { LoadingState, EmptyState } from '../components/ui/states'
 import { cn } from '../lib/utils'
 import { useVpnStore } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
-import { rulesApi, routingApi } from '../lib/api'
+import { rulesApi, routingApi, settingsApi } from '../lib/api'
 import { AndroidSplitTunnel } from '../components/split/AndroidSplitTunnel'
 import type { VPNMode } from '@slave-vpn/shared'
-import type { RuleProvider, RuleProviderAddPayload, RoutingScenarioInfo } from '@shared/ipc/types'
+import type { RuleProvider, RuleProviderAddPayload, RoutingScenarioInfo, CustomRoutingRuleInfo } from '@shared/ipc/types'
 
 // ─── Mode picker ──────────────────────────────────────────────────────────────
 
@@ -328,8 +329,13 @@ function ProviderRow({
             <span className="text-[10px] text-text-muted shrink-0">{provider.ruleCount} правил</span>
           )}
           {provider.lastError && (
-            <span title={provider.lastError} className="shrink-0">
-              <AlertCircle className="h-3 w-3 text-error" />
+            // Explicit failure mark — a silent list is a false sense of protection.
+            <span title={provider.lastError} className="flex shrink-0 items-center gap-1 text-[10px] text-error">
+              <AlertCircle className="h-3 w-3" />
+              не обновлён
+              {provider.lastUpdatedAt
+                ? ` · кэш от ${new Date(provider.lastUpdatedAt).toLocaleDateString('ru-RU')}`
+                : ''}
             </span>
           )}
         </div>
@@ -608,6 +614,181 @@ function SplitTunnelSection() {
   )
 }
 
+// ─── «Свои правила» — user per-domain overrides ───────────────────────────────
+// Applied in EVERY mode, above scenario rules. Persisted in AppSettings
+// (customRoutingRules) on both platforms; live-applied to a running tunnel by
+// re-setting the current mode (Windows rebuilds the profile, Android reconnects).
+
+const RULE_ACTION_OPTIONS: { value: CustomRoutingRuleInfo['action']; label: string }[] = [
+  { value: 'proxy',  label: 'Через VPN'    },
+  { value: 'direct', label: 'Напрямую'     },
+  { value: 'reject', label: 'Блокировать'  },
+]
+
+const RULE_MATCH_OPTIONS: { value: CustomRoutingRuleInfo['matchType']; label: string }[] = [
+  { value: 'suffix', label: 'С поддоменами' },
+  { value: 'exact',  label: 'Точный домен'  },
+]
+
+const RULE_ACTION_BADGE: Record<CustomRoutingRuleInfo['action'], { tone: 'ok' | 'warn' | 'bad' | 'accent'; label: string }> = {
+  proxy:  { tone: 'accent', label: 'через VPN'   },
+  direct: { tone: 'ok',     label: 'напрямую'    },
+  reject: { tone: 'bad',    label: 'блокируется' },
+}
+
+// Normalize pasted input: strip scheme/path/port, lowercase. Accepts IDN (рф).
+function normalizeDomainInput(raw: string): string {
+  let s = raw.trim().toLowerCase()
+  s = s.replace(/^[a-z]+:\/\//, '')       // scheme
+  s = s.split('/')[0] ?? s                // path
+  s = s.split(':')[0] ?? s                // port
+  s = s.replace(/^\*\./, '')              // *.example.com → example.com (suffix covers it)
+  return s
+}
+
+function isValidDomain(s: string): boolean {
+  return /^[a-zа-яё0-9]([a-zа-яё0-9-]*[a-zа-яё0-9])?(\.[a-zа-яё0-9]([a-zа-яё0-9-]*[a-zа-яё0-9])?)+$/i.test(s)
+}
+
+function UserRulesSection() {
+  const { notify } = useUIStore()
+  const { status, setMode } = useVpnStore()
+  const [rules, setRules] = useState<CustomRoutingRuleInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [domain, setDomain] = useState('')
+  const [matchType, setMatchType] = useState<CustomRoutingRuleInfo['matchType']>('suffix')
+  const [action, setAction] = useState<CustomRoutingRuleInfo['action']>('proxy')
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const s = await settingsApi.get()
+        if (!cancelled) setRules((s.customRoutingRules ?? []) as CustomRoutingRuleInfo[])
+      } catch { /* non-fatal — empty list */ } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  const persist = async (next: CustomRoutingRuleInfo[], successMsg: string) => {
+    setSaving(true)
+    try {
+      await settingsApi.set({ customRoutingRules: next })
+      setRules(next)
+      // Live-apply: re-setting the CURRENT mode regenerates the engine config on
+      // both platforms (Windows updateProfile, Android reconnect). No-op when
+      // disconnected — the rules land on the next connect.
+      if (status.state === 'connected') await setMode(status.mode)
+      notify({ type: 'success', title: 'Свои правила', message: successMsg })
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleAdd = async () => {
+    const d = normalizeDomainInput(domain)
+    if (!isValidDomain(d)) {
+      notify({ type: 'warning', title: 'Неверный домен', message: 'Пример: example.com или сайт.рф' })
+      return
+    }
+    if (rules.some(r => r.domain === d && r.matchType === matchType)) {
+      notify({ type: 'warning', title: 'Уже есть', message: `Правило для ${d} уже добавлено` })
+      return
+    }
+    if (rules.length >= 200) {
+      notify({ type: 'warning', title: 'Лимит', message: 'Не больше 200 своих правил' })
+      return
+    }
+    const next = [...rules, { id: crypto.randomUUID(), domain: d, matchType, action }]
+    await persist(next, `${d} → ${RULE_ACTION_BADGE[action].label}`)
+    setDomain('')
+  }
+
+  const handleRemove = async (id: string) => {
+    const rule = rules.find(r => r.id === id)
+    await persist(rules.filter(r => r.id !== id), rule ? `Удалено: ${rule.domain}` : 'Правило удалено')
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.15, duration: 0.2 }}
+      className="rounded-lg border border-border bg-bg-primary p-4 flex flex-col gap-3"
+    >
+      <div>
+        <p className="text-[13px] font-semibold text-text-primary">Свои правила</p>
+        <p className="text-[11px] text-text-muted mt-0.5">
+          Куда направлять конкретные сайты. Действуют во всех режимах и поверх сценариев.
+        </p>
+      </div>
+
+      {/* Add form */}
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <Input
+              placeholder="example.com"
+              value={domain}
+              onChange={e => setDomain(e.target.value)}
+              disabled={saving}
+            />
+          </div>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => void handleAdd()}
+            loading={saving}
+            disabled={saving || !domain.trim()}
+          >
+            <Plus className="h-3.5 w-3.5" /> Добавить
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented options={RULE_ACTION_OPTIONS} value={action} onChange={setAction} size="sm" />
+          <Segmented options={RULE_MATCH_OPTIONS} value={matchType} onChange={setMatchType} size="sm" />
+        </div>
+      </div>
+
+      {/* Rules list */}
+      {loading ? (
+        <LoadingState label="Загрузка правил..." />
+      ) : rules.length === 0 ? (
+        <p className="text-[11px] text-text-muted">
+          Пока нет правил. Например: добавьте домен банка с действием «Напрямую» или
+          заблокированный сайт с действием «Через VPN».
+        </p>
+      ) : (
+        <div className="flex flex-col divide-y divide-border rounded-md border border-border overflow-hidden">
+          {rules.map(rule => (
+            <div key={rule.id} className="flex items-center gap-2 bg-bg-secondary/40 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-primary">
+                {rule.matchType === 'suffix' ? `*.${rule.domain}` : rule.domain}
+              </span>
+              <Badge tone={RULE_ACTION_BADGE[rule.action].tone}>
+                {RULE_ACTION_BADGE[rule.action].label}
+              </Badge>
+              <button
+                onClick={() => void handleRemove(rule.id)}
+                disabled={saving}
+                className="p-1 text-text-muted transition-colors hover:text-error disabled:opacity-40"
+                aria-label="Удалить правило"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </motion.div>
+  )
+}
+
 export function RoutingPage() {
   const { status, setMode } = useVpnStore()
   const { notify } = useUIStore()
@@ -692,6 +873,9 @@ export function RoutingPage() {
             )
           })}
         </div>
+
+        {/* «Свои правила» — user per-domain overrides, active in EVERY mode. */}
+        <UserRulesSection />
 
         {/* Routing scenarios apply ONLY in the «Свой» mode — the other modes are
             fixed presets (full = all via VPN, bypass = RU-direct, split = per-app).

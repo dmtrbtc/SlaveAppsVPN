@@ -85,7 +85,13 @@ export async function compileMihomoConfigForAndroid(
   // custom → the user's enabled scenarios. Before this, scenarios always won and
   // the Полный/Раздельный selection did nothing.
   const enabledScenarios = androidSettings().enabledScenarios
-  const composed = resolveRoutingPolicyForMode(options.vpnMode, enabledScenarios)
+  // «Свои правила» — user per-domain overrides, applied in EVERY mode above the
+  // scenario rules. Android split omits splitProcesses (apps are gated natively
+  // by VpnService), so a split policy keeps its proxy-default semantics.
+  const customRules = androidSettings().customRoutingRules ?? []
+  const composed = resolveRoutingPolicyForMode(options.vpnMode, enabledScenarios, {
+    customRules,
+  })
 
   // When no scenario policy applies (full/split), the androidRouting mode drives
   // the rules: full/split → 'global' (everything in the tunnel goes via VPN; on
@@ -135,6 +141,11 @@ export async function compileMihomoConfigForAndroid(
         options.vpnMode === 'bypass' ||
         options.vpnMode === 'blocked' ||
         options.vpnMode === 'custom',
+      // User DIRECT rules must resolve to REAL IPs (not fake-ip), or the app
+      // gets a synthetic 198.18.x address despite routing DIRECT.
+      extraFakeIpFilter: customRules
+        .filter((r) => r.action === 'direct')
+        .map((r) => (r.matchType === 'suffix' ? `+.${r.domain}` : r.domain)),
     }),
     // Scenario rules WIN over androidRouting's smart/global/direct split (the
     // generator forces mode:'rule' when routingPolicy is present). geo / DNS /
@@ -157,9 +168,26 @@ export async function compileMihomoConfigForAndroid(
   }
 
   const config = generateMihomoConfig(ctx)
+  // Surface geosite rules the generator will DROP (category absent from the
+  // installed dat) — silently losing e.g. an RKN category means the user thinks
+  // they're covered by a list that isn't loaded. Mirror of the generator's own
+  // filterUnknownGeoSiteRules condition (only when the available set is known).
+  const geositeWarnings: string[] = []
+  if (composed.policy && availableGeoSites.length > 0) {
+    const available = new Set(availableGeoSites.map(c => c.toLowerCase()))
+    const missing = [...new Set(
+      composed.policy.rules
+        .filter(r => r.target.type === 'geosite' && !available.has(r.target.value.toLowerCase()))
+        .map(r => r.target.value),
+    )]
+    if (missing.length > 0) {
+      geositeWarnings.push(`маршрутизация: пропущены geosite-правила без данных: ${missing.join(', ')}`)
+    }
+  }
   const allWarnings = [
     ...warnings,
     ...composed.warnings,
+    ...geositeWarnings,
     ...(composed.valid ? [] : composed.errors.map(e => `routing: ${e}`)),
   ]
   return { config, proxyCount: proxies.length, warnings: allWarnings }

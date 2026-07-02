@@ -36,8 +36,15 @@ export class RoutingScenarioService {
   // the engine's legacy vpnMode rules (policy=null), bypass = Smart-Russia,
   // custom = the user's enabled scenarios. Fixes the "Полный VPN не работает,
   // трафик идёт раздельно" bug where a scenario policy always overrode the mode.
+  // User per-domain overrides («Свои правила») ride on top in every mode.
   composePolicyForMode(mode: VPNMode): NormalizedPolicy | null {
-    const { policy, warnings, valid, errors } = resolveRoutingPolicyForMode(mode, this.getEnabledIds())
+    const store = getSettingsStore()
+    const { policy, warnings, valid, errors } = resolveRoutingPolicyForMode(mode, this.getEnabledIds(), {
+      customRules: store.get('customRoutingRules') ?? [],
+      // Windows split routes by PROCESS-NAME — pass the allow-list so a
+      // user-rules split policy keeps the legacy direct-default semantics.
+      splitProcesses: store.get('splitProcessList') ?? [],
+    })
     this.logComposition(warnings, valid, errors)
     return policy
   }

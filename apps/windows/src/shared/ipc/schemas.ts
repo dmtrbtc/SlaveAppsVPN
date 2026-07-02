@@ -83,6 +83,19 @@ export const SettingsSetSchema = z
     selectedProxy: z.string().nullable().optional(),
     splitProcessList: z.array(z.string()).optional(),
     enabledScenarios: z.array(z.string()).optional(),
+    // «Свои правила» — user per-domain routing overrides. Domain length per
+    // RFC 1035 (253); capped at 200 rules to keep the config sane.
+    customRoutingRules: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(64),
+          domain: z.string().min(1).max(253),
+          matchType: z.enum(['suffix', 'exact']),
+          action: z.enum(['proxy', 'direct', 'reject']),
+        }),
+      )
+      .max(200)
+      .optional(),
   })
   .strict()
 

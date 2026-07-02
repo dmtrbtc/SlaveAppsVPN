@@ -392,12 +392,24 @@ export class RuntimeServiceImpl implements RuntimeService {
     const dohOverrideUrl = settings.dohProvider
       ? resolveDohUrl(settings.dohProvider)
       : undefined
-    return buildEngineDnsProfile(
+    const profile = buildEngineDnsProfile(
       settings.dnsPreset,
       settings.customDnsProfile,
       settings.dnsStrategy,
       dohOverrideUrl,
     )
+    // «Свои правила» → напрямую: exclude those domains from fake-ip so they
+    // resolve to REAL IPs — under fake-ip a DIRECT rule would otherwise hand the
+    // app a synthetic 198.18.x address (the same anti-fraud problem the curated
+    // bank list solves). Suffix rules → `+.domain`, exact → bare domain.
+    const directDomains = (settings.customRoutingRules ?? [])
+      .filter((r) => r.action === 'direct')
+      .map((r) => (r.matchType === 'suffix' ? `+.${r.domain}` : r.domain))
+    if (directDomains.length === 0 || !profile.fakeIp.enabled) return profile
+    return {
+      ...profile,
+      fakeIp: { ...profile.fakeIp, filter: [...(profile.fakeIp.filter ?? []), ...directDomains] },
+    }
   }
 
   private buildRoutingPolicyForEngine(): NormalizedPolicy | undefined {

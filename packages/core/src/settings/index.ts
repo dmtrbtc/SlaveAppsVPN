@@ -12,6 +12,7 @@ export type {
   GeoSource,
   GeoUpdateRecord,
   GeoUpdaterState,
+  CustomRoutingRule,
   AppSettings,
 } from './types.js'
 export { createDefaultSettings } from './defaults.js'

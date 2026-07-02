@@ -97,6 +97,17 @@ export interface GeoUpdaterState {
   intervalHours: number
 }
 
+// ─── Custom routing rules (user per-domain overrides) ─────────────────────────
+// A user-authored "this site → via VPN / direct / blocked" override. Applied in
+// EVERY mode, above scenario rules (priority band 50-99). matchType 'suffix'
+// covers subdomains (DOMAIN-SUFFIX); 'exact' matches the single host (DOMAIN).
+export interface CustomRoutingRule {
+  id: string
+  domain: string
+  matchType: 'suffix' | 'exact'
+  action: 'proxy' | 'direct' | 'reject'
+}
+
 // ─── App settings (the aggregate) ─────────────────────────────────────────────
 export interface AppSettings {
   language: 'ru' | 'en'
@@ -129,6 +140,9 @@ export interface AppSettings {
   splitTunnelMode: SplitTunnelMode
   ruleProviders: RuleProvider[]
   enabledScenarios: string[]
+  // User per-domain routing overrides («Свои правила») — applied in every mode,
+  // above scenario rules. See CustomRoutingRule.
+  customRoutingRules: CustomRoutingRule[]
   utlsFingerprint: UtlsFingerprintName
 }
 
