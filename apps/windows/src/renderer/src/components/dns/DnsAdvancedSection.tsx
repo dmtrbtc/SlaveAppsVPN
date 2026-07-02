@@ -189,12 +189,29 @@ function RulesSection({
   const [matchType, setMatchType] = useState<DnsRuleMatchKind>('domain_suffix')
   const [value, setValue] = useState('')
   const [resolverTag, setResolverTag] = useState('direct')
+  const [tagError, setTagError] = useState<string | null>(null)
+
+  // Mirror of the compiler's resolveRuleTarget acceptance (MihomoDnsCompiler):
+  // reserved tags, https/tls/tcp/quic URLs, plain IPv4(:port), udp:// or [v6].
+  // Anything else is SILENTLY DROPPED by the compiler — so block it at input
+  // time instead of letting the rule vanish without a trace.
+  const isValidResolverTag = (tag: string): boolean =>
+    ['primary', 'fallback', 'direct', 'system'].includes(tag) ||
+    /^(https?|tls|tcp|quic):\/\//.test(tag) ||
+    /^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(tag) ||
+    /^(udp:\/\/|\[)/.test(tag)
 
   const add = (): void => {
-    if (!value.trim() || !resolverTag.trim()) return
+    const tag = resolverTag.trim()
+    if (!value.trim() || !tag) return
+    if (!isValidResolverTag(tag)) {
+      setTagError('Резолвер не распознан: нужен https://, tls://, quic://-URL или IP-адрес')
+      return
+    }
+    setTagError(null)
     onChange([
       ...rules,
-      { id: newId(), matchType, value: value.trim(), resolverTag: resolverTag.trim() },
+      { id: newId(), matchType, value: value.trim(), resolverTag: tag },
     ])
     setValue('')
   }
@@ -277,6 +294,9 @@ function RulesSection({
             <Plus className="h-3 w-3" />
           </Button>
         </div>
+        {tagError && (
+          <p className="text-[10px] text-error">{tagError}</p>
+        )}
       </div>
     </div>
   )

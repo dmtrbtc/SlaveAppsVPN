@@ -72,6 +72,17 @@ test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plain
   assert.ok(!boot.some(s => s.includes('223.5.5.5')), 'AliDNS 223.5.5.5 dropped from bootstrap')
 })
 
+test('v0.2.34: Android DNS has an IP-literal DoT fallback pool + RU fallback-filter', () => {
+  const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
+  // Before v0.2.34 there was NO fallback: the DoH pool dying = total DNS failure.
+  const fb = doc.dns['fallback'] as string[]
+  assert.ok(Array.isArray(fb) && fb.length >= 2, 'fallback pool present (>=2)')
+  assert.ok(fb.every(s => s.startsWith('tls://')), 'fallback is DoT (different transport from DoH/443)')
+  assert.ok(fb.every(s => /^tls:\/\/\d{1,3}(\.\d{1,3}){3}$/.test(s)), 'fallback DoT MUST be IP-literal (no hostname bootstrap)')
+  const ff = doc.dns['fallback-filter'] as { geoip: boolean; 'geoip-code': string }
+  assert.ok(ff && ff.geoip === true && ff['geoip-code'] === 'RU', 'fallback-filter geoip:RU present')
+})
+
 test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
   const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
   const policy = doc.dns['nameserver-policy'] as Record<string, unknown>

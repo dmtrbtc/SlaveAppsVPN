@@ -6,8 +6,12 @@ import { DEFAULT_FAKE_IP_FILTER } from './FakeIpFilter'
 // its SAN, so TLS validates directly. Mirrors the cross-platform DOH_PROVIDERS.
 const DOH_GOOGLE: DnsResolver = { url: 'https://8.8.8.8/dns-query', type: 'doh', preferH3: true }
 const DOH_CLOUDFLARE: DnsResolver = { url: 'https://1.1.1.1/dns-query', type: 'doh', preferH3: true }
-const DOT_GOOGLE: DnsResolver = { url: 'tls://dns.google', type: 'dot' }
-const DOT_CLOUDFLARE: DnsResolver = { url: 'tls://1dot1dot1dot1.cloudflare-dns.com', type: 'dot' }
+// DoT fallbacks are IP-literal too (v0.2.34): hostname DoT (`tls://dns.google`)
+// needs the same plaintext bootstrap resolution a hostile ISP can poison — the
+// exact vector the v0.2.19 IP-literal DoH fix closed. Google/Cloudflare DoT
+// certs carry the IP in their SAN, so TLS validates without any resolution.
+const DOT_GOOGLE: DnsResolver = { url: 'tls://8.8.8.8', type: 'dot' }
+const DOT_CLOUDFLARE: DnsResolver = { url: 'tls://1.1.1.1', type: 'dot' }
 const UDP_GOOGLE: DnsResolver = { url: '8.8.8.8', type: 'udp' }
 const UDP_CLOUDFLARE: DnsResolver = { url: '1.1.1.1', type: 'udp' }
 const UDP_GOOGLE_ALT: DnsResolver = { url: '8.8.4.4', type: 'udp' }

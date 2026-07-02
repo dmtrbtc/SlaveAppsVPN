@@ -111,10 +111,19 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
     })),
   ]
 
+  // Fallback pool (v0.2.34): IP-literal DoT — a DIFFERENT transport (TCP/853)
+  // from the primary DoH pool (TCP/443), so a targeted DoH block/outage doesn't
+  // kill DNS entirely. Previously there was NO fallback: the DoH pool dying
+  // meant total DNS failure on Android. IP-literal → no poisonable bootstrap.
+  const fallbackPool: DnsResolver[] = [
+    { url: 'tls://1.1.1.1', type: 'dot' },
+    { url: 'tls://8.8.8.8', type: 'dot' },
+  ]
+
   return {
     mode: 'fake-ip',
     nameservers: dohPool,
-    // No fallback pool — the DoH pool through the tunnel is authoritative.
+    fallbackNameservers: fallbackPool,
     bootstrapNameservers: bootstrap,
     defaultNameservers: bootstrap,
     proxyServerNameservers: dohPool,
@@ -129,8 +138,19 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
         ...(opts.extraFakeIpFilter ?? []),
       ],
     },
-    // respect-rules on (useSystemDns:false) but no fallback-filter (no fallback pool).
-    leakPrevention: { enabled: false, useSystemDns: false },
+    // respect-rules on (useSystemDns:false); fallback-filter gates when the DoT
+    // fallback result replaces the primary: a foreign domain resolving to an RU
+    // IP via DoH smells like poisoning → prefer the fallback answer. RU domains
+    // themselves resolve via nameserver-policy (Yandex) which bypasses fallback.
+    leakPrevention: {
+      enabled: true,
+      useSystemDns: false,
+      fallbackFilter: {
+        geoipEnabled: true,
+        geoipCode: 'RU',
+        ipCidrs: ['240.0.0.0/4', '0.0.0.0/32'],
+      },
+    },
     ipv6: { enabled: false },
     // The sniffer section is emitted separately by the generator; keep this off so
     // the compiler doesn't add a `use-hosts` key the inline builder never had.
