@@ -11,6 +11,8 @@ import { CapacitorHttp, Capacitor } from '@capacitor/core'
  */
 
 const RELEASES_API = 'https://api.github.com/repos/dmtrbtc/SlaveAppsVPN/releases?per_page=5'
+// Deterministic GitHub asset download base — the APK asset name is fixed by CI.
+const RELEASE_DOWNLOAD_BASE = 'https://github.com/dmtrbtc/SlaveAppsVPN/releases/download'
 // A release published more than this after our build is treated as "newer"
 // (avoids flagging the build's own release, which publishes minutes later).
 const NEWER_BUFFER_MS = 60 * 60 * 1000 // 1 hour
@@ -178,11 +180,22 @@ export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise
     const asset = native
       ? latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
       : (latest.assets.find(a => /setup.*\.exe$/i.test(a.name)) ?? latest.assets.find(a => a.name.toLowerCase().endsWith('.exe')))
+
+    // Android: the APK asset name is FIXED by CI (SlaveAppsVPN-Android.apk), so
+    // when the asset scan comes up empty — the release is published but the APK is
+    // still uploading (a several-minute window after a tag push), or the API
+    // response omitted it — derive the deterministic GitHub download URL from the
+    // tag instead of falling back to the browser. Keeps «Обновить» downloading
+    // in-app; a not-yet-uploaded APK just 404s and the user retries.
+    const derivedApkUrl = native && !asset && latest.tag_name
+      ? `${RELEASE_DOWNLOAD_BASE}/${latest.tag_name}/SlaveAppsVPN-Android.apk`
+      : null
+
     return {
       version: latest.tag_name || latest.name || 'новая версия',
       notes: latest.body ?? '',
       releaseUrl: latest.html_url,
-      downloadUrl: asset?.browser_download_url ?? null,
+      downloadUrl: asset?.browser_download_url ?? derivedApkUrl,
       publishedAt,
     }
   } catch {
