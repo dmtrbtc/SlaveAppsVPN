@@ -11,6 +11,7 @@ import { TrafficSparkline } from '../components/traffic/TrafficSparkline'
 import { ActiveConnectionsPanel } from '../components/connections/ActiveConnectionsPanel'
 import { ProfileSwitcher } from '../components/profile/ProfileSwitcher'
 import { UpdateBanner } from '../components/update/UpdateBanner'
+import { SubscriptionExpiryBanner } from '../components/subscriptions/SubscriptionExpiryBanner'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { StatTile } from '../components/ui/stat-tile'
@@ -262,6 +263,9 @@ export function DashboardPage() {
 
       {/* Android in-app update banner (notify + download button) */}
       <UpdateBanner />
+
+      {/* Proactive «подписка истекает» warning (self-hides unless <3 days). */}
+      <SubscriptionExpiryBanner />
 
       {/* Top status bar */}
       <StatusBar />

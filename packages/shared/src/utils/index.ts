@@ -43,6 +43,28 @@ export function countryCodeToFlag(countryCode: string): string {
   return String.fromCodePoint(...codePoints)
 }
 
+// ─── Log redaction ────────────────────────────────────────────────────────────
+// Strip credentials from log text before it leaves the app (export / copy /
+// share / on-screen). Operates on the OUTGOING copy only — the in-memory ring
+// buffer keeps raw lines for local debugging. Best-effort: pattern-based, tuned
+// to what actually appears in mihomo + our own connect logs.
+const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
+// key=value / key: value where the key names a secret (query params, yaml, json).
+const SECRET_KV_RE = /\b(password|passwd|pass|token|secret|api[-_]?key|apikey|psk|hwid|uuid|auth|authorization|bearer)\b(["']?\s*[:=]\s*["']?)([^\s"',&}]+)/gi
+// Proxy share-links carry the node credentials in the URL — drop the whole thing.
+const PROXY_URI_RE = /\b(vless|vmess|trojan|ss|ssr|hysteria2?|tuic|hy2):\/\/\S+/gi
+// Subscription/config URLs with an opaque token-ish path or query.
+const SUB_URL_RE = /(https?:\/\/[^\s"']+\/(?:sub|subscription|api)\/)[^\s"']+/gi
+
+export function redactSecrets(text: string): string {
+  if (!text) return text
+  return text
+    .replace(PROXY_URI_RE, (m) => `${m.slice(0, m.indexOf('://') + 3)}«скрыто»`)
+    .replace(SUB_URL_RE, '$1«скрыто»')
+    .replace(SECRET_KV_RE, '$1$2«скрыто»')
+    .replace(UUID_RE, (m) => `${m.slice(0, 8)}…«скрыто»`)
+}
+
 export function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)

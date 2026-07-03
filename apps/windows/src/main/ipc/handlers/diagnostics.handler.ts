@@ -4,11 +4,13 @@ import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
 import { runSelfTest } from '../../services/SelfTestService'
 import { app } from 'electron'
-import { join } from 'path'
-import { existsSync, readFileSync } from 'fs'
+import { join, basename } from 'path'
+import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import os from 'os'
+import { tmpdir } from 'os'
+import { redactSecrets } from '@slave-vpn/shared'
 import type { SystemInfo } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
 import { getSessionId } from '../../logger'
@@ -26,13 +28,24 @@ async function buildZipBundle(logDir: string, destPath: string): Promise<void> {
 
   if (candidates.length === 0) return
 
-  // Use Windows PowerShell Compress-Archive (available on Win8+)
-  const paths = candidates.map(p => `"${p}"`).join(',')
-  const script = `Compress-Archive -Path @(${paths}) -DestinationPath "${destPath}" -Force`
-
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-Command', script,
-  ], { timeout: 30_000 })
+  // Stage REDACTED copies (strip uuids/tokens/proxy-links/subscription URLs) into
+  // a temp dir and zip those — the exported bundle goes to support, so it must
+  // not carry credentials. The original files on disk are untouched.
+  const stageDir = mkdtempSync(join(tmpdir(), 'slavevpn-logs-'))
+  try {
+    const staged = candidates.map((src) => {
+      const dst = join(stageDir, basename(src))
+      writeFileSync(dst, redactSecrets(readFileSync(src, 'utf8')))
+      return dst
+    })
+    const paths = staged.map(p => `"${p}"`).join(',')
+    const script = `Compress-Archive -Path @(${paths}) -DestinationPath "${destPath}" -Force`
+    await execFileAsync('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command', script,
+    ], { timeout: 30_000 })
+  } finally {
+    try { rmSync(stageDir, { recursive: true, force: true }) } catch { /* best-effort */ }
+  }
 }
 
 export function registerDiagnosticsHandlers(): void {
@@ -66,11 +79,10 @@ export function registerDiagnosticsHandlers(): void {
       }
     } catch { /* fall through to text export */ }
 
-    // Fallback: export main.log as plain text
+    // Fallback: export main.log as REDACTED plain text.
     const logPath = join(logDir, 'main.log')
     const fallbackPath = join(app.getPath('downloads'), `slavevpn-logs-${timestamp}.log`)
-    const content = existsSync(logPath) ? readFileSync(logPath) : Buffer.from('No logs found.')
-    const { writeFileSync } = await import('fs')
+    const content = existsSync(logPath) ? redactSecrets(readFileSync(logPath, 'utf8')) : 'No logs found.'
     writeFileSync(fallbackPath, content)
     return okResult(fallbackPath)
   })

@@ -61,8 +61,14 @@ jobs:
         run: pnpm --filter "./packages/**" build
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-      - name: "Run package tests (config: parsers, uTLS, routing, DNS, RU-direct)"
+      - name: "Run config tests (parsers, uTLS, routing rules, DNS, RU-direct)"
         run: pnpm --filter @slave-vpn/config test
+      - name: "Run routing tests (scenario compose, dedup, defaults)"
+        run: pnpm --filter @slave-vpn/routing test
+      - name: "Run DNS tests (Android profile, IP-literal, fallback pool)"
+        run: pnpm --filter @slave-vpn/dns test
+      - name: "Run core tests (mode matrix, user routing rules)"
+        run: pnpm --filter @slave-vpn/core test
 
   audit:
     name: Security Audit

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { redactSecrets } from '@slave-vpn/shared'
 import { diagnosticsApi, vpnApi, configSourceApi } from '../lib/api'
 
 export const SYSTEM_INFO_QUERY_KEY = ['diagnostics', 'system'] as const
@@ -19,7 +20,14 @@ export function useSystemInfo() {
 export function useLogs() {
   return useQuery({
     queryKey: LOGS_QUERY_KEY,
-    queryFn: () => diagnosticsApi.getLogs(),
+    // Redact credentials (uuids / passwords / proxy-links / subscription URLs)
+    // from the OUTGOING log copy — this is what the panel renders, copies,
+    // shares and (on Windows) the operator pastes into support. The native ring
+    // buffer keeps raw lines for on-device debugging.
+    queryFn: async () => {
+      const lines = await diagnosticsApi.getLogs()
+      return lines.map((l) => ({ ...l, msg: redactSecrets(l.msg) }))
+    },
     // Poll while the Diagnostics panel is open so engine/lifecycle lines appear
     // live (the native log ring buffer fills as mihomo runs; without this the
     // first — usually empty, pre-connect — fetch stuck and the panel read "Логов
