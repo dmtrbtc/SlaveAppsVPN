@@ -13,6 +13,7 @@ import type {
 } from '../../../shared/ipc/types'
 import { handleIpc } from '../registry'
 import { getCabinetService, CabinetError } from '../../services/CabinetService'
+import { updateRuntimeConfigSource } from '../../bootstrap'
 import type { CabinetUser, CabinetSubscription } from '@slave-vpn/core'
 
 function toUserInfo(u: CabinetUser): CabinetUserInfo {
@@ -141,7 +142,16 @@ export function registerCabinetHandlers(): void {
 
   handleIpc(IpcChannel.CABINET_IMPORT_SUBSCRIPTION, EmptySchema, async () => {
     try {
-      return okResult(await svc().importSubscription())
+      const result = await svc().importSubscription()
+      // THE fix for «после авторизации список серверов виден, но не подключает»:
+      // importSubscription writes the cabinet URL into ConfigSourceService (which
+      // the server LIST reads live), but the RUNTIME holds its own configSource
+      // reference set at boot — stale/undefined on a fresh install that went
+      // straight to cabinet login. Without this push, connect's fetchSubscriptionYaml
+      // has no source → «No subscription configured». CONFIG_SOURCE_SET (manual
+      // «Подписка-URL») already does this; the cabinet path was missing it.
+      if (result.imported) updateRuntimeConfigSource()
+      return okResult(result)
     } catch (e) { return toErr(e) }
   })
 
