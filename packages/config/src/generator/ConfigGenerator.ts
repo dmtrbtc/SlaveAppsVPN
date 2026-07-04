@@ -76,6 +76,14 @@ export interface ConfigGenerationContext {
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
 const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
+// Load-balance group used ONLY for Telegram (see rebalanceTelegramRules). Telegram
+// media downloads open many parallel connections to the DCs; pinned to the single
+// user-selected node (SLAVE-SELECT) they all share one uplink → «то быстро, то
+// медленно» as that node congests. A round-robin load-balance spreads each new
+// connection across all nodes, so the parallel media streams use aggregate
+// bandwidth. round-robin is per-CONNECTION, so a single voice call (one connection)
+// still stays on one node for its duration — no mid-call jitter.
+const SLAVE_BALANCE_GROUP = 'SLAVE-BALANCE'
 // HTTPS (not http) — mihomo warns that HTTP health-check URLs can be hijacked by
 // proxies and that some don't handle the repeated HEAD requests, causing false
 // «context deadline exceeded» health-check failures. HTTPS is the recommended,
@@ -112,6 +120,11 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
 
   const proxyNames = profile.proxies.map((p) => p.name)
 
+  // Balancing Telegram only makes sense with ≥2 nodes; with one node there's
+  // nothing to spread across, so keep Telegram on SLAVE-SELECT (respects the
+  // manual pick) and don't emit an empty/pointless balance group.
+  const useTelegramBalance = proxyNames.length >= 2
+
   const managedGroups: ParsedProxyGroup[] = [
     {
       name: SLAVE_SELECT_GROUP,
@@ -127,6 +140,18 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       tolerance: URL_TEST_TOLERANCE,
       lazy: URL_TEST_LAZY,
     },
+    ...(useTelegramBalance ? [{
+      name: SLAVE_BALANCE_GROUP,
+      type: 'load-balance',
+      proxies: proxyNames,
+      // round-robin spreads each new connection across nodes (throughput for
+      // Telegram's parallel media streams). The health-check url/interval let
+      // mihomo skip a dead node (e.g. the Slave-FR seen failing at 65535ms).
+      strategy: 'round-robin',
+      url: URL_TEST_URL,
+      interval: URL_TEST_INTERVAL,
+      lazy: URL_TEST_LAZY,
+    } as ParsedProxyGroup] : []),
   ]
 
   // Rules precedence: a composed routingPolicy (scenarios) WINS over the legacy
@@ -149,7 +174,13 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   // `ru-blocked`/`antifilter-community` that live in a separate .dat, or
   // `torrent`/`twitch-ads` absent from the MetaCubeX build). Only filter when we
   // actually know the available set; otherwise leave rules untouched.
-  const rules = filterUnknownGeoSiteRules(rawRules, ctx.availableGeoSites)
+  const filteredRules = filterUnknownGeoSiteRules(rawRules, ctx.availableGeoSites)
+  // Redirect Telegram (GEOSITE/GEOIP,telegram) from the single-node SLAVE-SELECT
+  // to the round-robin SLAVE-BALANCE group so parallel media connections spread
+  // across nodes. No-op when there are <2 nodes (group not emitted).
+  const rules = useTelegramBalance
+    ? rebalanceTelegramRules(filteredRules, SLAVE_SELECT_GROUP, SLAVE_BALANCE_GROUP)
+    : filteredRules
 
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
@@ -243,6 +274,23 @@ function buildTunSection(settings: GeneratorSettings): Record<string, unknown> {
     'strict-route': true,
     'auto-detect-interface': true,
   }
+}
+
+// Redirect the Telegram routing rules (GEOSITE,telegram / GEOIP,telegram) from
+// `fromGroup` (SLAVE-SELECT, single node) to `toGroup` (SLAVE-BALANCE, round-robin).
+// Only these two rules are touched — every other rule keeps its original target, so
+// the user's manual node pick still governs general surfing. Comma-split (not regex)
+// so a trailing `,no-resolve` on the GEOIP rule is preserved.
+function rebalanceTelegramRules(rules: string[], fromGroup: string, toGroup: string): string[] {
+  return rules.map((rule) => {
+    const parts = rule.split(',')
+    const isTelegram = (parts[0] === 'GEOSITE' || parts[0] === 'GEOIP') && parts[1] === 'telegram'
+    if (isTelegram && parts[2] === fromGroup) {
+      parts[2] = toGroup
+      return parts.join(',')
+    }
+    return rule
+  })
 }
 
 // Telegram data-center ranges (official https://core.telegram.org/resources/cidr.txt).

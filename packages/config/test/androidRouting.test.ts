@@ -199,3 +199,61 @@ test('global mode → clash mode:RULE (never global) + MATCH proxy; direct mode 
   assert.equal(d.mode, 'direct')
   assert.ok(d.rules.includes('MATCH,DIRECT'))
 })
+
+// ─── Telegram load-balance (v0.2.39) ────────────────────────────────────────
+// Telegram media opens many parallel connections; pinned to the single selected
+// node they share one uplink («то быстро, то медленно»). With ≥2 nodes we route
+// ONLY the telegram rules through a round-robin SLAVE-BALANCE group to spread them.
+const SUB2 = `
+proxies:
+  - { name: EE, type: vless, server: ee.example.online, port: 443, uuid: 00000000-0000-4000-8000-000000000000, tls: true, servername: ee.example.online, flow: xtls-rprx-vision, reality-opts: { public-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, short-id: 0123456789abcdef } }
+  - { name: NL, type: vless, server: nl.example.online, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true, servername: nl.example.online, flow: xtls-rprx-vision, reality-opts: { public-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, short-id: 0123456789abcdef } }
+`.trim()
+
+const TG_POLICY = {
+  rules: [
+    { id: 'tg1', target: { type: 'geosite', value: 'telegram' }, action: 'proxy', priority: 1300 },
+    { id: 'tg2', target: { type: 'geoip', value: 'telegram' }, action: 'proxy', priority: 1301, noResolve: true },
+    { id: 'wa', target: { type: 'geoip', value: 'facebook' }, action: 'proxy', priority: 1302, noResolve: true },
+    { id: 'ru', target: { type: 'geosite', value: 'category-ru' }, action: 'direct', priority: 2000 },
+  ],
+  defaultAction: 'proxy',
+}
+
+function genPolicy(sub: string, policy: unknown): Record<string, unknown> {
+  const out = generateMihomoConfig({
+    subscriptionYaml: sub,
+    vpnMode: 'full',
+    settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://1.1.1.1/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
+    apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
+    routingPolicy: policy,
+    dnsProfile: buildAndroidDnsProfile({ dohUrl: 'https://1.1.1.1/dns-query', nodeDomainSuffixes: ['ee.example.online', 'nl.example.online'], ruDirectDns: true }),
+    androidRouting: { mode: 'smart', nodeDomainSuffixes: ['ee.example.online', 'nl.example.online'], geoEnabled: true, bypassProviders: [] },
+  })
+  return require('js-yaml').load(out) as Record<string, unknown>
+}
+
+test('≥2 nodes: ONLY telegram rules route through round-robin SLAVE-BALANCE; rest keep SLAVE-SELECT', () => {
+  const doc = genPolicy(SUB2, TG_POLICY)
+  const groups = doc['proxy-groups'] as Array<{ name: string; type: string; strategy?: string; proxies: string[] }>
+  const balance = groups.find(g => g.name === 'SLAVE-BALANCE')
+  assert.ok(balance, 'SLAVE-BALANCE group present with ≥2 nodes')
+  assert.equal(balance!.type, 'load-balance')
+  assert.equal(balance!.strategy, 'round-robin', 'round-robin spreads parallel media connections')
+  assert.deepEqual(balance!.proxies, ['EE', 'NL'], 'balance spans all nodes (not the SLAVE-AUTO group)')
+  const rules = doc['rules'] as string[]
+  assert.ok(rules.includes('GEOSITE,telegram,SLAVE-BALANCE'), 'geosite:telegram → balance')
+  assert.ok(rules.includes('GEOIP,telegram,SLAVE-BALANCE,no-resolve'), 'geoip:telegram → balance (no-resolve preserved)')
+  // Everything else — incl. WhatsApp/facebook and the MATCH fallback — stays on the
+  // user-selected node so the manual pick still governs general surfing.
+  assert.ok(rules.includes('GEOIP,facebook,SLAVE-SELECT,no-resolve'), 'non-telegram messenger stays on SLAVE-SELECT')
+  assert.equal(rules[rules.length - 1], 'MATCH,SLAVE-SELECT', 'default still SLAVE-SELECT')
+})
+
+test('single node: NO balance group — telegram stays on SLAVE-SELECT (respects manual pick)', () => {
+  const doc = genPolicy(SUB, TG_POLICY)
+  const groups = doc['proxy-groups'] as Array<{ name: string }>
+  assert.ok(!groups.some(g => g.name === 'SLAVE-BALANCE'), 'no SLAVE-BALANCE with a single node')
+  const rules = doc['rules'] as string[]
+  assert.ok(rules.includes('GEOSITE,telegram,SLAVE-SELECT'), 'telegram stays on SLAVE-SELECT when nothing to balance')
+})
