@@ -245,6 +245,30 @@ function buildTunSection(settings: GeneratorSettings): Record<string, unknown> {
   }
 }
 
+// Telegram data-center ranges (official https://core.telegram.org/resources/cidr.txt).
+// MTProto to these DCs is Telegram's own obfuscated protocol on :443, NOT real TLS —
+// the sniffer can never recover an SNI, so it retries and stalls («All sniffing sniff
+// failed» / «Skip sniffing … due to multiple failures») on every connection before
+// giving up. Telegram media opens many parallel connections, so that per-connection
+// sniff-wait compounds into visibly slow media loading. These IPs are already routed
+// correctly by GeoIP(telegram); sniffing them buys nothing, so skip it outright.
+const TELEGRAM_SNIFF_SKIP_CIDRS = [
+  '91.105.192.0/23',
+  '91.108.4.0/22',
+  '91.108.8.0/22',
+  '91.108.12.0/22',
+  '91.108.16.0/22',
+  '91.108.20.0/22',
+  '91.108.56.0/22',
+  '95.161.64.0/20',
+  '149.154.160.0/20',
+  '2001:67c:4e8::/48',
+  '2001:b28:f23c::/48',
+  '2001:b28:f23d::/48',
+  '2001:b28:f23f::/48',
+  '2001:b28:f242::/48',
+]
+
 function buildSnifferSection(): Record<string, unknown> {
   return {
     enable: true,
@@ -264,6 +288,8 @@ function buildSnifferSection(): Record<string, unknown> {
       '+.apple.com',
       'Mijia Cloud',
     ],
+    // Don't even attempt to sniff Telegram DC connections (see const above).
+    'skip-dst-address': TELEGRAM_SNIFF_SKIP_CIDRS,
   }
 }
 

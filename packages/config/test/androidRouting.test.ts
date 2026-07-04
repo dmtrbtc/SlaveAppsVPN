@@ -137,6 +137,20 @@ test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8
   assert.deepEqual(httpPorts, [80], 'HTTP sniff ports must be exactly [80]')
 })
 
+test('perf: sniffer skips Telegram DC ranges (MTProto on :443 is not TLS → no sniff-stall on media)', () => {
+  const doc = require('js-yaml').load(gen('smart')) as {
+    sniffer?: { 'skip-dst-address'?: string[] }
+  }
+  const skip = doc.sniffer?.['skip-dst-address']
+  assert.ok(Array.isArray(skip) && skip.length > 0, 'skip-dst-address present')
+  // Telegram media/DC connections hit raw IPs on :443 with an obfuscated protocol —
+  // the sniffer can never recover an SNI and stalls per-connection. These ranges are
+  // already routed by GeoIP(telegram); skipping the sniff removes the media slowdown.
+  assert.ok(skip.includes('149.154.160.0/20'), 'core Telegram DC v4 range skipped')
+  assert.ok(skip.includes('91.108.4.0/22'), 'Telegram DC v4 range skipped')
+  assert.ok(skip.some(c => c.startsWith('2001:67c:4e8')), 'Telegram DC v6 range skipped')
+})
+
 test('R2: roscomvpn-default carries curated RU-direct (banks/gov/payments) DIRECT, before geoip:RU', () => {
   // «Обход» resolves to roscomvpn-default on both platforms. Banks/gov on foreign
   // CDNs leak into the tunnel under fake-ip unless an explicit DIRECT domain rule
