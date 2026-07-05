@@ -6,6 +6,11 @@ import { sendToRenderer } from '../window'
 import { getLogger } from '../logger'
 import { getSettingsStore } from './SettingsStore'
 
+// Deterministic GitHub asset base — every release folder (stable and dev) holds
+// its own latest.yml + Setup .exe. Mirrors RELEASE_DOWNLOAD_BASE in the renderer's
+// update-check.ts.
+const RELEASE_DOWNLOAD_BASE = 'https://github.com/dmtrbtc/SlaveAppsVPN/releases/download'
+
 export class UpdateService {
   private state: UpdateState = 'idle'
   private availableVersion: string | null = null
@@ -97,13 +102,29 @@ export class UpdateService {
     // available for an explicit in-app download/install if wired later.
   }
 
-  async checkForUpdates(): Promise<{ hasUpdate: boolean; version: string | null }> {
+  async checkForUpdates(tag?: string): Promise<{ hasUpdate: boolean; version: string | null }> {
     if (!app.isPackaged) {
       return { hasUpdate: false, version: null }
     }
     this.state = 'checking'
     this.error = null
     try {
+      // When the renderer passes the release TAG that the GitHub-Releases banner
+      // already resolved, point electron-updater at that exact release folder.
+      // Every release (stable AND dev) ships its own `latest.yml` (version = tag)
+      // + the Setup .exe in the same folder, so the updater's check always agrees
+      // with the banner — no more silent browser fallback when the default GitHub
+      // feed / channel resolves to a different (or no) version. allowPrerelease so
+      // a -dev tag in that latest.yml is accepted; channel 'latest' because the
+      // per-release folder only ever contains latest.yml.
+      if (tag) {
+        autoUpdater.channel = 'latest'
+        autoUpdater.allowPrerelease = true
+        autoUpdater.setFeedURL({ provider: 'generic', url: `${RELEASE_DOWNLOAD_BASE}/${tag}/` })
+      } else {
+        // No tag → restore the app-configured channel feed (GitHub provider).
+        this.applyChannel()
+      }
       const result = await autoUpdater.checkForUpdates()
       const hasUpdate = result !== null && result.updateInfo.version !== app.getVersion()
       return {

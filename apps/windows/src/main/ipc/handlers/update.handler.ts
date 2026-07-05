@@ -20,14 +20,18 @@ export function registerUpdateHandlers(): void {
     return okResult(undefined as void)
   })
 
-  handleIpc(IpcChannel.UPDATE_CHECK, z.undefined().or(z.null()).or(z.object({})), async () => {
-    try {
-      const result = await getUpdateService().checkForUpdates()
-      return okResult(result)
-    } catch (err) {
-      return errResult('UPDATE_CHECK_FAILED', err instanceof Error ? err.message : String(err))
-    }
-  })
+  handleIpc(
+    IpcChannel.UPDATE_CHECK,
+    z.undefined().or(z.null()).or(z.object({ tag: z.string().optional() })),
+    async (payload) => {
+      try {
+        const result = await getUpdateService().checkForUpdates(payload?.tag)
+        return okResult(result)
+      } catch (err) {
+        return errResult('UPDATE_CHECK_FAILED', err instanceof Error ? err.message : String(err))
+      }
+    },
+  )
 
   handleIpc(IpcChannel.UPDATE_DOWNLOAD, z.undefined().or(z.null()).or(z.object({})), async () => {
     try {

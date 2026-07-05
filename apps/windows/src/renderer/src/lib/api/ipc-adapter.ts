@@ -1,6 +1,7 @@
 import type {
   SlaveVPNBridge,
   UpdateSetChannelPayload,
+  UpdateCheckRequest,
   VpnSetProxyPayload,
   BalancerSetEnabledPayload,
   BalancerSetModePayload,
@@ -315,8 +316,8 @@ export const subscriptionsApi = {
 }
 
 export const updateApi = {
-  check: () =>
-    unwrap(requireBridge().update.check()),
+  check: (payload?: UpdateCheckRequest) =>
+    unwrap(requireBridge().update.check(payload)),
   download: () =>
     unwrap(requireBridge().update.download()),
   install: () =>

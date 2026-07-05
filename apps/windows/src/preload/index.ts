@@ -34,6 +34,7 @@ import type {
   UpdateAvailablePayload,
   UpdateProgressPayload,
   UpdateSetChannelPayload,
+  UpdateCheckRequest,
   NotificationPayload,
   VpnHealthPayload,
   RuntimeEvent,
@@ -241,8 +242,8 @@ const bridge: SlaveVPNBridge = {
   },
 
   update: {
-    check: () =>
-      invoke(IpcChannel.UPDATE_CHECK),
+    check: (payload?: UpdateCheckRequest) =>
+      invoke(IpcChannel.UPDATE_CHECK, payload),
 
     fetchReleases: () =>
       invoke(IpcChannel.UPDATE_FETCH_RELEASES),

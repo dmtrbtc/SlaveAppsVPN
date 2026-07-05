@@ -3,6 +3,7 @@ import type { ProxyEntry } from '@slave-vpn/config'
 import type { ConfigSource } from '@slave-vpn/provider'
 import { getSubscriptionStore } from './SubscriptionStore'
 import { getSettingsStore } from './SettingsStore'
+import { getConfigSourceService } from './impl/ConfigSourceService'
 import { SubscriptionUrlSource } from './impl/sources/SubscriptionUrlSource'
 import { SingleProxySource } from './impl/sources/SingleProxySource'
 import { RemnawaveKeySource } from './impl/sources/RemnawaveKeySource'
@@ -100,19 +101,50 @@ export class SubscriptionAggregatorService {
     }
   }
 
+  // Fetch the legacy/cabinet ConfigSource (single source: the personal cabinet
+  // import, or a manually-pasted «Подписка-URL») as an aggregation input, so its
+  // nodes coexist with the multi-subscription store instead of being replaced.
+  // Cabinet writes ONLY to ConfigSourceService; the store holds third-party keys —
+  // without this merge, adding an external key made the cabinet's servers vanish.
+  private async fetchConfigSourceResult(): Promise<{ entry: { id: string; name: string }; proxies: ProxyEntry[]; error: string | null } | null> {
+    const cfg = getConfigSourceService()
+    const meta = cfg.getMeta()
+    if (!meta) return null
+    const name = meta.displayName || 'Личный кабинет'
+    const entry = { id: '__config-source__', name }
+    const source = cfg.createConfigSource()
+    if (!source) return { entry, proxies: [], error: 'Cannot create cabinet config source' }
+    try {
+      const rawYaml = await source.fetchYaml()
+      let workingYaml = rawYaml
+      try {
+        workingYaml = normalizeSubscriptionContent(rawYaml).yaml
+      } catch { /* already clash YAML */ }
+      return { entry, proxies: parseProxiesFromYaml(workingYaml), error: null }
+    } catch (err) {
+      return { entry, proxies: [], error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   // Fetch+merge everything that's enabled. Returns the aggregated YAML and a snapshot.
   async fetchAggregatedYaml(): Promise<AggregatedSnapshot> {
     const log = getLogger()
     const entries = getSubscriptionStore().list().filter(e => e.enabled)
-    if (entries.length === 0) {
-      throw new Error('No enabled subscriptions')
-    }
 
-    const results = await Promise.all(
+    const storeResults = await Promise.all(
       entries.map(e =>
         this.fetchOne(e).then(r => ({ entry: { id: e.id, name: e.name }, proxies: r.proxies, error: r.error })),
       ),
     )
+
+    // Prepend the cabinet/legacy config source so its nodes lead the list and are
+    // merged in alongside the third-party subscriptions (dedup by aggregateProxies).
+    const cabinet = await this.fetchConfigSourceResult()
+    const results = cabinet ? [cabinet, ...storeResults] : storeResults
+
+    if (results.length === 0) {
+      throw new Error('No enabled subscriptions')
+    }
 
     // Shared merge kernel (dedup by type/server/port/identity/flow/sni/pbk,
     // uniquify names, tag slave-source, soft-cap) lives in @slave-vpn/core.
@@ -127,7 +159,7 @@ export class SubscriptionAggregatorService {
       builtAt: Date.now(),
     }
     this.lastSnapshot = snapshot
-    log.info({ totalProxies: deduped.length, sources: entries.length, warnings: warnings.length }, 'Aggregator: snapshot built')
+    log.info({ totalProxies: deduped.length, sources: results.length, warnings: warnings.length }, 'Aggregator: snapshot built')
     return snapshot
   }
 

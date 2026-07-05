@@ -56,8 +56,18 @@ export function useInAppUpdate(info: UpdateInfo | null, channel: UpdateChannel) 
     setPhase('checking')
     try {
       await updateApi.setChannel({ channel })
-      const res = await updateApi.check()
-      if (!res.hasUpdate) { openUpdate(info); setPhase('idle'); return } // updater disagrees → browser
+      // Pass the release TAG the GitHub banner already resolved so the updater
+      // checks that exact release folder → its verdict always agrees with the
+      // banner. No silent browser hop when they'd otherwise disagree.
+      const res = await updateApi.check({ tag: info.version })
+      if (!res.hasUpdate) {
+        // Updater genuinely sees nothing newer (already on latest, or the release
+        // feed isn't ready yet). Don't yank the user into a browser — report an
+        // honest state; they can retry.
+        setError('Обновление недоступно — уже установлена последняя версия')
+        setPhase('error')
+        return
+      }
       const offProgress = events.onUpdateProgress((p) => setProgress(Math.round(p.percent)))
       const offDownloaded = events.onUpdateDownloaded(() => setPhase('ready'))
       cleanupRef.current = () => { offProgress(); offDownloaded() }

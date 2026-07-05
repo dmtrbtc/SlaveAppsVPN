@@ -545,6 +545,17 @@ export interface UpdateCheckPayload {
   version: string | null
 }
 
+/**
+ * Optional request for UPDATE_CHECK. When `tag` is given (the release tag the
+ * GitHub-Releases banner already resolved, e.g. "v0.2.40"), the main process
+ * points electron-updater at that exact release folder so its check agrees with
+ * the banner — otherwise the two can disagree and the button falls back to a
+ * browser. Omit `tag` for the default (app-configured feed) check.
+ */
+export interface UpdateCheckRequest {
+  tag?: string
+}
+
 export interface UpdateSetChannelPayload {
   channel: UpdateChannel
 }
@@ -1071,7 +1082,7 @@ export interface SlaveVPNBridge {
     reset: () => Promise<SafeModeResetResult>
   }
   update: {
-    check: () => Promise<UpdateCheckResult>
+    check: (payload?: UpdateCheckRequest) => Promise<UpdateCheckResult>
     // Fetches the GitHub Releases JSON from the MAIN process (renderer CSP
     // `connect-src 'none'` blocks api.github.com from the renderer). Returns the
     // raw release array, or [] on any failure. Never throws.
