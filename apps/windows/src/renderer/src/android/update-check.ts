@@ -10,7 +10,10 @@ import { CapacitorHttp, Capacitor } from '@capacitor/core'
  * user taps to open the APK. Uses CapacitorHttp on device (no CORS, no UA loss).
  */
 
-const RELEASES_API = 'https://api.github.com/repos/dmtrbtc/SlaveAppsVPN/releases?per_page=5'
+// ATOM feed (github.com), NOT api.github.com. The REST API is capped at 60
+// req/hour PER IP; behind the shared VPN exit IP that's exhausted collectively →
+// 403 → no update ever surfaces. The atom feed isn't rate-limited that way.
+const RELEASES_ATOM = 'https://github.com/dmtrbtc/SlaveAppsVPN/releases.atom'
 // Deterministic GitHub asset download base — the APK asset name is fixed by CI.
 const RELEASE_DOWNLOAD_BASE = 'https://github.com/dmtrbtc/SlaveAppsVPN/releases/download'
 // A release published more than this after our build is treated as "newer"
@@ -121,24 +124,55 @@ export async function getInstalledVersionNotes(): Promise<{ version: string; not
   }
 }
 
+/**
+ * Parse GitHub's releases.atom into GhRelease-shaped objects. The feed carries no
+ * prerelease/draft flags or assets: `prerelease` is inferred from the tag suffix
+ * (-dev/-rc/-alpha/-beta, matching our channel policy), `draft` is always false
+ * (only published releases appear), and `assets` is empty (checkForUpdate derives
+ * the per-platform download URL from the tag). Mirror of the Node parser in
+ * update.handler.ts.
+ */
+export function parseAtomReleases(xml: string): GhRelease[] {
+  const decode = (s: string): string =>
+    s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+  const out: GhRelease[] = []
+  for (const entry of xml.split('<entry>').slice(1)) {
+    const tag = /<title>([^<]+)<\/title>/.exec(entry)?.[1]?.trim()
+    if (!tag) continue
+    const updated = /<updated>([^<]+)<\/updated>/.exec(entry)?.[1]?.trim() ?? ''
+    const href = /<link[^>]*href="([^"]+)"/.exec(entry)?.[1] ?? ''
+    const content = /<content[^>]*>([\s\S]*?)<\/content>/.exec(entry)?.[1] ?? ''
+    out.push({
+      tag_name: tag,
+      name: tag,
+      body: decode(content).replace(/<[^>]+>/g, '').trim(),
+      html_url: href || `https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/${tag}`,
+      draft: false,
+      prerelease: /-(?:dev|rc|alpha|beta)/i.test(tag),
+      published_at: updated,
+      assets: [],
+    })
+  }
+  return out
+}
+
 async function fetchReleases(): Promise<GhRelease[]> {
-  const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'SlaveVPN-update' }
+  const headers = { 'User-Agent': 'SlaveVPN-update' }
   if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({ url: RELEASES_API, headers, readTimeout: 15000, connectTimeout: 15000 } as Parameters<typeof CapacitorHttp.get>[0])
-    const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
-    return Array.isArray(data) ? data as GhRelease[] : []
+    const res = await CapacitorHttp.get({ url: RELEASES_ATOM, headers, readTimeout: 15000, connectTimeout: 15000 } as Parameters<typeof CapacitorHttp.get>[0])
+    return parseAtomReleases(typeof res.data === 'string' ? res.data : String(res.data ?? ''))
   }
   // Electron (Windows): the renderer CSP is `connect-src 'none'`, so a direct
-  // fetch to api.github.com is blocked. Proxy the request through the main
-  // process, which is not bound by the renderer CSP.
+  // fetch is blocked. The main process fetches + parses the atom feed and returns
+  // the ready array (it's not bound by the renderer CSP).
   const bridge = (window as unknown as { slaveVPN?: { update?: { fetchReleases?: () => Promise<unknown[]> } } }).slaveVPN
   if (bridge?.update?.fetchReleases) {
     const data = await bridge.update.fetchReleases()
     return Array.isArray(data) ? data as GhRelease[] : []
   }
   // Dev fallback (no preload bridge, e.g. plain browser): try a direct fetch.
-  const res = await fetch(RELEASES_API, { headers })
-  return res.ok ? (await res.json()) as GhRelease[] : []
+  const res = await fetch(RELEASES_ATOM, { headers })
+  return res.ok ? parseAtomReleases(await res.text()) : []
 }
 
 /**
@@ -181,21 +215,23 @@ export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise
       ? latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
       : (latest.assets.find(a => /setup.*\.exe$/i.test(a.name)) ?? latest.assets.find(a => a.name.toLowerCase().endsWith('.exe')))
 
-    // Android: the APK asset name is FIXED by CI (SlaveAppsVPN-Android.apk), so
-    // when the asset scan comes up empty — the release is published but the APK is
-    // still uploading (a several-minute window after a tag push), or the API
-    // response omitted it — derive the deterministic GitHub download URL from the
-    // tag instead of falling back to the browser. Keeps «Обновить» downloading
-    // in-app; a not-yet-uploaded APK just 404s and the user retries.
-    const derivedApkUrl = native && !asset && latest.tag_name
-      ? `${RELEASE_DOWNLOAD_BASE}/${latest.tag_name}/SlaveAppsVPN-Android.apk`
+    // Asset names are FIXED by CI, so when the scan comes up empty — the atom feed
+    // carries no assets at all, or the release is published while the asset is
+    // still uploading — derive the deterministic GitHub download URL from the tag
+    // (Android APK / Windows Setup) instead of dropping to the browser. Keeps
+    // «Обновить» in-app; a not-yet-uploaded asset just 404s and the user retries.
+    const tag = latest.tag_name
+    const derivedUrl = tag
+      ? native
+        ? `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Android.apk`
+        : `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Setup-${tag}.exe`
       : null
 
     return {
       version: latest.tag_name || latest.name || 'новая версия',
       notes: latest.body ?? '',
       releaseUrl: latest.html_url,
-      downloadUrl: asset?.browser_download_url ?? derivedApkUrl,
+      downloadUrl: asset?.browser_download_url ?? derivedUrl,
       publishedAt,
     }
   } catch {
