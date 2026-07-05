@@ -9,6 +9,7 @@ import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { getUpdateService } from './services/UpdateService'
 import { getSafeModeManager } from './services/SafeModeManager'
 import { startupTracker } from './startup-tracker'
+import { registerDeepLinkProtocol, captureLaunchDeepLink, dispatchDeepLink } from './deeplink'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
 app.commandLine.appendSwitch('disable-http-cache')
@@ -17,6 +18,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
   process.exit(0)
 }
+
+// Register the slavevpn:// custom protocol (subscription import deep links).
+registerDeepLinkProtocol()
 
 // ─── Crash safety ─────────────────────────────────────────────────────────────
 
@@ -111,9 +115,14 @@ app.whenReady().then(async () => {
       logger.error({ err, phase: 'bootstrap_failed' }, 'Bootstrap failed — app running in degraded mode')
     })
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
     showMainWindow()
+    // A `slavevpn://import/...` link launched a second instance — forward it.
+    dispatchDeepLink(argv)
   })
+
+  // Cold start: stash a launch deep link for the renderer to pull once mounted.
+  captureLaunchDeepLink(process.argv)
 
   app.on('activate', () => {
     showMainWindow()

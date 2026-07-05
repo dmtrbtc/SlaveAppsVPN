@@ -70,6 +70,7 @@ export function installStubBridge(reason: string): void {
       getStatus: async () => ok({ state: 'idle' }),
       setChannel: allError,
     },
+    deeplink: { getPending: async () => ok({ url: null }) },
     runtime: { restart: allError },
     cache: { clear: async () => ok(undefined) },
     dns: {
@@ -122,6 +123,7 @@ export function installStubBridge(reason: string): void {
       onSubscriptionsChanged: () => () => undefined,
       onProfilesChanged: () => () => undefined,
       onGeoUpdaterState: () => () => undefined,
+      onDeepLinkImport: () => () => undefined,
     },
     auth: {
       loginEmail: allError,

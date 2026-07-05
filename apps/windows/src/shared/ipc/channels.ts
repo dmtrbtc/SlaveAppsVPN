@@ -159,6 +159,10 @@ export const IpcChannel = {
   SUBSCRIPTIONS_DETECT_CLIPBOARD: 'subscriptions:detectClipboard',
   EVENT_SUBSCRIPTIONS_CHANGED: 'event:subscriptions:changed',
 
+  // Deep link (slavevpn://import/...)
+  DEEPLINK_GET_PENDING: 'deeplink:getPending',
+  EVENT_DEEPLINK_IMPORT: 'event:deeplink:import',
+
   // Split tunnel
   SPLIT_GET_PROCESSES: 'split:getProcesses',
   SPLIT_SET_PROCESS_LIST: 'split:setProcessList',
@@ -270,6 +274,7 @@ export type IpcInvokeChannel = (typeof IpcChannel)[
   | 'SUBSCRIPTIONS_REFRESH'
   | 'SUBSCRIPTIONS_REFRESH_ALL'
   | 'SUBSCRIPTIONS_DETECT_CLIPBOARD'
+  | 'DEEPLINK_GET_PENDING'
   | 'SPLIT_GET_PROCESSES'
   | 'SPLIT_SET_PROCESS_LIST'
   | 'SPLIT_GET_PROCESS_LIST'

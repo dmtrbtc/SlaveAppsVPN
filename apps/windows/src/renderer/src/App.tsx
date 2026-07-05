@@ -7,6 +7,7 @@ import { useAuthStore } from './stores/auth.store'
 import { useVpnStore } from './stores/vpn.store'
 import { useUIStore, type ThemeMode } from './stores/ui.store'
 import { useDiagnosticsStore } from './stores/diagnostics.store'
+import { useDeepLinkImport } from './hooks/useDeepLinkImport'
 import { Spinner } from './components/ui/spinner'
 
 function useTheme(mode: ThemeMode) {
@@ -35,6 +36,9 @@ function Bootstrap({ children }: { children: React.ReactNode }) {
   const { notify } = useUIStore()
   const { subscribeToEvents: subscribeToDiagnostics } = useDiagnosticsStore()
   const [timedOut, setTimedOut] = useState(false)
+
+  // Handle slavevpn://import/... deep links (subscription import from a web page).
+  useDeepLinkImport()
 
   useEffect(() => {
     void bootstrap()

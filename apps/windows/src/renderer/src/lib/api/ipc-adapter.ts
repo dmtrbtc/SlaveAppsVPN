@@ -328,6 +328,11 @@ export const updateApi = {
     unwrap(requireBridge().update.setChannel(payload)),
 }
 
+export const deeplinkApi = {
+  getPending: () =>
+    unwrap(requireBridge().deeplink.getPending()),
+}
+
 export const events = {
   onVpnStatus: (...args: Parameters<SlaveVPNBridge['events']['onVpnStatus']>) =>
     getBridge()?.events.onVpnStatus(...args) ?? NOOP_UNSUB,
@@ -363,4 +368,6 @@ export const events = {
     getBridge()?.events.onProfilesChanged(...args) ?? NOOP_UNSUB,
   onGeoUpdaterState: (...args: Parameters<SlaveVPNBridge['events']['onGeoUpdaterState']>) =>
     getBridge()?.events.onGeoUpdaterState(...args) ?? NOOP_UNSUB,
+  onDeepLinkImport: (...args: Parameters<SlaveVPNBridge['events']['onDeepLinkImport']>) =>
+    getBridge()?.events.onDeepLinkImport(...args) ?? NOOP_UNSUB,
 }

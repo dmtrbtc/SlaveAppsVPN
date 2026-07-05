@@ -91,6 +91,10 @@ export async function registerAllHandlers(): Promise<void> {
       registerUpdateHandlers()
       log.debug('Update IPC handlers registered')
     }),
+    import('./handlers/deeplink.handler').then(({ registerDeepLinkHandlers }) => {
+      registerDeepLinkHandlers()
+      log.debug('Deep link IPC handlers registered')
+    }),
     import('./handlers/safe-mode.handler').then(({ registerSafeModeHandlers }) => {
       registerSafeModeHandlers()
       log.debug('Safe mode IPC handlers registered')

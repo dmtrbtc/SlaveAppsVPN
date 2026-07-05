@@ -264,6 +264,11 @@ const bridge: SlaveVPNBridge = {
       invoke(IpcChannel.UPDATE_SET_CHANNEL, payload),
   },
 
+  deeplink: {
+    getPending: () =>
+      invoke(IpcChannel.DEEPLINK_GET_PENDING),
+  },
+
   runtime: {
     restart: () =>
       invoke(IpcChannel.RUNTIME_RESTART),
@@ -442,6 +447,9 @@ const bridge: SlaveVPNBridge = {
 
     onGeoUpdaterState: (callback: (state: GeoUpdaterState) => void) =>
       on<GeoUpdaterState>(IpcChannel.EVENT_GEO_UPDATER_STATE, callback),
+
+    onDeepLinkImport: (callback: (url: string) => void) =>
+      on<string>(IpcChannel.EVENT_DEEPLINK_IMPORT, callback),
   },
 }
 

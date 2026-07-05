@@ -215,6 +215,14 @@ jobs:
             sed -i 's|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />|' AndroidManifest.xml
           fi
 
+          # Deep link: slavevpn://import/<url> → open the app (subscription import).
+          # Inserted into the launcher activity (MainActivity); @capacitor/app then
+          # surfaces the URL to the renderer (useDeepLinkImport). 0,/…/ = first
+          # </activity> only (MainActivity), leaving service/receiver blocks alone.
+          if ! grep -q 'android:scheme="slavevpn"' AndroidManifest.xml; then
+            sed -i '0,/<\/activity>/s||            <intent-filter android:autoVerify="false">\n                <action android:name="android.intent.action.VIEW" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <category android:name="android.intent.category.BROWSABLE" />\n                <data android:scheme="slavevpn" android:host="import" />\n            </intent-filter>\n        </activity>|' AndroidManifest.xml
+          fi
+
       - name: Add Kotlin coroutines + androidx-core + libbox dependencies
         working-directory: apps/android/android/app
         run: |

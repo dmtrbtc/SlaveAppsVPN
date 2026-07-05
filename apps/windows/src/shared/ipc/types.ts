@@ -560,6 +560,12 @@ export interface UpdateSetChannelPayload {
   channel: UpdateChannel
 }
 
+/** A pending `slavevpn://import/...` deep link captured at cold start (or null). */
+export interface DeepLinkPendingPayload {
+  url: string | null
+}
+export type DeepLinkGetPendingResult = IpcResult<DeepLinkPendingPayload>
+
 export type UpdateGetStatusResult = IpcResult<UpdateStatus>
 export type UpdateCheckResult = IpcResult<UpdateCheckPayload>
 export type UpdateDownloadResult = IpcResult<void>
@@ -1081,6 +1087,12 @@ export interface SlaveVPNBridge {
     getStatus: () => Promise<SafeModeGetStatusResult>
     reset: () => Promise<SafeModeResetResult>
   }
+  deeplink: {
+    // Cold-start pull: the renderer asks for a `slavevpn://import/...` link that
+    // launched the app before the UI was ready. Warm links arrive via
+    // events.onDeepLinkImport instead.
+    getPending: () => Promise<DeepLinkGetPendingResult>
+  }
   update: {
     check: (payload?: UpdateCheckRequest) => Promise<UpdateCheckResult>
     // Fetches the GitHub Releases JSON from the MAIN process (renderer CSP
@@ -1173,5 +1185,8 @@ export interface SlaveVPNBridge {
     onSubscriptionsChanged: (callback: (entries: SubscriptionEntry[]) => void) => () => void
     onProfilesChanged: (callback: (state: { profiles: AppProfile[]; activeProfileId: string | null }) => void) => () => void
     onGeoUpdaterState: (callback: (state: GeoUpdaterState) => void) => () => void
+    // A warm `slavevpn://import/...` deep link (app already running). Payload is
+    // the raw URL; the renderer parses it with parseImportDeepLink.
+    onDeepLinkImport: (callback: (url: string) => void) => () => void
   }
 }

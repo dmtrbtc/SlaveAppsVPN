@@ -845,6 +845,7 @@ export function installAndroidBridge(): void {
       onProfilesChanged: (cb: (s: { profiles: unknown[]; activeProfileId: string | null }) => void) =>
         subscribeProfiles(cb as (s: ReturnType<typeof listProfiles>) => void),
       onGeoUpdaterState: () => () => undefined,
+      onDeepLinkImport: () => () => undefined,
     },
 
     // ─── configSource — wired to the subscription store ──────────────────────
@@ -991,6 +992,11 @@ export function installAndroidBridge(): void {
       install: notImplemented('update.install'),
       getStatus: async () => ok({ state: 'idle' } as never),
       setChannel: notImplemented('update.setChannel'),
+    },
+    // Android handles deep links via @capacitor/app (App.getLaunchUrl /
+    // appUrlOpen) in useDeepLinkImport — this IPC path is unused on mobile.
+    deeplink: {
+      getPending: async () => ok({ url: null } as never),
     },
     runtime: {
       restart: notImplemented('runtime.restart'),

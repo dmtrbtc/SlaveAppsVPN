@@ -22,6 +22,48 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
+/**
+ * Parsed `slavevpn://import/...` deep link — the subscription/proxy input and
+ * which config-source type to add it as.
+ */
+export interface ParsedImportLink {
+  input: string
+  /** 'single-proxy' for a vless:// etc. URI, 'subscription-url' for an http(s) list. */
+  type: 'single-proxy' | 'subscription-url'
+}
+
+// Standalone single-node URIs (added as one proxy) vs a subscription list URL.
+const IMPORT_PROXY_URI_RE = /^(?:vless|vmess|trojan|ss|ssr|hysteria2?|tuic|wireguard|wg):\/\//i
+
+/**
+ * Parse the app's import deep link. Accepts both the path form and the query
+ * form so a web page can use whichever is convenient:
+ *   slavevpn://import/<encodeURIComponent(subUrl)>
+ *   slavevpn://import?url=<encodeURIComponent(subUrl)>
+ * The payload is URL-decoded (percent-encoding is recommended so a subscription
+ * URL's own `?`/`&` survive) and must be an http(s) subscription URL or a
+ * supported proxy URI; anything else returns null. Never throws.
+ */
+export function parseImportDeepLink(raw: unknown): ParsedImportLink | null {
+  if (typeof raw !== 'string') return null
+  const s = raw.trim()
+  if (!/^slavevpn:\/\/import\b/i.test(s)) return null
+  let rest = s.slice('slavevpn://import'.length)
+  let payload: string
+  const q = rest.search(/\?url=/i)
+  if (q !== -1) payload = rest.slice(q + '?url='.length)
+  else if (rest.startsWith('/')) payload = rest.slice(1)
+  else payload = rest
+  if (!payload) return null
+  let decoded = payload
+  try { decoded = decodeURIComponent(payload) } catch { /* keep raw on malformed % */ }
+  decoded = decoded.trim()
+  if (!decoded) return null
+  if (IMPORT_PROXY_URI_RE.test(decoded)) return { input: decoded, type: 'single-proxy' }
+  if (/^https?:\/\//i.test(decoded)) return { input: decoded, type: 'subscription-url' }
+  return null
+}
+
 export function retry<T>(
   fn: () => Promise<T>,
   attempts: number,
