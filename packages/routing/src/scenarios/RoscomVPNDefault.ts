@@ -8,9 +8,9 @@ import type { RoutingScenario } from './types'
  * RoscomVPN Default — translated from hydraponique/roscomvpn-routing
  * MIHOMO/default.yaml. RU/BY-optimised:
  *   • REJECT  — ads, Windows telemetry, public torrent DHT
- *   • PROXY   — YouTube, Telegram, GitHub, Google Play, twitch-ads
+ *   • PROXY   — YouTube, Telegram, GitHub, Google Play, twitch-ads, Twitch
  *   • DIRECT  — RU/BY domains, banks, gaming platforms (Steam/EpicGames/Riot/
- *              EFT/Faceit), Microsoft, Apple, Twitch, Pinterest, RU CDNs
+ *              EFT/Faceit), Microsoft, Apple, Pinterest, RU CDNs
  *   • final   — PROXY (everything else)
  *
  * Categories that exist in the standard MetaCubeX/V2Ray geosite.dat are
@@ -52,7 +52,11 @@ function buildRules(): readonly RoutingRule[] {
   // ─── PROXY (the blocked-in-RU bunch) ────────────────────────────────────
   // Priority 300-399
   p = 300
-  for (const cat of ['youtube', 'telegram', 'github', 'google-play', 'twitch-ads']) {
+  // Twitch moved DIRECT→PROXY: in RU it's now DPI-throttled and its DNS is
+  // poisoned, so the DIRECT path fails to even resolve (device log: mass
+  // «GeoSite/twitch … dns resolve failed»). The geosite:twitch category covers
+  // twitch.tv/ttvnw.net/live-video.net/jtvnw.net, so this tunnels all of Twitch.
+  for (const cat of ['youtube', 'telegram', 'github', 'google-play', 'twitch-ads', 'twitch']) {
     rules.push({
       id: nextId(`geosite:${cat}:proxy`),
       target: { type: 'geosite', value: cat },
@@ -81,7 +85,6 @@ function buildRules(): readonly RoutingRule[] {
     'riot',
     'escapefromtarkov',
     'faceit',
-    'twitch',
     'pinterest',
     'category-ru',
     'whitelist',

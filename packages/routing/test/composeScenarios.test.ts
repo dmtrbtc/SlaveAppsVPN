@@ -24,6 +24,13 @@ test('roscomvpn-default is proxy-default (foreign tunnels, RU direct)', () => {
   assert.ok(policy.providerRules.length > 50, 'carries the curated RU-direct + bypass rules')
 })
 
+test('roscomvpn-default: Twitch is PROXY, not DIRECT (RU DPI-throttles + DNS-poisons it)', () => {
+  const { policy } = composeScenarios(['roscomvpn-default'])
+  const twitch = policy.providerRules.filter(r => r.target.type === 'geosite' && r.target.value === 'twitch')
+  assert.ok(twitch.length > 0, 'geosite:twitch rule present')
+  assert.ok(twitch.every(r => r.action === 'proxy'), 'geosite:twitch must tunnel (proxy), not go DIRECT')
+})
+
 test('smart-russia-bypass is direct-default (only blocked/messengers tunnel)', () => {
   const { policy } = composeScenarios(['smart-russia-bypass'])
   assert.equal(policy.defaultAction, 'direct')

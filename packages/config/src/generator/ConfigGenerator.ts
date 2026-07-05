@@ -101,6 +101,13 @@ const URL_TEST_INTERVAL = 60
 // lazy=true skips health checks while the group isn't actively carrying traffic.
 const URL_TEST_TOLERANCE = 50
 const URL_TEST_LAZY = true
+// SLAVE-BALANCE health-check is tighter than the url-test groups: a load-balance
+// round-robins to EVERY member, so a dead node (a down cabinet server, or a flaky
+// third-party node merged in from a second subscription) keeps eating Telegram
+// connections until health-check marks it down. A 30s interval + a short 3s
+// timeout drops dead members quickly so balancing stays among live nodes.
+const BALANCE_HEALTH_INTERVAL = 30
+const BALANCE_HEALTH_TIMEOUT = 3000
 
 const dnsCompiler = new MihomoDnsCompiler()
 const ruleCompiler = new MihomoRuleCompiler()
@@ -145,11 +152,14 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       type: 'load-balance',
       proxies: proxyNames,
       // round-robin spreads each new connection across nodes (throughput for
-      // Telegram's parallel media streams). The health-check url/interval let
-      // mihomo skip a dead node (e.g. the Slave-FR seen failing at 65535ms).
+      // Telegram's parallel media streams). A tight health-check (30s + 3s
+      // timeout) drops dead members fast so balancing stays among LIVE nodes —
+      // without it a down cabinet node or a flaky third-party node (merged from a
+      // second subscription) keeps timing out Telegram connections.
       strategy: 'round-robin',
       url: URL_TEST_URL,
-      interval: URL_TEST_INTERVAL,
+      interval: BALANCE_HEALTH_INTERVAL,
+      timeout: BALANCE_HEALTH_TIMEOUT,
       lazy: URL_TEST_LAZY,
     } as ParsedProxyGroup] : []),
   ]
