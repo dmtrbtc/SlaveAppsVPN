@@ -100,6 +100,8 @@ Validated on a physical ARM64 Android 16 device:
 - Wi-Fi/mobile hand-off, foreground notification and Quick Settings tile
 - Activity recreation without interrupting the VPN
 - cold-process recovery from the cached config
+- kill-switch blackholing on core failure, cached recovery without network, and
+  clean TUN teardown after Disconnect
 
 Process recovery keeps a separate persisted `shouldRun` flag. A sticky-service
 restart with a null Intent restores only when that flag is true; opening a cold

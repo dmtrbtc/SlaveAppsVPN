@@ -55,6 +55,7 @@ interface NativeSlaveVpn {
   checkPermission(): Promise<{ granted: boolean }>
   requestPermission(): Promise<{ granted: boolean }>
   connect(options: { config: string; subscriptionId?: string; selectedProxy?: string; vpnMode?: VPNMode; splitMode?: string; splitApps?: string[]; killSwitch?: boolean }): Promise<void>
+  reconnectCached(): Promise<{ restored: boolean }>
   listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean; icon?: string }[] }>
   disconnect(): Promise<void>
   getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
@@ -183,6 +184,14 @@ async function connectNative(): Promise<void> {
       nativeLog('[connect] запрос разрешения VPN')
       const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
       if (!requested.granted) throw new Error('Android VPN permission denied')
+    }
+    // A core failure with Kill Switch enabled intentionally blackholes DNS and
+    // all other traffic. Re-fetching subscriptions here can never succeed, so a
+    // Retry must first ask native code to restore its last known-good config.
+    const cachedRecovery = await SlaveVpn.reconnectCached().catch(() => ({ restored: false }))
+    if (cachedRecovery.restored) {
+      nativeLog('[connect] kill-switch recovery: cached native config requested')
+      return
     }
     nativeLog('[connect] компиляция конфига mihomo…')
     const compiled = await compileMihomoConfigForAndroid({

@@ -63,6 +63,7 @@ export interface SlaveVpnPluginInterface {
 
   // VPN control
   connect(options?: SlaveVpnConnectOptions): Promise<void>
+  reconnectCached(): Promise<{ restored: boolean }>
   disconnect(): Promise<void>
   getStatus(): Promise<SlaveVpnStatusResult>
   getTraffic(): Promise<SlaveVpnTrafficResult>

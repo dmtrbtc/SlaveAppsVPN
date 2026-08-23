@@ -21,6 +21,9 @@ export class SlaveVpnPluginWeb extends WebPlugin implements SlaveVpnPluginInterf
   async connect(): ReturnType<SlaveVpnPluginInterface['connect']> {
     throw new Error(NOT_AVAILABLE)
   }
+  async reconnectCached(): ReturnType<SlaveVpnPluginInterface['reconnectCached']> {
+    return { restored: false }
+  }
   async disconnect(): ReturnType<SlaveVpnPluginInterface['disconnect']> {
     // No-op — safe to call when nothing is running
   }

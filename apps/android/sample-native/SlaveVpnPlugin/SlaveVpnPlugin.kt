@@ -226,6 +226,33 @@ class SlaveVpnPlugin : Plugin() {
         call.resolve()
     }
 
+    /**
+     * Recover from a kill-switch core failure without using the blocked network.
+     * The renderer normally recompiles subscriptions before connect; that cannot
+     * work while the blocking TUN intentionally has no DNS/core. Reuse the last
+     * known-good native config instead. Outside that exact state this is a no-op.
+     */
+    @PluginMethod
+    fun reconnectCached(call: PluginCall) {
+        if (SlaveVpnService.currentState != "error" || !SlaveVpnService.killSwitchEnabled) {
+            call.resolve(JSObject().put("restored", false))
+            return
+        }
+        if (SlaveVpnService.readCachedConfig(context) == null) {
+            call.resolve(JSObject().put("restored", false))
+            return
+        }
+        val serviceIntent = Intent(context, SlaveVpnService::class.java).apply {
+            action = SlaveVpnService.ACTION_RECONNECT
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            context.startForegroundService(serviceIntent)
+        } else {
+            context.startService(serviceIntent)
+        }
+        call.resolve(JSObject().put("restored", true))
+    }
+
     @PluginMethod
     fun getStatus(call: PluginCall) {
         val state = SlaveVpnService.currentState

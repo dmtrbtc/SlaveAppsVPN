@@ -384,6 +384,7 @@ class SlaveVpnService : VpnService() {
             val config = injectTunFd(configYaml, coreFd)
 
             coreJob = scope.launch {
+                var coreOwnsTunFd = false
                 try {
                     ensureGeoFiles()
                     ClashBridge.start(
@@ -391,6 +392,9 @@ class SlaveVpnService : VpnService() {
                         protect = { fd -> protect(fd) },
                         onLog = { level, message -> appendLog("[$level] $message") },
                     )
+                    // Parse/apply succeeded: ownership of the detached duplicate
+                    // now belongs to mihomo and Shutdown will close it.
+                    coreOwnsTunFd = true
                     // Apply the user's persisted server choice now that the
                     // SLAVE-SELECT group exists — otherwise mihomo defaults to
                     // SLAVE-AUTO (url-test) and ignores the selection.
@@ -415,6 +419,13 @@ class SlaveVpnService : VpnService() {
                     // Follow Wi-Fi↔mobile switches so the tunnel reconnects fast.
                     registerNetworkMonitor()
                 } catch (e: Exception) {
+                    if (!coreOwnsTunFd) {
+                        // Parse failures happen before mihomo opens the injected
+                        // descriptor. Without adopting + closing the detached dup,
+                        // Disconnect cannot tear down the kill-switch TUN and the
+                        // device remains permanently blackholed until process death.
+                        closeDetachedTunFd(coreFd)
+                    }
                     val msg = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
                     currentState = "error"
@@ -535,6 +546,7 @@ class SlaveVpnService : VpnService() {
         coreJob = null
         cleanupTun()
         currentState = "disconnected"
+        currentError = null
         requestTileUpdate(applicationContext)
         notify("Отключено")
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -677,6 +689,15 @@ class SlaveVpnService : VpnService() {
     private fun cleanupTun() {
         try { tunInterface?.close() } catch (_: Exception) { }
         tunInterface = null
+    }
+
+    private fun closeDetachedTunFd(fd: Int) {
+        try {
+            ParcelFileDescriptor.adoptFd(fd).close()
+            appendLog("[service] closed unclaimed core TUN fd=$fd")
+        } catch (e: Exception) {
+            appendLog("[service] failed to close unclaimed core TUN fd=$fd: ${e.message}")
+        }
     }
 
     override fun onDestroy() {

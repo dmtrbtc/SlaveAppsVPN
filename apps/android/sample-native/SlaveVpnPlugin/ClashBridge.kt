@@ -55,8 +55,15 @@ object ClashBridge {
         Clashbox.startLogForward(object : LogHandler {
             override fun log(level: String, message: String) = onLog(level, message)
         })
-        Clashbox.start(configYaml) // throws on failure
-        running = true
+        try {
+            Clashbox.start(configYaml) // throws on parse/apply failure
+            running = true
+        } catch (e: Exception) {
+            // StartLogForward launches a native goroutine before parsing. Stop it
+            // when parsing fails or every Retry leaks another forwarder.
+            try { Clashbox.stopLogForward() } catch (_: Exception) { }
+            throw e
+        }
         Log.i(TAG, "mihomo started")
     }
 
