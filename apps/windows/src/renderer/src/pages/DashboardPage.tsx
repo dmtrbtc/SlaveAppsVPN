@@ -5,6 +5,7 @@ import { AuroraOrb } from '../components/connection/AuroraOrb'
 import { ConnectionPhaseTracker } from '../components/connection/ConnectionPhaseTracker'
 import { ConnectionQualityBadge } from '../components/connection/ConnectionQualityBadge'
 import { ConnectionTargetSelector } from '../components/connection/ConnectionTargetSelector'
+import { RoutingModeSwitch } from '../components/connection/RoutingModeSwitch'
 import { ReconnectDisplay } from '../components/connection/ReconnectDisplay'
 import { TrafficSparkline } from '../components/traffic/TrafficSparkline'
 import { ActiveConnectionsPanel } from '../components/connections/ActiveConnectionsPanel'
@@ -104,6 +105,9 @@ function ServerHeroCard() {
       )}
       <div className="flex-1 min-h-0">
         <ConnectionTargetSelector />
+      </div>
+      <div className="shrink-0">
+        <RoutingModeSwitch />
       </div>
     </div>
   )

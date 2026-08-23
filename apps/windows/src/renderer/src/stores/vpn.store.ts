@@ -4,6 +4,11 @@ import type { VPNStatus, TrafficStats, VPNMode } from '@slave-vpn/shared'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import type { VpnHealthPayload, ProxyEntry, BalancerState, BalancerMode } from '@shared/ipc/types'
 import { vpnApi, settingsApi, events } from '../lib/api'
+import { IS_MOBILE } from '../lib/platform'
+
+// Must match SLAVE_AUTO_GROUP in @slave-vpn/config. Selecting it points
+// SLAVE-SELECT at the url-test autobalancer instead of a fixed node.
+export const AUTO_GROUP = 'SLAVE-AUTO'
 
 interface VpnStore {
   status: VPNStatus
@@ -14,7 +19,13 @@ interface VpnStore {
   connectionStartedAt: number | null
   proxyList: ProxyEntry[]
   balancerState: BalancerState | null
+  // The user's explicit target: a specific node name, or AUTO_GROUP ("SLAVE-AUTO")
+  // when the autobalancer is chosen. Persisted via the bridge.
   selectedProxy: string | null
+  // The REAL leaf node currently carrying traffic (resolved through SLAVE-SELECT →
+  // SLAVE-AUTO → node). In Auto mode this differs from selectedProxy and drives
+  // the Dashboard "Авто → Slave-NL (12ms)" readout.
+  activeProxy: string | null
   // Live latency map populated from EVENT_SERVER_LATENCY — shared by
   // ServersPage, ConnectionTargetSelector, and any future UI that needs it.
   serverLatency: Record<string, number | null>
@@ -68,6 +79,7 @@ export const useVpnStore = create<VpnStore>()(
     proxyList: [],
     balancerState: null,
     selectedProxy: null,
+    activeProxy: null,
     serverLatency: {},
     serverLatencyUpdatedAt: 0,
 
@@ -130,6 +142,11 @@ export const useVpnStore = create<VpnStore>()(
         const vpnState = get().status.state
         if (vpnState === 'connected') {
           await vpnApi.setProxy({ proxyName: name })
+        } else if (IS_MOBILE) {
+          // Android: settingsApi has no main process to read it on connect, so
+          // route through the bridge (it persists the choice + applies it on the
+          // next connect; the live-switch is a safe no-op while disconnected).
+          await vpnApi.setProxy({ proxyName: name })
         } else {
           await settingsApi.set({ selectedProxy: name })
         }
@@ -172,7 +189,17 @@ export const useVpnStore = create<VpnStore>()(
       })
       const unsubHealth = events.onVpnHealth(health => set({ health }))
       const unsubBalancer = events.onBalancerState(balancerState => set({ balancerState }))
-      const unsubProxyChanged = events.onProxyChanged(selectedProxy => set({ selectedProxy }))
+      const unsubProxyChanged = events.onProxyChanged(leaf => set(s => {
+        // A seeded value equal to AUTO_GROUP is the explicit target (the group),
+        // not a leaf — record the Auto selection but leave activeProxy for the
+        // real node once the core resolves it.
+        if (leaf === AUTO_GROUP) return { selectedProxy: AUTO_GROUP }
+        // The polled value is the REAL leaf node. In Auto mode keep the explicit
+        // SLAVE-AUTO target intact (don't clobber it) and only record the leaf in
+        // activeProxy; otherwise mirror it into both.
+        if (s.selectedProxy === AUTO_GROUP) return { activeProxy: leaf }
+        return { selectedProxy: leaf, activeProxy: leaf }
+      }))
       const unsubLatency = events.onServerLatency(payload => {
         set(s => ({
           serverLatency: {
@@ -206,4 +233,7 @@ export const selectConnectionStartedAt = (s: VpnStore) => s.connectionStartedAt
 export const selectProxyList = (s: VpnStore) => s.proxyList
 export const selectBalancerState = (s: VpnStore) => s.balancerState
 export const selectSelectedProxy = (s: VpnStore) => s.selectedProxy
+export const selectActiveProxy = (s: VpnStore) => s.activeProxy
 export const selectServerLatency = (s: VpnStore) => s.serverLatency
+// True when the user picked the autobalancer (SLAVE-AUTO) rather than a fixed node.
+export const selectAutoMode = (s: VpnStore) => s.selectedProxy === AUTO_GROUP
