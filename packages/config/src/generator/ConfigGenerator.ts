@@ -353,25 +353,30 @@ function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<st
 //     general traffic.
 //   - `default-nameserver` is the sole plaintext entry; it ONLY bootstraps the
 //     DoH hostnames (dns.cloudflare.com / dns.google) and the direct lookups.
-//   - nameserver-policy overrides (intentional, direct, fast):
-//       * +.ru / +.рф / geosite:category-ru → Yandex 77.88.8.8 + Google 8.8.8.8
-//       * the proxy NODE domains → system + 8.8.8.8, so they resolve to REAL IPs
-//         BEFORE the tunnel exists (avoids the chicken-and-egg at connect time).
+//   - nameserver-policy overrides stay encrypted while routing DIRECT:
+//       * +.ru / +.рф / geosite:category-ru → Yandex + Google DoH#DIRECT
+//       * proxy NODE domains → Google DoH#DIRECT, so they resolve to REAL IPs
+//         without depending on the tunnel (avoids the connect-time loop).
 //   - prefer-h3:false so DoH stays on HTTP/2 (TCP/443); h3 (QUIC/udp) is DPI-prone.
 function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutingOptions): Record<string, unknown> {
   const primaryDoh = settings.dnsOverHttps || 'https://dns.cloudflare.com/dns-query'
   // DoH pool: primary (Cloudflare) + Google, deduped. Both reach through tunnel.
   const dohPool = Array.from(new Set([primaryDoh, 'https://dns.google/dns-query']))
-  // RU + node direct resolvers (plaintext is OK here — intentional, direct).
-  const ruDirect = ['77.88.8.8', '8.8.8.8']
-  const nodeDirect = ['system', '8.8.8.8']
+  // Direct does not have to mean plaintext: Mihomo's #DIRECT suffix bypasses
+  // the proxy group while preserving DoH encryption. Keep every user/node
+  // lookup encrypted; only default-nameserver may bootstrap DoH hostnames.
+  const ruDirect = [
+    'https://common.dot.dns.yandex.net/dns-query#DIRECT',
+    'https://dns.google/dns-query#DIRECT',
+  ]
+  const nodeDirect = ['https://dns.google/dns-query#DIRECT']
 
   const nameserverPolicy: Record<string, unknown> = {
     // RU TLDs + RU geosite → fast RU/Google DNS, resolved directly (no VPN hop)
     '+.ru': ruDirect,
     '+.рф': ruDirect,
     'geosite:category-ru': ruDirect,
-    'geosite:private': 'system',
+    'geosite:private': 'https://dns.google/dns-query#DIRECT',
   }
   // Each proxy node domain → resolved DIRECTLY (before the tunnel) to real IPs.
   for (const s of opts.nodeDomainSuffixes) nameserverPolicy[`+.${s}`] = nodeDirect
@@ -394,7 +399,7 @@ function buildAndroidDnsSection(settings: GeneratorSettings, opts: AndroidRoutin
     // plaintext bootstrap ONLY (resolves the DoH hostnames + direct lookups)
     'default-nameserver': ['223.5.5.5', '77.88.8.8'],
     nameserver: dohPool,
-    'proxy-server-nameserver': dohPool,
+    'proxy-server-nameserver': nodeDirect,
     'nameserver-policy': nameserverPolicy,
     'respect-rules': true,
   }

@@ -50,16 +50,23 @@ test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plain
   assert.ok(Array.isArray(ns) && ns.length >= 2, 'nameserver is a DoH pool (>=2)')
   assert.ok(ns.every(s => s.startsWith('https://')), 'main nameserver pool MUST be DoH-only (no plaintext)')
   assert.ok(ns.some(s => s.includes('dns.google')), 'Google DoH present in pool')
-  assert.ok(Array.isArray(doc.dns['proxy-server-nameserver']))
+  const proxyNs = doc.dns['proxy-server-nameserver'] as string[]
+  assert.ok(Array.isArray(proxyNs))
+  assert.ok(proxyNs.every(s => s.startsWith('https://') && s.endsWith('#DIRECT')))
 })
 
 test('smart mode: DNS nameserver-policy — RU TLDs direct + node domains resolved directly', () => {
   const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
   const policy = doc.dns['nameserver-policy'] as Record<string, unknown>
-  assert.deepEqual(policy['+.ru'], ['77.88.8.8', '8.8.8.8'], '+.ru → Yandex+Google direct')
-  assert.deepEqual(policy['+.рф'], ['77.88.8.8', '8.8.8.8'], '+.рф → Yandex+Google direct')
+  const ru = policy['+.ru'] as string[]
+  assert.deepEqual(policy['+.рф'], ru, '+.рф uses the same direct encrypted resolvers')
+  assert.ok(ru.every(s => s.startsWith('https://') && s.endsWith('#DIRECT')), 'RU lookups stay encrypted')
   // node domain resolved directly (before tunnel) to real IPs
-  assert.deepEqual(policy['+.nl.example.online'], ['system', '8.8.8.8'], 'node domain → direct system/Google')
+  assert.deepEqual(policy['+.nl.example.online'], ['https://dns.google/dns-query#DIRECT'])
+  for (const resolvers of Object.values(policy)) {
+    const entries = Array.isArray(resolvers) ? resolvers : [resolvers]
+    assert.ok(entries.every(s => typeof s === 'string' && s.startsWith('https://')), 'policy must not contain plaintext resolvers')
+  }
 })
 
 test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true', () => {
