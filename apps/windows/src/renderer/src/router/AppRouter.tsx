@@ -14,7 +14,8 @@ import { useAuthStore } from '../stores/auth.store'
 
 function ProtectedShell() {
   const hasAccess = useAuthStore(s => s.hasAccess)
-  if (!hasAccess) return <Navigate to="/onboarding" replace />
+  const hasSkippedOnboarding = useAuthStore(s => s.hasSkippedOnboarding)
+  if (!hasAccess && !hasSkippedOnboarding) return <Navigate to="/onboarding" replace />
   return <AppShell />
 }
 

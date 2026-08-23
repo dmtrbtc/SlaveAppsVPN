@@ -3,7 +3,8 @@
 > **Status (2026-08):** the Capacitor project, Kotlin VPN service and Mihomo
 > `v1.19.30` AAR are integrated. Debug and test-signed release APKs build with
 > SDK 35/JVM 21 and pass Android Lint. Sections describing phases are retained
-> as architectural history; the remaining gap is physical-device validation.
+> as architectural history; physical-device TUN/DNS/lifecycle smoke tests now
+> pass on Android 16.
 
 ---
 
@@ -267,9 +268,9 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 
 | Blocker | How to unblock |
 |---|---|
-| No device smoke result yet | Test consent, TUN traffic, DNS, kill switch, hand-off and boot on an ARM64 phone |
 | Production signing | Configure the existing CI secrets and verify install-over-update with the real release key |
 | Mutable geo download fallback | Pin geo database releases and checksums before bundling them into release APKs |
+| Broader device matrix | Repeat smoke tests on API 24, 29, 33 and at least one non-HyperOS device |
 | State-sync uses better-sqlite3 native | Replace with sql.js (WASM) or use Capacitor's native SQLite plugin |
 
 ---

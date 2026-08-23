@@ -23,13 +23,25 @@ From the monorepo root:
 pnpm install
 pnpm --filter "./packages/**" build
 pnpm --filter @slave-vpn/windows build
-pnpm --dir apps/android exec cap sync android
+pnpm --filter @slave-vpn/android sync -- android
 pnpm --filter @slave-vpn/android lint:android
 pnpm --filter @slave-vpn/android build:android:debug
 ```
 
 The debug APK is written to
 `apps/android/android/app/build/outputs/apk/debug/app-debug.apk`.
+
+If a production-signed build is already installed, create a side-by-side debug
+package instead of deleting its data:
+
+```powershell
+$env:ORG_GRADLE_PROJECT_slaveApplicationIdSuffix = "dev"
+$env:ORG_GRADLE_PROJECT_slaveVersionCode = "181"
+$env:ORG_GRADLE_PROJECT_slaveVersionName = "0.0.1-dev.181"
+node apps/android/scripts/run-gradle.mjs assembleDebug
+```
+
+This produces `com.slavevpn.app.dev`; the suffix is applied only to debug builds.
 
 For an unsigned release build, run:
 
@@ -47,7 +59,7 @@ and falls back to a debug artifact when signing secrets are unavailable.
 ```powershell
 # Renderer/shared code changed
 pnpm --filter @slave-vpn/windows build
-pnpm --dir apps/android exec cap sync android
+pnpm --filter @slave-vpn/android sync -- android
 
 # Native code or manifest changed
 pnpm --filter @slave-vpn/android lint:android
@@ -73,7 +85,10 @@ apps/android/
 
 The app module registers `SlaveVpnPlugin`, declares the VPN foreground service,
 Quick Settings tile, boot receiver, deep link, backup restrictions, and required
-permissions. Android Lint runs in CI before every APK build.
+permissions. Its host-side `go.LoadJNI` shim loads the gomobile JNI library and
+passes the Android application context before the first Mihomo call, including
+service starts initiated by the boot receiver or Quick Settings tile. Android
+Lint runs in CI before every APK build.
 
 ## Remaining device checks
 

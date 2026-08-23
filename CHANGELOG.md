@@ -8,7 +8,6 @@ All notable changes to SLAVE VPN are documented here.
 
 - Windows Mihomo core updated from `v1.19.27` to `v1.19.30` (`ac017cd`).
 - Android `clashbox.aar` updated to the same Mihomo `v1.19.30` source and rebuilt reproducibly with Go `1.26.6`; independent clean checkouts now produce the pinned artifact SHA-256.
-- The native Capacitor Android project is now committed and builds the Kotlin VPN service, Quick Settings tile, boot receiver and Mihomo AAR directly, with SDK 35/JVM 21 and Android Lint in CI.
 - Engine downloads now verify the pinned release-archive and extracted-binary SHA-256 before replacing an installed core.
 - Windows CI now validates generated Windows and Android configurations with the pinned real core via `mihomo -t`, covering VLESS Encryption/ML-KEM, Reality/Vision, Hysteria2, TUIC, TUN/gVisor, fake-IP and Android routing/DNS modes.
 
@@ -16,6 +15,10 @@ All notable changes to SLAVE VPN are documented here.
 
 - Windows binary setup no longer requires a separately installed `unzip`; it falls back to the system `tar` implementation available on Windows and GitHub runners.
 - A stale `mihomo.exe` is no longer silently accepted after the pinned engine version changes.
+- Android now loads the gomobile `libgojni.so` and supplies its application context before the first Mihomo call, preventing the VPN service crash observed only on a physical device.
+- The onboarding “Skip” action now persists explicit guest access instead of being immediately redirected back by the protected-route guard.
+- Debug builds can use an optional application-ID suffix for side-by-side device testing without deleting differently signed production-app data.
+- The cross-platform Gradle launcher now preserves dotted `-P` values such as Android `versionName` on Windows.
 
 ## [0.3.0-rc1] — 2026-05-18
 

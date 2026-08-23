@@ -141,7 +141,7 @@ https://github.com/hiddify/hiddify-next/releases/latest
 Когда `sdkmanager --version` и `adb version` работают, следующие шаги:
 
 1. `pnpm --filter @slave-vpn/windows build`
-2. `pnpm --dir apps/android exec cap sync android`
+2. `pnpm --filter @slave-vpn/android sync -- android`
 3. `pnpm --filter @slave-vpn/android lint:android`
 4. `pnpm --filter @slave-vpn/android build:android:debug`
 5. Установить APK из `apps/android/android/app/build/outputs/apk/debug/`

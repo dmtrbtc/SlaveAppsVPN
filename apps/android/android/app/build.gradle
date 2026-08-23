@@ -4,6 +4,10 @@ apply plugin: 'org.jetbrains.kotlin.android'
 def androidPackage = new groovy.json.JsonSlurper().parseText(file('../../package.json').text)
 def slaveVersionName = project.findProperty('slaveVersionName') ?: androidPackage.version
 def slaveVersionCode = (project.findProperty('slaveVersionCode') ?: '1') as Integer
+def slaveApplicationIdSuffix = project.findProperty('slaveApplicationIdSuffix')?.toString()?.trim()
+if (slaveApplicationIdSuffix && !slaveApplicationIdSuffix.startsWith('.')) {
+    slaveApplicationIdSuffix = ".${slaveApplicationIdSuffix}"
+}
 def releaseKeystorePath = System.getenv('ANDROID_KEYSTORE_PATH')
 
 android {
@@ -33,6 +37,12 @@ android {
         }
     }
     buildTypes {
+        debug {
+            // Allows device testing beside a differently signed production build.
+            if (slaveApplicationIdSuffix) {
+                applicationIdSuffix slaveApplicationIdSuffix
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

@@ -119,6 +119,9 @@ jobs:
           unzip -l "$APK" | grep -q 'lib/arm64-v8a/libgojni.so'
           unzip -l "$APK" | grep -q 'lib/armeabi-v7a/libgojni.so'
           unzip -l "$APK" | grep -q 'assets/public/index.html'
+          # The pinned Mihomo/x-mobile graph uses a go.Seq ABI that requires the
+          # host loader. Without it the APK builds but crashes on the first JNI call.
+          unzip -p "$APK" 'classes*.dex' | strings | grep -q 'Lgo/LoadJNI;'
           BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
           "$BT/apksigner" verify --verbose "$APK"
           "$BT/aapt" dump badging "$APK" | grep "package: name='com.slavevpn.app'"

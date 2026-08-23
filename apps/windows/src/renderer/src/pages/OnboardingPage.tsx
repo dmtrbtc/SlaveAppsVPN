@@ -295,6 +295,7 @@ export function OnboardingPage() {
   const [tab, setTab] = useState<OnboardingTab>('provider')
   const { resetValidation } = useConfigSourceStore()
   const hasAccess = useAuthStore(s => s.hasAccess)
+  const skipOnboarding = useAuthStore(s => s.skipOnboarding)
 
   // Cabinet login (provider tab) grants access via auto-import; forward into the
   // app once that happens.
@@ -312,6 +313,7 @@ export function OnboardingPage() {
   }
 
   const handleSkip = () => {
+    skipOnboarding()
     void navigate('/dashboard')
   }
 

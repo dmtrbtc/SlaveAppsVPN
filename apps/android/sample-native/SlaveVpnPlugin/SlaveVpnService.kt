@@ -194,6 +194,8 @@ class SlaveVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        // BootReceiver/QS tile can start the service without MainActivity.
+        go.LoadJNI.setContext(applicationContext)
         // Initialise the mihomo core home dir once per process.
         try {
             ClashBridge.setup(filesDir.absolutePath)
