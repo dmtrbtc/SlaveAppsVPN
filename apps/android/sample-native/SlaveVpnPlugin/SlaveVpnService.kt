@@ -5,6 +5,7 @@
  *
  * Lifecycle:
  *   onStartCommand(ACTION_START, config) → establish TUN → ClashBridge.start()
+ *   onStartCommand(SERVICE_INTERFACE)    → restore cached config for OS Always-on
  *   onStartCommand(ACTION_STOP)          → ClashBridge.stop() → close TUN
  *
  * The config is a Clash YAML produced by the SHARED @slave-vpn/config
@@ -306,10 +307,48 @@ class SlaveVpnService : VpnService() {
                     intent.getStringArrayExtra(EXTRA_SPLIT_APPS)?.toList() ?: emptyList(),
                 )
             }
+            SERVICE_INTERFACE -> restoreAlwaysOnVpn(startId)
             ACTION_STOP -> stopVpn()
             ACTION_RECONNECT -> reconnect()
         }
         return START_STICKY
+    }
+
+    /**
+     * Android starts the selected Always-on VPN service with
+     * [VpnService.SERVICE_INTERFACE], including after a device reboot. This path
+     * has no renderer and therefore no config extras: restore the last known-good
+     * native bundle. The OS Always-on selection is itself explicit user intent,
+     * so it takes precedence over the app-only connect-on-boot preference.
+     */
+    private fun restoreAlwaysOnVpn(startId: Int) {
+        // isAlwaysOn() was added in API 29. On older supported releases the
+        // system-only SERVICE_INTERFACE action is the available authority.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !isAlwaysOn) {
+            appendLog("[service] system VPN start ignored: Always-on is disabled")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return
+        }
+        if (VpnService.prepare(applicationContext) != null) {
+            appendLog("[service] Always-on restore failed: VPN consent is missing")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return
+        }
+        val cached = readCachedConfig(applicationContext)
+        if (cached == null) {
+            appendLog("[service] Always-on restore failed: no cached config")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return
+        }
+
+        setShouldRun(applicationContext, true)
+        setKillSwitch(applicationContext, cached.killSwitch)
+        android.util.Log.i("SlaveVpnService", "restoring VPN for OS Always-on start")
+        appendLog("[service] restoring VPN for OS Always-on start")
+        startVpn(cached.config, cached.selected, cached.splitMode, cached.splitApps)
     }
 
     private fun restoreExpectedVpn(reason: String, startId: Int) {

@@ -102,6 +102,8 @@ Validated on a physical ARM64 Android 16 device:
 - cold-process recovery from the cached config
 - kill-switch blackholing on core failure, cached recovery without network, and
   clean TUN teardown after Disconnect
+- OS Always-on/lockdown blocking with cached recovery through the Quick Settings
+  tile
 
 Process recovery keeps a separate persisted `shouldRun` flag. A sticky-service
 restart with a null Intent restores only when that flag is true; opening a cold
@@ -110,9 +112,13 @@ restart. A deliberate Disconnect clears the flag, so reopening the app cannot
 silently reconnect. Android force-stop remains OS-enforced and requires a user
 action before any application component may run again.
 
+The OS starts an Always-on service with the `android.net.VpnService` action,
+including after reboot. That path restores the last known-good native config and
+does not depend on the separate in-app `connectOnBoot` preference.
+
 Still required before stable release:
 
-- independent external DNS-leak test and OS Always-on/lockdown kill switch
+- independent external DNS-leak test
 - boot auto-connect on the release candidate
 - release-key install-over-existing-version
 - API 24/29/33 and non-HyperOS device coverage
