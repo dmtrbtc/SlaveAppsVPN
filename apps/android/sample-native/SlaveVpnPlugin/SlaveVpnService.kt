@@ -277,10 +277,12 @@ class SlaveVpnService : VpnService() {
         // returned START_STICKY but ignored this callback, leaving a stale
         // foreground notification and no TUN after process death.
         if (intent == null) {
+            android.util.Log.i("SlaveVpnService", "onStartCommand action=<sticky-null>")
             restoreExpectedVpn("sticky restart", startId)
             return START_STICKY
         }
 
+        android.util.Log.i("SlaveVpnService", "onStartCommand action=${intent.action}")
         when (intent.action) {
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG)
@@ -319,25 +321,16 @@ class SlaveVpnService : VpnService() {
      * [VpnService.SERVICE_INTERFACE], including after a device reboot. This path
      * has no renderer and therefore no config extras: restore the last known-good
      * native bundle. The OS Always-on selection is itself explicit user intent,
-     * so it takes precedence over the app-only connect-on-boot preference.
+     * so it takes precedence over the app-only connect-on-boot preference. The
+     * service is non-exported and protected by BIND_VPN_SERVICE, therefore only
+     * Android itself can deliver this action; repeating isAlwaysOn()/prepare()
+     * here introduces an OEM boot-time race without adding an authorization
+     * boundary.
      */
     private fun restoreAlwaysOnVpn(startId: Int) {
-        // isAlwaysOn() was added in API 29. On older supported releases the
-        // system-only SERVICE_INTERFACE action is the available authority.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !isAlwaysOn) {
-            appendLog("[service] system VPN start ignored: Always-on is disabled")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
-            return
-        }
-        if (VpnService.prepare(applicationContext) != null) {
-            appendLog("[service] Always-on restore failed: VPN consent is missing")
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
-            return
-        }
         val cached = readCachedConfig(applicationContext)
         if (cached == null) {
+            android.util.Log.e("SlaveVpnService", "Always-on restore failed: no cached config")
             appendLog("[service] Always-on restore failed: no cached config")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)

@@ -21,7 +21,7 @@ All notable changes to SLAVE VPN are documented here.
 - The cross-platform Gradle launcher now preserves dotted `-P` values such as Android `versionName` on Windows.
 - Android process recovery now handles `START_STICKY` null intents, restores the cached tunnel on a cold app launch, persists kill-switch state, and respects an explicit user disconnect.
 - Android Kill Switch now closes an unclaimed duplicated TUN descriptor after Mihomo parse failures and retries from the last known-good native config without requiring blocked DNS.
-- Android now handles the OS `VpnService` Always-on start action and restores the cached tunnel after reboot even when the separate in-app auto-connect preference is disabled.
+- Android now handles the protected OS `VpnService` Always-on start action without a boot-time `isAlwaysOn`/`prepare` race and restores the cached tunnel after reboot even when the separate in-app auto-connect preference is disabled.
 
 ## [0.3.0-rc1] — 2026-05-18
 
