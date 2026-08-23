@@ -57,6 +57,7 @@ class SlaveVpnTileService : TileService() {
             putExtra(SlaveVpnService.EXTRA_SELECTED, cached.selected)
             putExtra(SlaveVpnService.EXTRA_SPLIT_MODE, cached.splitMode)
             putExtra(SlaveVpnService.EXTRA_SPLIT_APPS, cached.splitApps.toTypedArray())
+            putExtra(SlaveVpnService.EXTRA_KILL_SWITCH, if (cached.killSwitch) "1" else "0")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(start)
         else startService(start)

@@ -102,7 +102,7 @@ class SlaveVpnPlugin : Plugin() {
             (0 until arr.length()).mapNotNull { i -> try { arr.getString(i) } catch (_: Exception) { null } }
         } ?: emptyList()
         pendingKillSwitch = call.getBoolean("killSwitch") ?: SlaveVpnService.killSwitchEnabled
-        SlaveVpnService.setKillSwitch(pendingKillSwitch)
+        SlaveVpnService.setKillSwitch(context, pendingKillSwitch)
 
         val intent = VpnService.prepare(context)
         if (intent != null) {
@@ -361,7 +361,7 @@ class SlaveVpnPlugin : Plugin() {
     @PluginMethod
     fun setKillSwitch(call: PluginCall) {
         val enabled = call.getBoolean("enabled") ?: false
-        SlaveVpnService.setKillSwitch(enabled)
+        SlaveVpnService.setKillSwitch(context, enabled)
         call.resolve()
     }
 

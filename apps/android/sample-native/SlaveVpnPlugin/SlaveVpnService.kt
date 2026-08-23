@@ -96,7 +96,6 @@ class SlaveVpnService : VpnService() {
         // and carried on ACTION_START; the running service reads it at drop time.
         @JvmStatic @Volatile var killSwitchEnabled: Boolean = false
             private set
-        @JvmStatic fun setKillSwitch(enabled: Boolean) { killSwitchEnabled = enabled }
 
         // ─── In-memory log ring buffer ──────────────────────────────────────
         // mihomo core logs + our own lifecycle lines land here so the in-app
@@ -130,6 +129,11 @@ class SlaveVpnService : VpnService() {
         private const val K_SELECTED = "selected"
         private const val K_SPLIT_MODE = "splitMode"
         private const val K_SPLIT_APPS = "splitApps" // newline-joined package names
+        private const val K_KILL_SWITCH = "killSwitch"
+        // User intent, persisted separately from the cached config. A config is
+        // intentionally kept after Disconnect for the QS tile, so its presence
+        // alone must never cause an unsolicited reconnect.
+        private const val K_SHOULD_RUN = "shouldRun"
         // Auto-connect after device restart. Lives in the SAME native prefs the
         // BootReceiver can read WITHOUT the WebView (renderer isn't running at boot).
         private const val K_CONNECT_ON_BOOT = "connectOnBoot"
@@ -155,7 +159,33 @@ class SlaveVpnService : VpnService() {
             val selected: String?,
             val splitMode: String,
             val splitApps: List<String>,
+            val killSwitch: Boolean,
         )
+
+        @JvmStatic
+        fun setKillSwitch(ctx: Context, enabled: Boolean) {
+            killSwitchEnabled = enabled
+            try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putBoolean(K_KILL_SWITCH, enabled)
+                    .commit()
+            } catch (_: Exception) { }
+        }
+
+        private fun setShouldRun(ctx: Context, enabled: Boolean) {
+            try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putBoolean(K_SHOULD_RUN, enabled)
+                    .commit()
+            } catch (_: Exception) { }
+        }
+
+        private fun shouldRun(ctx: Context): Boolean {
+            return try {
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getBoolean(K_SHOULD_RUN, false)
+            } catch (_: Exception) { false }
+        }
 
         @JvmStatic
         fun cacheConfig(ctx: Context, config: String, selected: String?, splitMode: String, splitApps: List<String>) {
@@ -166,7 +196,7 @@ class SlaveVpnService : VpnService() {
                     .putString(K_SELECTED, selected)
                     .putString(K_SPLIT_MODE, splitMode)
                     .putString(K_SPLIT_APPS, splitApps.joinToString("\n"))
-                    .apply()
+                    .commit()
             } catch (_: Exception) { }
         }
 
@@ -178,8 +208,45 @@ class SlaveVpnService : VpnService() {
                 if (cfg.isNullOrBlank()) return null
                 val apps = p.getString(K_SPLIT_APPS, "")
                     ?.split("\n")?.filter { it.isNotBlank() } ?: emptyList()
-                CachedConfig(cfg, p.getString(K_SELECTED, null), p.getString(K_SPLIT_MODE, "off") ?: "off", apps)
+                CachedConfig(
+                    cfg,
+                    p.getString(K_SELECTED, null),
+                    p.getString(K_SPLIT_MODE, "off") ?: "off",
+                    apps,
+                    p.getBoolean(K_KILL_SWITCH, false),
+                )
             } catch (_: Exception) { null }
+        }
+
+        /**
+         * A cold Activity launch creates a fresh process where companion state is
+         * reset to "disconnected". If that process previously died while the user
+         * expected the VPN to remain active, explicitly restart from the durable
+         * native cache. This also covers OEMs that delay a sticky-service restart.
+         */
+        @JvmStatic
+        fun recoverIfExpected(ctx: Context) {
+            if (!shouldRun(ctx)) return
+            if (currentState == "connected" || currentState == "connecting") return
+            val cached = readCachedConfig(ctx) ?: return
+            if (VpnService.prepare(ctx) != null) return
+
+            setKillSwitch(ctx, cached.killSwitch)
+            val start = Intent(ctx, SlaveVpnService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_CONFIG, cached.config)
+                putExtra(EXTRA_SELECTED, cached.selected)
+                putExtra(EXTRA_SPLIT_MODE, cached.splitMode)
+                putExtra(EXTRA_SPLIT_APPS, cached.splitApps.toTypedArray())
+                putExtra(EXTRA_KILL_SWITCH, if (cached.killSwitch) "1" else "0")
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(start)
+                else ctx.startService(start)
+                appendLog("[service] cold-process recovery requested")
+            } catch (e: Exception) {
+                appendLog("[service] cold-process recovery failed: ${e.message}")
+            }
         }
 
         // Ask the QS tile to re-read state and redraw. Cheap no-op when the tile
@@ -205,7 +272,15 @@ class SlaveVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        // START_STICKY restarts are delivered with a null Intent. The old code
+        // returned START_STICKY but ignored this callback, leaving a stale
+        // foreground notification and no TUN after process death.
+        if (intent == null) {
+            restoreExpectedVpn("sticky restart", startId)
+            return START_STICKY
+        }
+
+        when (intent.action) {
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG)
                 if (config.isNullOrBlank()) {
@@ -214,12 +289,16 @@ class SlaveVpnService : VpnService() {
                     currentState = "error"
                     currentError = msg
                     appendLog("[service] $msg")
+                    setShouldRun(applicationContext, false)
                     stopSelf()
                     return START_NOT_STICKY
                 }
                 // Kill-switch flag rides on the start intent ("1"/"0"); default to
                 // the last live-toggled value if the extra is absent.
-                intent.getStringExtra(EXTRA_KILL_SWITCH)?.let { setKillSwitch(it == "1" || it == "true") }
+                intent.getStringExtra(EXTRA_KILL_SWITCH)?.let {
+                    setKillSwitch(applicationContext, it == "1" || it == "true")
+                }
+                setShouldRun(applicationContext, true)
                 startVpn(
                     config,
                     intent.getStringExtra(EXTRA_SELECTED),
@@ -231,6 +310,26 @@ class SlaveVpnService : VpnService() {
             ACTION_RECONNECT -> reconnect()
         }
         return START_STICKY
+    }
+
+    private fun restoreExpectedVpn(reason: String, startId: Int) {
+        if (!shouldRun(applicationContext)) {
+            appendLog("[service] $reason ignored: user requested disconnect")
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return
+        }
+        val cached = readCachedConfig(applicationContext)
+        if (cached == null) {
+            appendLog("[service] $reason failed: no cached config")
+            setShouldRun(applicationContext, false)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+            return
+        }
+        setKillSwitch(applicationContext, cached.killSwitch)
+        appendLog("[service] restoring VPN after $reason")
+        startVpn(cached.config, cached.selected, cached.splitMode, cached.splitApps)
     }
 
     private fun startVpn(
@@ -330,6 +429,7 @@ class SlaveVpnService : VpnService() {
                         appendLog("[service] kill-switch: ядро не поднялось → трафик заблокирован (TUN держим)")
                         notify("Трафик заблокирован (kill switch) · нажмите «Отключить»")
                     } else {
+                        setShouldRun(applicationContext, false)
                         notify("Ошибка: $msg")
                         cleanupTun()
                         stopSelf()
@@ -343,6 +443,7 @@ class SlaveVpnService : VpnService() {
             currentError = "tun: $msg"
             requestTileUpdate(applicationContext)
             appendLog("[service] VPN setup failed: $msg")
+            setShouldRun(applicationContext, false)
             notify("Ошибка: $msg")
             cleanupTun()
             stopSelf()
@@ -423,6 +524,7 @@ class SlaveVpnService : VpnService() {
     }
 
     private fun stopVpn() {
+        setShouldRun(applicationContext, false)
         unregisterNetworkMonitor()
         trafficJob?.cancel()
         trafficJob = null
@@ -453,6 +555,8 @@ class SlaveVpnService : VpnService() {
             openAppFromService()
             return
         }
+        setShouldRun(applicationContext, true)
+        setKillSwitch(applicationContext, bundle.killSwitch)
         appendLog("[service] reconnect requested")
         trafficJob?.cancel(); trafficJob = null
         currentState = "connecting"
@@ -587,6 +691,7 @@ class SlaveVpnService : VpnService() {
 
     override fun onRevoke() {
         // System or user revoked VPN — core must stop cleanly
+        setShouldRun(applicationContext, false)
         try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()
         stopSelf()

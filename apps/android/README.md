@@ -90,13 +90,30 @@ passes the Android application context before the first Mihomo call, including
 service starts initiated by the boot receiver or Quick Settings tile. Android
 Lint runs in CI before every APK build.
 
-## Remaining device checks
+## Device-test status
 
-- VPN consent and first connection on a physical ARM64 phone
-- TUN traffic, socket protection, DNS leak and kill-switch behaviour
-- Wi-Fi/mobile hand-off and boot auto-connect
-- Quick Settings tile and notification permission on Android 13+
+Validated on a physical ARM64 Android 16 device:
+
+- VPN consent, guest onboarding and authenticated subscription flow
+- Mihomo startup, TUN traffic, socket protection and encrypted DNS
+- blocked-site and Telegram routing through the selected proxy group
+- Wi-Fi/mobile hand-off, foreground notification and Quick Settings tile
+- Activity recreation without interrupting the VPN
+- cold-process recovery from the cached config
+
+Process recovery keeps a separate persisted `shouldRun` flag. A sticky-service
+restart with a null Intent restores only when that flag is true; opening a cold
+Activity provides the same recovery path on OEM builds that delay the sticky
+restart. A deliberate Disconnect clears the flag, so reopening the app cannot
+silently reconnect. Android force-stop remains OS-enforced and requires a user
+action before any application component may run again.
+
+Still required before stable release:
+
+- independent external DNS-leak test and OS Always-on/lockdown kill switch
+- boot auto-connect on the release candidate
 - release-key install-over-existing-version
+- API 24/29/33 and non-HyperOS device coverage
 
 ## Caveats
 

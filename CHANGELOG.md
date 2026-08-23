@@ -19,6 +19,7 @@ All notable changes to SLAVE VPN are documented here.
 - The onboarding “Skip” action now persists explicit guest access instead of being immediately redirected back by the protected-route guard.
 - Debug builds can use an optional application-ID suffix for side-by-side device testing without deleting differently signed production-app data.
 - The cross-platform Gradle launcher now preserves dotted `-P` values such as Android `versionName` on Windows.
+- Android process recovery now handles `START_STICKY` null intents, restores the cached tunnel on a cold app launch, persists kill-switch state, and respects an explicit user disconnect.
 
 ## [0.3.0-rc1] — 2026-05-18
 
