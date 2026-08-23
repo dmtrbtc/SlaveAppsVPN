@@ -104,6 +104,7 @@ Validated on a physical ARM64 Android 16 device:
   clean TUN teardown after Disconnect
 - OS Always-on/lockdown blocking with cached recovery through the Quick Settings
   tile
+- OS-triggered Always-on recovery after a full reboot, without opening the app
 
 Process recovery keeps a separate persisted `shouldRun` flag. A sticky-service
 restart with a null Intent restores only when that flag is true; opening a cold
@@ -119,7 +120,6 @@ does not depend on the separate in-app `connectOnBoot` preference.
 Still required before stable release:
 
 - independent external DNS-leak test
-- boot auto-connect on the release candidate
 - release-key install-over-existing-version
 - API 24/29/33 and non-HyperOS device coverage
 
