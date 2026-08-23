@@ -1,8 +1,10 @@
 # Подпись Android-релиза (R4)
 
 CI (`.github/workflows/android.yml`) собирает **подписанный release-APK**, когда в
-репозитории заданы секреты с keystore. Без них сборка падает обратно на debug-APK
-(чтобы форки и сборки до настройки не ломались).
+репозитории заданы секреты с keystore. Без них workflow собирает и публикует
+подписанный стандартным debug-ключом debug-APK, чтобы сборки форков не ломались.
+Для официального тега `dmtrbtc/SlaveAppsVPN` отсутствие release-ключа завершает
+workflow ошибкой: debug-APK не может случайно попасть в официальный Release.
 
 > ⚠️ **Keystore — это навсегда.** Подпись определяет идентичность приложения:
 > обновления ставятся «поверх» только при ТОЙ ЖЕ подписи. Потеряешь keystore —
@@ -59,11 +61,15 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | `ANDROID_KEY_ALIAS` | `slave` |
 | `ANDROID_KEY_PASSWORD` | пароль ключа (`-keypass`) |
 
+Файл `.jks`, его base64-копию и пароли **не добавляйте в Git, Release assets,
+Artifacts или логи**. Репозиторий игнорирует `*.jks`, `*.keystore` и `*.b64`, но
+основная защита — хранить ключ только в менеджере секретов и офлайн-бэкапе.
+
 ## 4. Готово
 
 Следующая сборка по тегу `vX.Y.Z` соберёт **подписанный** `SlaveAppsVPN-Android.apk`.
-В логе шага *Configure release signing* будет `Release signing configured.`, а
-*Rename APK* покажет `signed=true`.
+В логе шага *Configure release signing* будет `signed=true`, после чего workflow
+соберёт `app-release.apk` и приложит его как `SlaveAppsVPN-Android.apk`.
 
 Проверить подпись готового APK:
 ```bash
@@ -71,15 +77,25 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 apksigner verify --print-certs SlaveAppsVPN-Android.apk
 ```
 
+Сертификат уже опубликованных совместимых APK закреплён в CI:
+
+```text
+SHA-256: 89a4c4d9bf92de10df8bec6f0d8d63067e26ebfc36156233d45b07b0735fb6ee
+```
+
+Digest сертификата публичен и не раскрывает закрытый ключ. Если Actions Secrets
+случайно заменить другим keystore, сборка завершится ошибкой до публикации APK.
+
 ---
 
 ## Как это работает в CI
 
 `android.yml` шаг **Configure release signing**:
 1. Декодирует `ANDROID_KEYSTORE_BASE64` → `app/release.keystore`.
-2. Внедряет `signingConfigs.release` в сгенерированный Capacitor'ом `app/build.gradle`
-   (storeFile/passwords читаются из env, переданного из секретов).
-3. Привязывает `signingConfig signingConfigs.release` к release-buildType.
-4. Сборка идёт через `assembleRelease` (иначе `assembleDebug`).
+2. Передаёт путь, alias и пароли через env; committed `app/build.gradle` читает
+   их и привязывает `signingConfigs.release` к release build type.
+3. Сборка идёт через `assembleRelease` (иначе `assembleDebug`).
+4. `apksigner` проверяет APK, совпадение с keystore и закреплённый production
+   certificate SHA-256.
 
 Секреты не попадают в логи; keystore существует только во время job на раннере.

@@ -85,6 +85,9 @@ jobs:
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
             echo "signed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REPOSITORY" = "dmtrbtc/SlaveAppsVPN" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "::error::Release signing secret ANDROID_KEYSTORE_BASE64 is missing"
+            exit 1
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
@@ -137,8 +140,13 @@ jobs:
           BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
           GOT=$("$BT/apksigner" verify --print-certs "$APK" | grep -ioE 'SHA-256 digest: [0-9a-f]+' | head -1 | awk '{print $NF}')
           EXP=$(keytool -list -keystore app/release.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" -v | grep -i 'SHA256:' | head -1 | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')
+          # Public certificate digest of the key used by already-published APKs.
+          # Pin it so replacing Actions Secrets with a different valid keystore
+          # cannot silently produce an update Android refuses to install.
+          PRODUCTION_CERT_SHA256=89a4c4d9bf92de10df8bec6f0d8d63067e26ebfc36156233d45b07b0735fb6ee
           test -n "$GOT"
           test "$GOT" = "$EXP"
+          test "$GOT" = "$PRODUCTION_CERT_SHA256"
 
       - name: Collect APK
         if: github.event_name != 'pull_request'

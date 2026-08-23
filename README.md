@@ -10,7 +10,7 @@
 [![Релиз](https://img.shields.io/badge/релиз-v0.2.40-5b8def)](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest)
 [![Платформы](https://img.shields.io/badge/платформы-Windows%20%7C%20Android-0fa86b)]()
 [![Статус](https://img.shields.io/badge/статус-stable-0fa86b)]()
-[![Ядро](https://img.shields.io/badge/ядро-mihomo%20(Clash.Meta)-ff7a59)]()
+[![Ядро](https://img.shields.io/badge/ядро-mihomo%20v1.19.30-ff7a59)]()
 
 </div>
 
@@ -28,7 +28,9 @@
 | 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.40.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Setup-v0.2.40.exe) |
 | 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.40.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Portable-v0.2.40.exe) |
 
-> Сборки пока **без цифровой подписи**: Android попросит разрешить «установку из неизвестных источников»; Windows SmartScreen покажет предупреждение («Подробнее → Выполнить в любом случае»). Это ожидаемо. Windows требует прав администратора (создание TUN-адаптера).
+**Dev-канал:** [`v0.2.41-dev.2`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.2) — [Android APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.41-dev.2/SlaveAppsVPN-Android.apk). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
+
+> Android APK подписан постоянным release-ключом и обновляется поверх предыдущих GitHub-сборок. Для sideload Android всё равно один раз запросит разрешение «Установка неизвестных приложений». Windows-сборки пока без Authenticode, поэтому SmartScreen может показать предупреждение. Windows требует прав администратора для TUN-адаптера.
 
 ---
 
@@ -59,6 +61,14 @@
 - **Защищённый DNS** — DoH-пул через туннель, fake-ip, anti-leak, политики по доменам.
 - **Живая диагностика** — трафик, активные соединения, логи ядра в реальном времени, тесты соединения, self-test.
 - **Авто-обновление** — встроенная проверка новых версий (стабильный и dev-канал).
+
+### 📱 Проверено на физическом Android
+
+На ARM64-устройстве с Android 16 проверены подписка и вход по логину/паролю,
+Telegram и заблокированные ресурсы через прокси, encrypted DNS, переключение
+Wi-Fi/LTE, Quick Settings, восстановление после смерти процесса, Kill Switch,
+Always-on VPN + lockdown и автоматическое восстановление туннеля после reboot.
+Dev-сборки используют Mihomo `v1.19.30` на обеих платформах.
 
 ---
 

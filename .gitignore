@@ -88,6 +88,9 @@ crashpad/
 Crashpad/
 
 # Code signing certificates (NEVER commit)
+*.jks
+*.keystore
+*.b64
 *.p12
 *.pfx
 *.pem
