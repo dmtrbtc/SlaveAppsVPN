@@ -42,6 +42,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.util.Locale
 
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -185,7 +186,6 @@ class SlaveVpnService : VpnService() {
         // isn't added; keeps the shade toggle in sync without opening the app.
         @JvmStatic
         fun requestTileUpdate(ctx: Context) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
             try {
                 TileService.requestListeningState(ctx, ComponentName(ctx, SlaveVpnTileService::class.java))
             } catch (_: Exception) { }
@@ -495,11 +495,7 @@ class SlaveVpnService : VpnService() {
         networkInitialized = false
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                        setUnderlyingNetworks(arrayOf(network))
-                    }
-                } catch (_: Exception) { }
+                try { setUnderlyingNetworks(arrayOf(network)) } catch (_: Exception) { }
                 // First callback = the network we're already on (registration echo) →
                 // just bind the underlying network. A LATER default-network change
                 // (Wi-Fi↔mobile) is a real hand-off: the proxy sockets are stuck on the
@@ -523,16 +519,9 @@ class SlaveVpnService : VpnService() {
             // DEFAULT network changes (Wi-Fi→mobile and back) — the actual hand-off.
             // A plain registerNetworkCallback(request) only fires when a *new* network
             // appears, so leaving Wi-Fi for already-active mobile never triggered it
-            // (the v0.2.26-dev.1 bug). Fallback to the request form on API < 24.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                cm.registerDefaultNetworkCallback(cb)
-            } else {
-                val req = android.net.NetworkRequest.Builder()
-                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                    .build()
-                cm.registerNetworkCallback(req, cb)
-            }
+            // (the v0.2.26-dev.1 bug). minSdk is 24, where the default-network
+            // callback API is available.
+            cm.registerDefaultNetworkCallback(cb)
             networkCallback = cb
         } catch (_: Exception) { }
     }
@@ -574,8 +563,8 @@ class SlaveVpnService : VpnService() {
         val b = if (bytesPerSec < 0) 0L else bytesPerSec
         return when {
             b < 1024L -> "$b Б/с"
-            b < 1024L * 1024L -> String.format("%.0f КБ/с", b / 1024.0)
-            else -> String.format("%.1f МБ/с", b / (1024.0 * 1024.0))
+            b < 1024L * 1024L -> String.format(Locale.ROOT, "%.0f КБ/с", b / 1024.0)
+            else -> String.format(Locale.ROOT, "%.1f МБ/с", b / (1024.0 * 1024.0))
         }
     }
 
@@ -607,8 +596,7 @@ class SlaveVpnService : VpnService() {
     private fun buildNotification(text: String): Notification {
         ensureChannel()
         val intent = Intent(this, MainActivity::class.java)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
-            PendingIntent.FLAG_IMMUTABLE else 0
+        val flags = PendingIntent.FLAG_IMMUTABLE
         val pi = PendingIntent.getActivity(this, 0, intent, flags)
 
         val stopIntent = Intent(this, SlaveVpnService::class.java).apply { action = ACTION_STOP }

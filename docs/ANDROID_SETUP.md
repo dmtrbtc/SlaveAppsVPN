@@ -1,30 +1,28 @@
 # Android Setup — Шаг за шагом
 
 > Чтобы собрать APK локально (без полного Android Studio).
-> После выполнения этих шагов вернись в чат — Claude доделает остальное.
 
 ---
 
 ## Что в результате
 
 - **Этап 1 (этот документ):** установка JDK + Android SDK + env vars
-- **Этап 2 (после твоей установки, делаю я):** `pnpm cap add android`, копирование Kotlin plugin, gradle build, debug APK
-- **Этап 3 (отдельная задача, ~1 неделя):** интеграция реального VPN engine через
-  libbox.aar (sing-box mobile)
+- **Этап 2:** синхронизация Capacitor, Android Lint и сборка debug APK
+- **VPN engine:** Mihomo `v1.19.30` уже подключён из проверенного
+  `apps/android/libs/clashbox.aar` к committed Gradle-проекту
 
-**После этапа 2** APK будет показывать наш React UI на телефоне. **VPN кнопки
-не будут работать** — они вернут "Not implemented" пока не сделан этап 3.
-Это нормально для UI testing.
+Kotlin plugin, `VpnService`, Quick Settings tile и boot receiver входят в
+обычную Gradle-сборку напрямую из `apps/android/sample-native/`.
 
 ---
 
-## 1. JDK 17 (15 минут)
+## 1. JDK 21 (15 минут)
 
 ### Вариант A — Скачать .msi (рекомендую)
 
-1. Перейди: https://adoptium.net/temurin/releases/?version=17&package=jdk&os=windows&arch=x64
-2. Скачай **Windows x64 → MSI Installer** (`OpenJDK17U-jdk_x64_windows_hotspot-17.0.x.msi`, ~150 MB)
-3. Запусти, установи в **C:\Program Files\Eclipse Adoptium\jdk-17\** (или другую, путь запомни)
+1. Перейди: https://adoptium.net/temurin/releases/?version=21&package=jdk&os=windows&arch=x64
+2. Скачай **Windows x64 → MSI Installer** (`OpenJDK21U-jdk_x64_windows_hotspot-21.0.x.msi`, ~200 MB)
+3. Запусти, установи в **C:\Program Files\Eclipse Adoptium\jdk-21\** (или другую, путь запомни)
 4. **Важно:** в установщике на шаге "Custom Setup" включи галки:
    - ✅ Add to PATH
    - ✅ Set JAVA_HOME variable
@@ -32,7 +30,7 @@
 ### Вариант B — Через winget (PowerShell от админа)
 
 ```powershell
-winget install EclipseAdoptium.Temurin.17.JDK
+winget install EclipseAdoptium.Temurin.21.JDK
 ```
 
 ### Проверка
@@ -41,7 +39,7 @@ winget install EclipseAdoptium.Temurin.17.JDK
 
 ```bash
 java -version
-# должно вывести: openjdk version "17.0.x"
+# должно вывести: openjdk version "21.0.x"
 echo $JAVA_HOME   # bash/zsh
 $env:JAVA_HOME    # PowerShell
 # должно вывести путь к JDK
@@ -49,7 +47,7 @@ $env:JAVA_HOME    # PowerShell
 
 Если `JAVA_HOME` пустой — установи вручную через:
 - Win+R → `sysdm.cpl` → Environment Variables
-- Добавь `JAVA_HOME` = `C:\Program Files\Eclipse Adoptium\jdk-17.0.x.x-hotspot`
+- Добавь `JAVA_HOME` = `C:\Program Files\Eclipse Adoptium\jdk-21.0.x.x-hotspot`
 - В `Path` добавь `%JAVA_HOME%\bin`
 
 ---
@@ -97,7 +95,7 @@ sdkmanager --version
 sdkmanager --licenses
 
 # Установить базовый набор (~1.5 GB total)
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 ```
 
 После установки `adb` должен работать:
@@ -109,17 +107,20 @@ adb version
 
 ---
 
-## 3. Что НЕ нужно для UI-only APK
+## 3. Нативный VPN core
 
-Если ты хочешь **только UI APK** (без VPN engine), всё готово. Переходи к секции 5.
+Для обычной сборки APK Go и NDK не нужны: готовый AAR уже находится в
+репозитории и уже подключён из committed app module через
+`implementation files('../../libs/clashbox.aar')`.
 
-Для **полного APK с VPN** дополнительно нужно (НО это отдельная задача):
+Только для пересборки самого AAR нужны:
 - Android NDK: `sdkmanager "ndk;26.1.10909125"` (~1 GB)
-- Go 1.22+ (для `gomobile bind`)
-- ~1 час на сборку libbox.aar из sing-box source
+- Go `1.26.6`
+- JDK 21
+- зафиксированные `gomobile`/`gobind`
 
-Эту часть Claude сделает в отдельной сессии (Phase K.5+) когда базовый APK
-будет собран и протестирован.
+Точные версии, checksum и команда воспроизводимой сборки указаны в
+`apps/android/libs/README.md`.
 
 ---
 
@@ -137,16 +138,15 @@ https://github.com/hiddify/hiddify-next/releases/latest
 
 ## 5. Готово — что дальше
 
-Когда `sdkmanager --version` и `adb version` работают, напиши в чат
-**"SDK готов"** и Claude:
+Когда `sdkmanager --version` и `adb version` работают, следующие шаги:
 
-1. Запустит `pnpm cap add android` в `apps/android/`
-2. Скопирует sample Kotlin plugin в нативный проект
-3. Настроит AndroidManifest (permissions, service)
-4. Скачает иконки, splash screen
-5. `gradle assembleDebug` → APK
-6. Подпишет debug ключом
-7. Загрузит APK в GitHub release `v0.2.0-rc1-android`
+1. `pnpm --filter @slave-vpn/windows build`
+2. `pnpm --dir apps/android exec cap sync android`
+3. `pnpm --filter @slave-vpn/android lint:android`
+4. `pnpm --filter @slave-vpn/android build:android:debug`
+5. Установить APK из `apps/android/android/app/build/outputs/apk/debug/`
+6. Прогнать smoke-тест на физическом ARM-устройстве; публикацию выполнять
+   только после проверки release-подписи, VPN lifecycle и сетевого трафика
 
 APK можно ставить на телефон через:
 - Скачать с release page на телефон → открыть → разрешить установку из неизвестных источников
@@ -164,7 +164,7 @@ APK можно ставить на телефон через:
 - Не `C:\Android\cmdline-tools\bin\` (без `latest`)
 
 ### "java.lang.NoClassDefFoundError" при запуске sdkmanager
-- JDK 17 не на PATH, или есть конфликт со старым JRE
+- JDK 21 не на PATH, или есть конфликт со старым JRE
 - В терминале: `where java` (PowerShell `Get-Command java`) — должно показывать **только** Adoptium
 
 ### "gradle: command not found"
@@ -179,7 +179,7 @@ sdkmanager --licenses
 
 ### Установка займёт > 1 ГБ места
 - Это нормально для базового SDK
-- Если место критично — можно после сборки удалить `C:\Android\platforms\android-34\` (~700 MB), оставив только `build-tools` и `platform-tools`
+- Если место критично — можно после сборки удалить старые, неиспользуемые SDK platforms, оставив `android-35`
 
 ---
 
@@ -188,8 +188,8 @@ sdkmanager --licenses
 Если ты в PowerShell от админа и есть winget:
 
 ```powershell
-# JDK 17
-winget install EclipseAdoptium.Temurin.17.JDK --silent
+# JDK 21
+winget install EclipseAdoptium.Temurin.21.JDK --silent
 
 # Скачать cmdline-tools
 $url = "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip"
@@ -210,8 +210,8 @@ if ($path -notmatch "C:\\Android") {
 # !!! Закрой и открой PowerShell !!!
 # Затем:
 sdkmanager --licenses  # y несколько раз
-sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 ```
 
 После этого `sdkmanager --version` + `adb version` должны работать.
-Пиши "SDK готов" — продолжаем.
+После этого committed нативный проект готов к `cap sync`, lint и Gradle-сборке.

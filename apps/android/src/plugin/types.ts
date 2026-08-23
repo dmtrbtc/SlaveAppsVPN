@@ -7,8 +7,8 @@ import type { VPNStatus, VPNMode, TrafficStats } from '@slave-vpn/shared'
 // ─── VPN control ──────────────────────────────────────────────────────────────
 
 export interface SlaveVpnConnectOptions {
-  // sing-box JSON compiled by the renderer. Required — the native plugin
-  // rejects with NO_CONFIG when missing.
+  // Mihomo/Clash YAML compiled by the shared generator. The native plugin
+  // rejects the connection when it is missing.
   config: string
   // Optional metadata (kept for future use / logs)
   subscriptionId?: string

@@ -1,8 +1,9 @@
 # Android Port — Architecture & Roadmap
 
-> **Status:** Foundation document. No working Android build yet — see
-> "What's blocking" at the bottom. Use this as the master plan when starting
-> real work.
+> **Status (2026-08):** the Capacitor project, Kotlin VPN service and Mihomo
+> `v1.19.30` AAR are integrated. Debug and test-signed release APKs build with
+> SDK 35/JVM 21 and pass Android Lint. Sections describing phases are retained
+> as architectural history; the remaining gap is physical-device validation.
 
 ---
 
@@ -29,29 +30,14 @@ prioritise time-to-market.
 
 ## 2. Project structure
 
-```
-apps/
-├── windows/          ← existing Electron app
-├── android/          ← NEW Capacitor wrapper
-│   ├── android/      ← Gradle project, native VpnService plugin
-│   │   └── app/src/main/java/com/slavevpn/
-│   │       ├── MainActivity.kt
-│   │       └── plugin/
-│   │           ├── SlaveVpnPlugin.kt           ← Capacitor plugin entry
-│   │           ├── SlaveVpnService.kt           ← VpnService impl
-│   │           ├── engines/
-│   │           │   ├── MihomoEngineBridge.kt    ← JNI to libmihomo.so
-│   │           │   └── SingboxEngineBridge.kt   ← JNI to libsbox.so
-│   │           └── ipc/
-│   │               └── SubscriptionsBridge.kt
-│   ├── src/
-│   │   ├── shared/   ← copied/symlinked from windows/src/shared
-│   │   └── renderer/ ← reused from windows/src/renderer via tsconfig path
-│   ├── capacitor.config.ts
-│   ├── package.json
-│   └── README.md
-└── shared-mobile/    ← (future) cross-platform main-process logic
-                       extracted from apps/windows/src/main/
+```text
+apps/android/
+├── android/          committed Capacitor/Gradle project
+├── clashbox-src/     gomobile wrapper and reproducible AAR builder
+├── libs/             verified Mihomo AAR
+├── sample-native/    canonical Kotlin plugin and VpnService sources
+├── src/              TypeScript Capacitor bridge
+└── brand-res/        launcher and Quick Settings resources
 ```
 
 Renderer is **shared**, not copied — Capacitor's `webDir` points at the
@@ -277,14 +263,13 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 
 ---
 
-## 8. What's blocking real Android development right now
+## 8. Remaining Android work
 
 | Blocker | How to unblock |
 |---|---|
-| No Android Studio in current dev env | Install JDK 17 + Android Studio + Android SDK |
-| No mobile engine .so files | Either build from upstream Go sources (gomobile) or pull pre-built from hiddify/karing releases |
-| No Android device for testing | Physical device or emulator (slower but workable) |
-| Code signing for Play Store | Create upload key + register on Play Console ($25 one-off) |
+| No device smoke result yet | Test consent, TUN traffic, DNS, kill switch, hand-off and boot on an ARM64 phone |
+| Production signing | Configure the existing CI secrets and verify install-over-update with the real release key |
+| Mutable geo download fallback | Pin geo database releases and checksums before bundling them into release APKs |
 | State-sync uses better-sqlite3 native | Replace with sql.js (WASM) or use Capacitor's native SQLite plugin |
 
 ---
@@ -294,7 +279,7 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 - **mihomo:** GPL-3.0 — bundling its .so as a library means SLAVE VPN
   Android source must also be GPL-3.0 OR offered under a separate license
   with proper attribution. Karing handles this; we should too.
-- **sing-box:** GPL-3.0 — same constraint.
+- **sing-box:** GPL-3.0, but it is not linked into the current Android APK.
 - **Capacitor:** MIT — no issue.
 - **wintun:** GPLv2 — Windows-only, not relevant for Android.
 

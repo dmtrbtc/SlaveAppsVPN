@@ -14,6 +14,7 @@
 
 package com.slavevpn.plugin
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
@@ -61,6 +62,7 @@ class SlaveVpnTileService : TileService() {
         else startService(start)
     }
 
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     private fun openApp() {
         val launch = packageManager.getLaunchIntentForPackage(packageName)
             ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) } ?: return

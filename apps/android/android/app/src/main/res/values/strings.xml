@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SLAVE VPN</string>
+    <string name="title_activity_main">SLAVE VPN</string>
+    <string name="package_name">com.slavevpn.app</string>
+    <string name="custom_url_scheme">com.slavevpn.app</string>
+</resources>

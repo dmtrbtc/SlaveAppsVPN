@@ -8,8 +8,10 @@
     "copy": "cap copy",
     "open": "cap open android",
     "build:web": "pnpm --filter @slave-vpn/windows build",
-    "build:android": "cd android && ./gradlew assembleRelease",
-    "dev": "echo 'See docs/ANDROID.md — Android dev requires Android Studio + JDK 17 + Android SDK'",
+    "build:android:debug": "node scripts/run-gradle.mjs assembleDebug",
+    "build:android": "node scripts/run-gradle.mjs assembleRelease",
+    "lint:android": "node scripts/run-gradle.mjs lintDebug",
+    "dev": "echo 'See apps/android/README.md — Android requires JDK 21 + SDK 35'",
     "doctor": "cap doctor",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf android/app/build node_modules"

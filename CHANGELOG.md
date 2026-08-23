@@ -2,38 +2,59 @@
 
 All notable changes to SLAVE VPN are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Windows Mihomo core updated from `v1.19.27` to `v1.19.30` (`ac017cd`).
+- Android `clashbox.aar` updated to the same Mihomo `v1.19.30` source and rebuilt reproducibly with Go `1.26.6`; independent clean checkouts now produce the pinned artifact SHA-256.
+- The native Capacitor Android project is now committed and builds the Kotlin VPN service, Quick Settings tile, boot receiver and Mihomo AAR directly, with SDK 35/JVM 21 and Android Lint in CI.
+- Engine downloads now verify the pinned release-archive and extracted-binary SHA-256 before replacing an installed core.
+- Windows CI now validates generated Windows and Android configurations with the pinned real core via `mihomo -t`, covering VLESS Encryption/ML-KEM, Reality/Vision, Hysteria2, TUIC, TUN/gVisor, fake-IP and Android routing/DNS modes.
+
+### Fixed
+
+- Windows binary setup no longer requires a separately installed `unzip`; it falls back to the system `tar` implementation available on Windows and GitHub runners.
+- A stale `mihomo.exe` is no longer silently accepted after the pinned engine version changes.
+
 ## [0.3.0-rc1] — 2026-05-18
 
 ### Added
 
 **Safe Mode + Startup Recovery (Iter 9 Stage 4)**
+
 - `SafeModeManager`: detects crash loops (3 failed starts within 45s each), enters safe mode; resets after 60s healthy uptime; persists `launch-record.json` in userData
 - `SafeModeBanner`: dismissible orange banner with launch count, reset button, export diagnostics; `useSafeMode` hook polls every 60s
 - `SAFE_MODE_GET_STATUS` and `SAFE_MODE_RESET` IPC channels
 
 **Subscription node preview (Iter 9 Stage 5)**
+
 - `ConfigSourceValidateResult` extended with `nodeCount`, `protocols` map, `sampleNodes[]`
 - `NodePreviewPanel`: protocol badges (REALITY/WS/gRPC) + first 3 server names shown after validation
 - Single-proxy validation returns inline sampleNodes data
 
 **Reality node health (Iter 9 Stage 6)**
+
 - `NodeHealthManager`: per-node failure counter with exponential backoff quarantine (30s→5min cap), 10-min idle cleanup
 - Failure recorded against `activeProxy` on every classified Mihomo log error
 - `reconnect.success` records success to reduce failure count
 - Quarantined node list reported in `getConnectivity()` response
 
 **Connectivity intelligence (Iter 9 Stage 7)**
+
 - `detectCaptivePortal()`: passive HTTP 204 check (only fires when connectivity already broken)
 - `buildSuggestion()`: actionable Russian hint based on current health degradation reason
 - `VPNConnectivityInfo` gains `captivePortal?`, `quarantinedNodes?`, `suggestion?`
 - DiagnosticsPage: captive portal warning + suggestion banner + quarantined count display
 
 **UX polish (Iter 9 Stage 8)**
+
 - `@media (prefers-reduced-motion)`: all animations disabled at CSS level
 - `:focus-visible` ring: consistent 2px accent outline across entire app
 - `aria-label` on SafeModeBanner, OfflineBanner interactive elements
 
 ### Documentation
+
 - `PRODUCTION_HARDENING_AUDIT.md`: full coverage matrix (43 checks)
 - `ROADMAP.md`: v0.3→v0.5 feature timeline
 - `SECURITY.md`: vulnerability reporting + security design
@@ -43,6 +64,7 @@ All notable changes to SLAVE VPN are documented here.
 ### Added
 
 **Subscription pipeline (Iter 7)**
+
 - VLESS-FIRST parser: full Reality, WS, gRPC, H2, HTTPUpgrade support including `pbk/sid/fp/flow/alpn/packetEncoding`
 - Trojan, Hysteria2, TUIC, Shadowsocks parsers
 - Proper Mihomo YAML generation (block-style, not JSON.stringify)
@@ -53,12 +75,14 @@ All notable changes to SLAVE VPN are documented here.
 - Protocol badges (REALITY / WS / gRPC / TLS) on Servers page
 
 **Runtime stabilization (Iter 8)**
+
 - Pre-flight validation before every `connect()`: checks mihomo.exe, wintun.dll, working dir writable, API port free
 - Mihomo log line classifier: detects Reality handshake failures, XTLS flow mismatch, TLS cert errors, DNS resolution failures, connection refused, timeout — 10s deduplication per error kind
 - `VPN_GET_CONNECTIVITY` IPC: returns health snapshot (6 status flags + health score 0-100 + active proxy name + proxy count)
 - Diagnostics page rewritten: Connectivity panel with health bar, 6 status dots, engine state badge, active proxy
 
 **Production hardening (Iter 9)**
+
 - `UpdateService`: manual check, download, install with per-byte progress tracking; no auto-install without user confirmation
 - Update channel selection (stable / beta) persisted to settings
 - `EVENT_UPDATE_PROGRESS` push events enable download progress bar in renderer

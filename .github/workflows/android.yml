@@ -1,13 +1,21 @@
 name: Android APK
 
-# Manual trigger + on tag push (vX.Y.Z) — uploads APK to the corresponding release
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to attach APK to (e.g. v0.2.0-rc1)'
+        description: 'Release tag to attach APK to (e.g. v0.3.0)'
         required: false
         default: ''
+  pull_request:
+    paths:
+      - '.github/workflows/android.yml'
+      - 'apps/android/**'
+      - 'apps/windows/src/renderer/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
   push:
     tags:
       - 'v*'
@@ -16,7 +24,7 @@ jobs:
   build-android:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # to upload to releases
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -26,338 +34,138 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          cache: gradle
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK 35
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Set up Node 20 + pnpm
-        uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@v3
         with:
           version: 9
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
 
-      - name: Install monorepo deps
-        run: pnpm install --no-frozen-lockfile
+      - name: Install monorepo dependencies
+        run: pnpm install --frozen-lockfile
 
-      # Bake the git TAG into the app version BEFORE the web bundle is built, so
-      # __APP_VERSION__ (from npm_package_version) and the Android versionName carry
-      # the FULL version — including a -dev.N prerelease suffix. Without this a dev
-      # build reports the bare "0.2.29", which semver treats as NEWER than any
-      # "0.2.29-dev.N" prerelease → the in-app updater never offers dev builds.
-      - name: Sync app version from tag
+      - name: Sync application version from tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="$(echo "$GITHUB_REF_NAME" | sed 's/^v//')"
           npm --prefix apps/windows pkg set version="$VER"
-          echo "app version → $VER"
+          npm --prefix apps/android pkg set version="$VER"
 
-      - name: Build shared packages first (dep order matters)
+      - name: Build shared packages
         run: pnpm --filter "./packages/**" build
 
-      - name: Build shared web bundle (Windows renderer used as Android UI)
+      - name: Build Android web bundle
         run: pnpm --filter @slave-vpn/windows build
 
-      - name: Capacitor add android (first time)
+      - name: Sync committed Capacitor project
         working-directory: apps/android
-        run: |
-          if [ ! -d "android" ]; then
-            pnpm exec cap add android
-          fi
+        run: pnpm exec cap sync android
 
-      - name: Enable Kotlin in the generated Android project
+      - name: Android lint
         working-directory: apps/android/android
         run: |
-          set -e
-          # The Capacitor template applies ONLY 'com.android.application' — no
-          # Kotlin plugin. Without this our *.kt plugin files (SlaveVpnPlugin,
-          # SlaveVpnService, SingboxBridge) are silently skipped by the Java
-          # compiler, the SlaveVpn plugin class never lands in the APK, and the
-          # JS side throws `"SlaveVpn" plugin is not implemented on android`.
-          if ! grep -q 'kotlin-gradle-plugin' build.gradle; then
-            sed -i "/com.android.tools.build:gradle:/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.25'" build.gradle
-          fi
-          if ! grep -q "kotlin-android" app/build.gradle; then
-            sed -i "/apply plugin: 'com.android.application'/a apply plugin: 'kotlin-android'" app/build.gradle
-          fi
-          # Kotlin JVM target must match Capacitor's Java 21 compileOptions or
-          # Gradle fails with "Inconsistent JVM-target compatibility".
-          if ! grep -q "jvmTarget" app/build.gradle; then
-            sed -i 's|android {|android {\n    kotlinOptions { jvmTarget = "21" }|' app/build.gradle
-          fi
-          echo "=== root build.gradle classpaths ==="; grep -n "classpath" build.gradle
-          echo "=== app build.gradle head ==="; head -6 app/build.gradle
+          chmod +x gradlew
+          ./gradlew lintDebug --no-daemon
 
-      - name: Copy sample Kotlin plugin
-        working-directory: apps/android
-        run: |
-          mkdir -p android/app/src/main/java/com/slavevpn/plugin
-          cp sample-native/SlaveVpnPlugin/*.kt android/app/src/main/java/com/slavevpn/plugin/
-
-      - name: Apply Slave Apps brand launcher icons
-        working-directory: apps/android
-        run: |
-          set -e
-          RES=android/app/src/main/res
-          # Drop the Capacitor template's default ic_launcher set so brand assets
-          # overlay cleanly (no leftover vector foreground/background referencing
-          # a now-missing resource, no duplicate ic_launcher_background).
-          rm -f  $RES/mipmap-anydpi-v26/ic_launcher*.xml
-          rm -f  $RES/mipmap-*/ic_launcher*.png
-          rm -f  $RES/drawable*/ic_launcher_*.xml $RES/drawable*/ic_launcher_*.png
-          rm -f  $RES/values*/ic_launcher_background.xml
-          # Overlay the tracked brand resources (adaptive icon + all densities +
-          # monochrome for Android 13 themed icons + #100C1C background colour).
-          cp -r brand-res/mipmap-anydpi-v26 brand-res/mipmap-mdpi brand-res/mipmap-hdpi \
-                brand-res/mipmap-xhdpi brand-res/mipmap-xxhdpi brand-res/mipmap-xxxhdpi \
-                brand-res/values $RES/
-          # Vector drawables (Quick Settings tile icon, etc.) — merge into res/drawable.
-          if [ -d brand-res/drawable ]; then
-            mkdir -p $RES/drawable
-            cp brand-res/drawable/*.xml $RES/drawable/
-          fi
-          echo "=== launcher icons applied ==="
-          ls -R $RES/mipmap-anydpi-v26 $RES/mipmap-xxxhdpi $RES/values | grep -i ic_launcher || true
-
-      - name: Register SlaveVpnPlugin in MainActivity
-        working-directory: apps/android
-        run: |
-          set -e
-          # IMPORTANT: appId is com.slavevpn.app, so Capacitor generates the
-          # launcher activity at com/slavevpn/app/MainActivity.java. We must
-          # register the plugin in THAT activity (the one the manifest launches)
-          # — registering in com.slavevpn.MainActivity did nothing because that
-          # activity was never started.
-          PKG_DIR=android/app/src/main/java/com/slavevpn/app
-          mkdir -p "$PKG_DIR"
-          # Drop the auto-generated Java launcher so it can't shadow our Kotlin
-          # one (duplicate class) and so the plugin actually gets registered.
-          rm -f "$PKG_DIR/MainActivity.java"
-          # Clean up the stale wrong-package activity from earlier CI versions.
-          rm -f android/app/src/main/java/com/slavevpn/MainActivity.kt
-          MAIN="$PKG_DIR/MainActivity.kt"
-          cat > "$MAIN" <<'EOF'
-          package com.slavevpn.app
-
-          import android.os.Bundle
-          import com.getcapacitor.BridgeActivity
-          import com.slavevpn.plugin.SlaveVpnPlugin
-
-          class MainActivity : BridgeActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  registerPlugin(SlaveVpnPlugin::class.java)
-                  super.onCreate(savedInstanceState)
-              }
-          }
-          EOF
-          echo "MainActivity.kt wired with SlaveVpnPlugin registration:"
-          cat "$MAIN"
-          echo "=== launcher package in manifest ==="
-          grep -n 'package=' android/app/src/main/AndroidManifest.xml || true
-
-      - name: Copy core .aar (clashbox = mihomo/Clash.Meta engine, VLESS-enc capable)
-        working-directory: apps/android
-        run: |
-          mkdir -p android/app/libs
-          shopt -s nullglob
-          aars=(libs/*.aar)
-          if [ ${#aars[@]} -gt 0 ]; then
-            cp libs/*.aar android/app/libs/
-            for f in "${aars[@]}"; do echo "copied $(basename "$f") ($(du -h "$f" | cut -f1))"; done
-          else
-            echo "WARNING: apps/android/libs/*.aar missing — APK will lack the VPN engine"
-          fi
-
-      - name: Bundle geo databases (geoip/geosite) into the APK
-        working-directory: apps/android
-        run: |
-          # Ship the geo .dat in assets so the native core loads them locally and
-          # does NOT download ~23 MB via geox-url on the first connect (that cold
-          # download was the occasional first-connect timeout). Non-fatal: if the
-          # download fails the core still falls back to geox-url at runtime.
-          mkdir -p android/app/src/main/assets/geo
-          base="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest"
-          curl -fsSL -o android/app/src/main/assets/geo/geoip.dat   "$base/geoip.dat"   || echo "WARN: geoip.dat download failed"
-          curl -fsSL -o android/app/src/main/assets/geo/geosite.dat "$base/geosite.dat" || echo "WARN: geosite.dat download failed"
-          ls -la android/app/src/main/assets/geo/ || true
-
-      - name: Patch AndroidManifest with VPN permissions + service
-        working-directory: apps/android/android/app/src/main
-        run: |
-          set -e
-          if ! grep -q 'BIND_VPN_SERVICE' AndroidManifest.xml; then
-            # Insert permissions before <application>
-            sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />\n\n    <application|' AndroidManifest.xml
-
-            # Insert service before </application>
-            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnService"\n            android:permission="android.permission.BIND_VPN_SERVICE"\n            android:foregroundServiceType="specialUse"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.net.VpnService" />\n            </intent-filter>\n            <property\n                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"\n                android:value="VPN tunnel for SLAVE VPN" />\n        </service>\n    </application>|' AndroidManifest.xml
-          fi
-
-          # Quick Settings tile (notification-shade toggle). Separate guard so it
-          # is added even on a manifest that already had the VPN service.
-          if ! grep -q 'SlaveVpnTileService' AndroidManifest.xml; then
-            sed -i 's|</application>|        <service\n            android:name="com.slavevpn.plugin.SlaveVpnTileService"\n            android:icon="@drawable/ic_tile_vpn"\n            android:label="SLAVE VPN"\n            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"\n            android:exported="true">\n            <intent-filter>\n                <action android:name="android.service.quicksettings.action.QS_TILE" />\n            </intent-filter>\n        </service>\n    </application>|' AndroidManifest.xml
-          fi
-
-          # Boot receiver — auto-connect after device restart (reads the
-          # connect_on_boot flag + cached config; no-op without VPN consent).
-          if ! grep -q 'BootReceiver' AndroidManifest.xml; then
-            sed -i 's|</application>|        <receiver\n            android:name="com.slavevpn.plugin.BootReceiver"\n            android:enabled="true"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="android.intent.action.BOOT_COMPLETED" />\n            </intent-filter>\n        </receiver>\n    </application>|' AndroidManifest.xml
-          fi
-
-          # Battery-optimization exemption (sideloaded app — Play policy N/A):
-          # lets the «Разрешить работу в фоне» button show the system dialog.
-          if ! grep -q 'REQUEST_IGNORE_BATTERY_OPTIMIZATIONS' AndroidManifest.xml; then
-            sed -i 's|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />|<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />|' AndroidManifest.xml
-          fi
-
-          # Deep link: slavevpn://import/<url> → open the app (subscription import).
-          # Inserted into the launcher activity (MainActivity); @capacitor/app then
-          # surfaces the URL to the renderer (useDeepLinkImport). 0,/…/ = first
-          # </activity> only (MainActivity), leaving service/receiver blocks alone.
-          if ! grep -q 'android:scheme="slavevpn"' AndroidManifest.xml; then
-            sed -i '0,/<\/activity>/s||            <intent-filter android:autoVerify="false">\n                <action android:name="android.intent.action.VIEW" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <category android:name="android.intent.category.BROWSABLE" />\n                <data android:scheme="slavevpn" android:host="import" />\n            </intent-filter>\n        </activity>|' AndroidManifest.xml
-          fi
-
-      - name: Add Kotlin coroutines + androidx-core + libbox dependencies
-        working-directory: apps/android/android/app
-        run: |
-          if ! grep -q 'kotlinx-coroutines-android' build.gradle; then
-            sed -i "s|dependencies {|dependencies {\n    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0'\n    implementation 'androidx.core:core-ktx:1.13.0'\n    implementation fileTree(dir: 'libs', include: ['*.aar'])|" build.gradle
-          fi
-          # libbox needs minSdk 21 (already default in Capacitor projects)
-          # Disable strict packaging — libbox.aar may have duplicate META-INF entries
-          if ! grep -q 'jniLibs.useLegacyPackaging' build.gradle; then
-            sed -i 's|android {|android {\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging = false\n            pickFirsts += ["**/libc++_shared.so"]\n        }\n        resources {\n            excludes += ["META-INF/LICENSE", "META-INF/LICENSE.txt", "META-INF/NOTICE", "META-INF/NOTICE.txt"]\n        }\n    }|' build.gradle
-          fi
-
-      - name: Set app version (name from package.json, code from run number)
-        working-directory: apps/android/android/app
-        run: |
-          VER=$(node -p "require('${{ github.workspace }}/apps/windows/package.json').version")
-          sed -i "s/versionName \"[^\"]*\"/versionName \"$VER\"/" build.gradle
-          sed -i "s/versionCode [0-9][0-9]*/versionCode ${{ github.run_number }}/" build.gradle
-          grep -E "versionName|versionCode" build.gradle
-
-      - name: Capacitor sync
-        working-directory: apps/android
-        run: |
-          pnpm exec cap copy android
-          pnpm exec cap sync android
-
-      - name: Configure release signing (when keystore secret present)
+      - name: Configure release signing
         id: signing
         working-directory: apps/android/android/app
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          set -e
-          # R4 — release signing. When the ANDROID_KEYSTORE_BASE64 secret is set
-          # we decode the keystore and inject a release signingConfig into the
-          # Capacitor-generated app/build.gradle, then build a properly signed
-          # `assembleRelease`. Without the secret (forks / before setup) we fall
-          # back to the debug build so CI never breaks. See docs/ANDROID_SIGNING.md.
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
-            if ! grep -q "signingConfigs" build.gradle; then
-              sed -i 's|android {|android {\n    signingConfigs {\n        release {\n            storeFile file("release.keystore")\n            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n            keyAlias System.getenv("ANDROID_KEY_ALIAS")\n            keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n        }\n    }|' build.gradle
-            fi
-            # Attach the signingConfig to the release buildType. Preferred anchor:
-            # the line right after `minifyEnabled` (Capacitor's default template has
-            # it only inside buildTypes.release). Fallback (if a future template drops
-            # minifyEnabled): inject right after the `release {` that sits INSIDE the
-            # buildTypes block — the range guard /buildTypes {/,/^    }/ keeps it from
-            # matching the signingConfigs.release block above. Both verified by dry-run.
-            if ! grep -q "signingConfig signingConfigs.release" build.gradle; then
-              if grep -q "minifyEnabled" build.gradle; then
-                sed -i '/minifyEnabled/a\            signingConfig signingConfigs.release' build.gradle
-              else
-                sed -i '/buildTypes {/,/^    }/ s|release {|release {\n            signingConfig signingConfigs.release|' build.gradle
-              fi
-            fi
-            # Fail LOUDLY if either piece is missing — never silently ship an unsigned
-            # release APK (which would break install-over-top, the whole point of this).
-            if ! grep -q "signingConfigs {" build.gradle || ! grep -q "signingConfig signingConfigs.release" build.gradle; then
-              echo "ERROR: signing injection failed — build.gradle below:"
-              grep -nE 'android \{|buildTypes|release \{|minifyEnabled|signingConfig' build.gradle || true
-              exit 1
-            fi
             echo "signed=true" >> "$GITHUB_OUTPUT"
-            echo "Release signing configured."
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "No ANDROID_KEYSTORE_BASE64 secret — falling back to a debug build."
           fi
 
       - name: Build APK
         working-directory: apps/android/android
         env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/apps/android/android/app/release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          chmod +x gradlew
-          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
-            ./gradlew assembleRelease --no-daemon
+          if [ "$SIGNED" = "true" ]; then
+            ./gradlew assembleRelease --no-daemon -PslaveVersionCode="$GITHUB_RUN_NUMBER"
           else
-            ./gradlew assembleDebug --no-daemon
+            unset ANDROID_KEYSTORE_PATH
+            ./gradlew assembleDebug --no-daemon -PslaveVersionCode="$GITHUB_RUN_NUMBER"
           fi
 
-      - name: Verify release APK is signed by our keystore (signed builds)
+      - name: Verify APK structure and signature
+        working-directory: apps/android/android
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          if [ "$SIGNED" = "true" ]; then
+            APK=app/build/outputs/apk/release/app-release.apk
+          else
+            APK=app/build/outputs/apk/debug/app-debug.apk
+          fi
+          test -f "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libgojni.so'
+          unzip -l "$APK" | grep -q 'lib/armeabi-v7a/libgojni.so'
+          unzip -l "$APK" | grep -q 'assets/public/index.html'
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$BT/apksigner" verify --verbose "$APK"
+          "$BT/aapt" dump badging "$APK" | grep "package: name='com.slavevpn.app'"
+
+      - name: Verify release signing certificate
         if: steps.signing.outputs.signed == 'true'
         working-directory: apps/android/android
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          set -e
           APK=app/build/outputs/apk/release/app-release.apk
-          test -f "$APK" || { echo "ERROR: signed app-release.apk not produced"; ls -R app/build/outputs/apk || true; exit 1; }
-          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
-          # Cert SHA-256 the APK was actually signed with, vs the one in the keystore.
-          # Deriving the expected value from the decoded keystore (not a hardcoded
-          # constant) keeps this correct across future key rotations.
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
           GOT=$("$BT/apksigner" verify --print-certs "$APK" | grep -ioE 'SHA-256 digest: [0-9a-f]+' | head -1 | awk '{print $NF}')
           EXP=$(keytool -list -keystore app/release.keystore -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" -v | grep -i 'SHA256:' | head -1 | awk '{print $2}' | tr -d ':' | tr 'A-F' 'a-f')
-          echo "expected (keystore): $EXP"
-          echo "actual   (apk):      $GOT"
-          { [ -n "$GOT" ] && [ "$GOT" = "$EXP" ]; } || { echo "ERROR: APK is NOT signed by the release key — install-over-top would break"; exit 1; }
-          echo "OK: APK signed by the SLAVE VPN release key (install-over-top works)."
+          test -n "$GOT"
+          test "$GOT" = "$EXP"
 
-      - name: Rename APK
+      - name: Collect APK
+        if: github.event_name != 'pull_request'
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
           mkdir -p artifacts
-          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
-            cp apps/android/android/app/build/outputs/apk/release/app-release.apk \
-               artifacts/SlaveAppsVPN-Android.apk
+          if [ "$SIGNED" = "true" ]; then
+            cp apps/android/android/app/build/outputs/apk/release/app-release.apk artifacts/SlaveAppsVPN-Android.apk
           else
-            cp apps/android/android/app/build/outputs/apk/debug/app-debug.apk \
-               artifacts/SlaveAppsVPN-Android.apk
+            cp apps/android/android/app/build/outputs/apk/debug/app-debug.apk artifacts/SlaveAppsVPN-Android.apk
           fi
-          echo "APK: $(du -h artifacts/SlaveAppsVPN-Android.apk | cut -f1) (signed=${{ steps.signing.outputs.signed }})"
 
-      - name: Upload APK as workflow artifact
+      - name: Upload APK artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: SlaveAppsVPN-Android
           path: artifacts/SlaveAppsVPN-Android.apk
           if-no-files-found: error
 
-      - name: Attach APK to release (when triggered by tag push)
+      - name: Attach APK to tag release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/SlaveAppsVPN-Android.apk
 
-      - name: Attach APK to existing release (manual trigger with tag)
+      - name: Attach APK to existing release
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.event.inputs.release_tag }}" \
-            artifacts/SlaveAppsVPN-Android.apk \
-            --clobber
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" artifacts/SlaveAppsVPN-Android.apk --clobber

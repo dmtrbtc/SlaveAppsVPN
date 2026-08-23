@@ -22,13 +22,23 @@
  * On CI, run this before `electron-builder` so binaries end up in extraResources.
  */
 
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, copyFileSync, unlinkSync, rmSync } from 'fs'
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  copyFileSync,
+  unlinkSync,
+  rmSync,
+} from 'fs'
 import { createHash } from 'crypto'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import https from 'https'
+import { MIHOMO_WINDOWS } from './engine-manifest.mjs'
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
@@ -39,17 +49,11 @@ const BIN_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'bin')
 const RULES_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'rules')
 
 // ─── Engine specs ─────────────────────────────────────────────────────────────
-// Versions pinned for reproducibility. Update when bumping engine versions —
-// CHANGELOG entry + SHA256 in tests.
+// Versions and checksums pinned for reproducibility. Update both when bumping
+// an engine, and record the change in CHANGELOG.
 
 const ENGINES = {
-  mihomo: {
-    version: 'v1.19.27',
-    url: 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.27/mihomo-windows-amd64-v1.19.27.zip',
-    archive: 'zip',
-    archiveMember: /mihomo-windows-amd64\.exe$/,
-    outName: 'mihomo.exe',
-  },
+  mihomo: MIHOMO_WINDOWS,
   singbox: {
     version: '1.13.12',
     url: 'https://github.com/SagerNet/sing-box/releases/download/v1.13.12/sing-box-1.13.12-windows-amd64.zip',
@@ -135,22 +139,31 @@ const GEO_DATABASES = {
 // Auto-update URLs — these are referenced at runtime by GeoUpdaterService
 // (not part of build-time download). Listed here for documentation.
 export const GEO_AUTO_UPDATE_SOURCES = {
-  'runetfreedom-geosite': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/geosite-ru-only.dat',
-  'runetfreedom-youtube': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/youtube.txt',
-  'runetfreedom-discord': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/discord.txt',
-  'runetfreedom-ru-blocked': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/ru-blocked.txt',
-  'runetfreedom-antifilter': 'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/antifilter-download.txt',
-  'meta-rules-geoip': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
-  'meta-rules-geosite': 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
-  'roscomvpn-geosite': 'https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat',
-  'roscomvpn-geoip': 'https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat',
+  'runetfreedom-geosite':
+    'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/geosite-ru-only.dat',
+  'runetfreedom-youtube':
+    'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/youtube.txt',
+  'runetfreedom-discord':
+    'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/discord.txt',
+  'runetfreedom-ru-blocked':
+    'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/ru-blocked.txt',
+  'runetfreedom-antifilter':
+    'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/antifilter-download.txt',
+  'meta-rules-geoip':
+    'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+  'meta-rules-geosite':
+    'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+  'roscomvpn-geosite':
+    'https://github.com/hydraponique/roscomvpn-geosite/releases/latest/download/geosite.dat',
+  'roscomvpn-geoip':
+    'https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat',
 }
 
 // ─── CLI args ─────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2)
 const force = args.includes('--force')
-const onlyEngineArg = args.find(a => a.startsWith('--engine='))
+const onlyEngineArg = args.find((a) => a.startsWith('--engine='))
 const onlyEngine = onlyEngineArg ? onlyEngineArg.slice('--engine='.length) : null
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -220,18 +233,19 @@ function downloadTo(url, destPath, redirectBudget = 5) {
 }
 
 function extractZipMember(zipPath, memberRegex, destPath) {
-  // Try unzip CLI first (faster, smaller mem). Fallback: error — we don't bundle
-  // a JS zip lib to keep this script dependency-free.
-  const probe = spawnSync('unzip', ['-l', zipPath], { encoding: 'utf8' })
-  if (probe.status !== 0) {
-    throw new Error(`unzip not available. Install it or use a release that ships unpacked binaries.`)
+  // Prefer unzip on Unix. Windows ships bsdtar, which can also read zip files.
+  // Keeping both paths avoids a JS zip dependency and works on GitHub runners.
+  const unzipProbe = spawnSync('unzip', ['-l', zipPath], { encoding: 'utf8' })
+  const useUnzip = unzipProbe.status === 0
+  const tarProbe = useUnzip ? null : spawnSync('tar', ['-tf', zipPath], { encoding: 'utf8' })
+  if (!useUnzip && tarProbe?.status !== 0) {
+    throw new Error(`Neither unzip nor tar can read ${zipPath}`)
   }
 
-  const lines = probe.stdout.split('\n')
+  const lines = (useUnzip ? unzipProbe.stdout : tarProbe.stdout).split('\n')
   let match = null
   for (const line of lines) {
-    const parts = line.trim().split(/\s+/)
-    const candidate = parts[parts.length - 1]
+    const candidate = useUnzip ? line.trim().split(/\s+/).at(-1) : line.trim()
     if (candidate && memberRegex.test(candidate)) {
       match = candidate
       break
@@ -243,14 +257,17 @@ function extractZipMember(zipPath, memberRegex, destPath) {
 
   const stageDir = join(tmpdir(), `slave-extract-${Date.now()}`)
   mkdirSync(stageDir, { recursive: true })
-  const extract = spawnSync('unzip', ['-j', '-o', zipPath, match, '-d', stageDir], { encoding: 'utf8' })
+  const extract = useUnzip
+    ? spawnSync('unzip', ['-j', '-o', zipPath, match, '-d', stageDir], { encoding: 'utf8' })
+    : spawnSync('tar', ['-xf', zipPath, '-C', stageDir, match], { encoding: 'utf8' })
   if (extract.status !== 0) {
     rmSync(stageDir, { recursive: true, force: true })
-    throw new Error(`unzip failed: ${extract.stderr || extract.stdout}`)
+    throw new Error(`Archive extraction failed: ${extract.stderr || extract.stdout}`)
   }
 
-  const extractedName = match.split('/').pop()
-  const extractedPath = join(stageDir, extractedName)
+  const extractedPath = useUnzip
+    ? join(stageDir, match.split('/').pop())
+    : join(stageDir, ...match.split('/'))
   if (!existsSync(extractedPath)) {
     rmSync(stageDir, { recursive: true, force: true })
     throw new Error(`Extraction succeeded but file not found at ${extractedPath}`)
@@ -266,8 +283,13 @@ async function processEngine(name, spec) {
   const outPath = join(outDir, spec.outName)
   if (existsSync(outPath) && !force) {
     const size = statSync(outPath).size
-    log(`✓ ${name} — already present (${bytesHuman(size)})`)
-    return { name, status: 'skipped' }
+    const actualSha256 = sha256File(outPath)
+    if (!spec.binarySha256 || actualSha256 === spec.binarySha256) {
+      const integrity = spec.binarySha256 ? 'sha256 verified' : 'checksum not pinned'
+      log(`✓ ${name} — already present (${bytesHuman(size)}, ${integrity})`)
+      return { name, status: 'skipped', sha: actualSha256 }
+    }
+    log(`! ${name} — installed binary checksum does not match ${spec.version}; re-downloading`)
   }
 
   log(`▼ ${name}${spec.version ? ` ${spec.version}` : ''}`)
@@ -296,19 +318,36 @@ async function processEngine(name, spec) {
 
   // Archived downloads (engines) — extract one member
   const tmpArchive = join(tmpdir(), `slave-${name}-${Date.now()}.${spec.archive}`)
+  const tmpBinary = join(tmpdir(), `slave-${name}-${Date.now()}.bin`)
   try {
     const bytes = await downloadTo(spec.url, tmpArchive)
     log(`  downloaded ${bytesHuman(bytes)}`)
-    extractZipMember(tmpArchive, spec.archiveMember, outPath)
-    const sha = sha256File(outPath)
+    const archiveSha256 = sha256File(tmpArchive)
+    if (spec.archiveSha256 && archiveSha256 !== spec.archiveSha256) {
+      throw new Error(
+        `Archive SHA256 mismatch: expected ${spec.archiveSha256}, got ${archiveSha256}`
+      )
+    }
+    log(`  archive sha256: ${archiveSha256}${spec.archiveSha256 ? ' (verified)' : ''}`)
+
+    extractZipMember(tmpArchive, spec.archiveMember, tmpBinary)
+    const sha = sha256File(tmpBinary)
+    if (spec.binarySha256 && sha !== spec.binarySha256) {
+      throw new Error(`Binary SHA256 mismatch: expected ${spec.binarySha256}, got ${sha}`)
+    }
+
+    // Replace the installed binary only after every available integrity check
+    // passes, preserving the previous working engine on download/extract errors.
+    copyFileSync(tmpBinary, outPath)
     log(`  → ${outPath}`)
-    log(`  sha256: ${sha}`)
+    log(`  binary sha256: ${sha}${spec.binarySha256 ? ' (verified)' : ''}`)
     return { name, status: 'ok', sha }
   } catch (err) {
     fail(`${name} failed: ${err.message}`)
     return { name, status: 'failed', error: err.message }
   } finally {
     if (existsSync(tmpArchive)) rmSync(tmpArchive, { force: true })
+    if (existsSync(tmpBinary)) rmSync(tmpBinary, { force: true })
   }
 }
 
@@ -325,10 +364,10 @@ async function main() {
   const targets = onlyEngine
     ? { [onlyEngine]: allTargets[onlyEngine] }
     : onlyGeo
-    ? GEO_DATABASES
-    : skipGeo
-    ? ENGINES
-    : allTargets
+      ? GEO_DATABASES
+      : skipGeo
+        ? ENGINES
+        : allTargets
 
   for (const k of Object.keys(targets)) {
     if (!targets[k]) {
@@ -349,14 +388,14 @@ async function main() {
     log(`  ${r.name}: ${r.status}${r.error ? ` (${r.error})` : ''}`)
   }
 
-  const failures = results.filter(r => r.status === 'failed')
+  const failures = results.filter((r) => r.status === 'failed')
   if (failures.length > 0) {
     fail(`${failures.length} target(s) failed`)
     process.exit(1)
   }
 }
 
-main().catch(err => {
+main().catch((err) => {
   fail(err.stack || err.message || String(err))
   process.exit(1)
 })

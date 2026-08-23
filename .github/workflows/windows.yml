@@ -50,6 +50,9 @@ jobs:
       - name: Build shared packages first
         run: pnpm --filter "./packages/**" build
 
+      - name: Validate generated Mihomo configurations
+        run: node scripts/validate-mihomo-configs.mjs
+
       - name: Build installer
         working-directory: apps/windows
         run: pnpm dist

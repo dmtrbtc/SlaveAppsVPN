@@ -1,15 +1,7 @@
 /*
- * SAMPLE — not wired into a real Android project yet.
- *
- * Copy this file into android/app/src/main/java/com/slavevpn/plugin/ after
- * running `pnpm cap add android`. Then add to MainActivity's plugin list:
- *   registerPlugin(SlaveVpnPlugin::class.java)
- *
- * This file shows the minimum surface needed for Phase I-C (basic
- * VpnService that establishes a TUN but doesn't route real traffic).
- *
- * Real engine integration (mihomo / sing-box .so libraries) comes later
- * in Phase I-D. See docs/ANDROID.md for the full roadmap.
+ * Capacitor native bridge for the committed Android application. Gradle reads
+ * this canonical source directory directly; MainActivity registers the plugin
+ * and SlaveVpnService routes the TUN through the embedded Mihomo AAR.
  */
 
 package com.slavevpn.plugin
@@ -40,6 +32,7 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
+import com.slavevpn.app.R
 
 @CapacitorPlugin(
     name = "SlaveVpn",
@@ -184,9 +177,7 @@ class SlaveVpnPlugin : Plugin() {
         tilePromptedThisSession = true
         try {
             val sbm = act.getSystemService(android.app.StatusBarManager::class.java) ?: return
-            val iconId = act.resources.getIdentifier("ic_tile_vpn", "drawable", act.packageName)
-            if (iconId == 0) return
-            val icon = android.graphics.drawable.Icon.createWithResource(act, iconId)
+            val icon = android.graphics.drawable.Icon.createWithResource(act, R.drawable.ic_tile_vpn)
             val component = android.content.ComponentName(act, SlaveVpnTileService::class.java)
             sbm.requestAddTileService(
                 component,
@@ -415,12 +406,6 @@ class SlaveVpnPlugin : Plugin() {
      */
     @PluginMethod
     fun requestIgnoreBatteryOptimizations(call: PluginCall) {
-        // Battery optimization APIs are API 23+ (Doze didn't exist before). minSdk
-        // is 21, so guard — pre-23 there's nothing to exempt.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            call.resolve()
-            return
-        }
         try {
             val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
             val alreadyExempt = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
@@ -494,7 +479,15 @@ class SlaveVpnPlugin : Plugin() {
         val pm = context.packageManager
         val apps = org.json.JSONArray()
         try {
-            for (ai in pm.getInstalledApplications(android.content.pm.PackageManager.GET_META_DATA)) {
+            // Android 11+ hides arbitrary installed packages. Query launchable
+            // applications instead of requesting the privacy-sensitive
+            // QUERY_ALL_PACKAGES permission; those are the apps a user can
+            // meaningfully select in the split-tunnel UI.
+            val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val seen = mutableSetOf<String>()
+            for (resolved in pm.queryIntentActivities(launcherIntent, android.content.pm.PackageManager.MATCH_ALL)) {
+                val ai = resolved.activityInfo?.applicationInfo ?: continue
+                if (!seen.add(ai.packageName)) continue
                 if (ai.packageName == context.packageName) continue
                 val hasInternet = pm.checkPermission(Manifest.permission.INTERNET, ai.packageName) ==
                     android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -538,8 +531,8 @@ class SlaveVpnPlugin : Plugin() {
 
     @PluginMethod
     fun getLogs(call: PluginCall) {
-        // Real engine + lifecycle logs from the in-memory ring buffer that
-        // libbox writeLog() and SlaveVpnService feed. No longer a stub.
+        // Real Mihomo + lifecycle logs from the in-memory ring buffer fed by
+        // ClashBridge and SlaveVpnService.
         val tail = call.getInt("tail") ?: 500
         val lines = org.json.JSONArray()
         for (line in SlaveVpnService.recentLogs(tail)) lines.put(line)
