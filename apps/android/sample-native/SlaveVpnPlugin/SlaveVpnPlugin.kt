@@ -19,12 +19,17 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.result.ActivityResult
 import androidx.core.content.ContextCompat
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -43,6 +48,8 @@ import com.slavevpn.app.R
     ]
 )
 class SlaveVpnPlugin : Plugin() {
+
+    private val updateInProgress = AtomicBoolean(false)
 
     // Prompt to add the QS tile at most once per app session (and never again
     // once the tile is added). MIUI/HyperOS hides third-party tiles from the
@@ -577,6 +584,14 @@ class SlaveVpnPlugin : Plugin() {
     fun downloadAndInstallUpdate(call: PluginCall) {
         val url = call.getString("url")
         if (url.isNullOrBlank()) { call.reject("no url"); return }
+        if (!url.startsWith("https://", ignoreCase = true)) {
+            call.reject("update URL must use HTTPS")
+            return
+        }
+        if (!updateInProgress.compareAndSet(false, true)) {
+            call.reject("UPDATE_ALREADY_IN_PROGRESS")
+            return
+        }
 
         // Android O+: needs the user's "install unknown apps" grant. If missing,
         // open that settings screen and ask the JS layer to retry afterwards.
@@ -590,6 +605,7 @@ class SlaveVpnPlugin : Plugin() {
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             } catch (_: Exception) { }
+            updateInProgress.set(false)
             call.reject("NEEDS_INSTALL_PERMISSION")
             return
         }
@@ -601,6 +617,9 @@ class SlaveVpnPlugin : Plugin() {
         // itself. Destination = app-specific external dir (no storage permission).
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val dest = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "slavevpn-update.apk")
+        val updaterPrefs = context.getSharedPreferences("slavevpn_updater", Context.MODE_PRIVATE)
+        val previousId = updaterPrefs.getLong("download_id", -1L)
+        if (previousId >= 0L) try { dm.remove(previousId) } catch (_: Exception) { }
         try { dest.delete() } catch (_: Exception) { } // no accumulation — one file, replaced
         val downloadId = try {
             dm.enqueue(
@@ -610,43 +629,226 @@ class SlaveVpnPlugin : Plugin() {
                     .setMimeType("application/vnd.android.package-archive")
                     .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "slavevpn-update.apk")
                     .setAllowedOverMetered(true)
-                    .setAllowedOverRoaming(true),
+                    .setAllowedOverRoaming(true)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+                    .addRequestHeader("Accept", "application/vnd.android.package-archive, application/octet-stream")
+                    .addRequestHeader("User-Agent", "SLAVE-VPN-Android-Updater"),
             )
-        } catch (e: Exception) { call.reject(e.message ?: "download failed"); return }
+        } catch (e: Exception) {
+            Log.w(TAG, "DownloadManager enqueue failed; using direct download", e)
+            startDirectUpdate(call, url, dest, "enqueue: ${e.message ?: "unknown error"}")
+            return
+        }
+        updaterPrefs.edit().putLong("download_id", downloadId).apply()
+        notifyUpdateProgress(1)
 
         // Poll progress + completion. The transfer keeps running while backgrounded;
         // our poll thread may be frozen then, but on resume it catches up and installs
         // in the foreground (a background startActivity for the install sheet is blocked).
         Thread {
+            val startedAt = SystemClock.elapsedRealtime()
+            var lastByteAt = startedAt
+            var lastDone = 0L
+            var lastReason = 0
             while (true) {
                 var status = -1
                 var done = 0L
                 var total = -1L
-                val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
-                cursor?.use {
-                    if (it.moveToFirst()) {
-                        status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                        done = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-                        total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                var reason = 0
+                try {
+                    val cursor = dm.query(DownloadManager.Query().setFilterById(downloadId))
+                    cursor?.use {
+                        if (it.moveToFirst()) {
+                            status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                            reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                            done = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                            total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Cannot query DownloadManager; using direct download", e)
+                    removeSystemDownload(dm, updaterPrefs, downloadId)
+                    startDirectUpdate(call, url, dest, "query: ${e.message ?: "unknown error"}")
+                    return@Thread
                 }
+                val now = SystemClock.elapsedRealtime()
+                if (done > lastDone) {
+                    lastDone = done
+                    lastByteAt = now
+                }
+                lastReason = reason
                 when (status) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
-                        notifyListeners("updateProgress", JSObject().put("percent", 100))
-                        Handler(Looper.getMainLooper()).post {
-                            try { installApk(dest); call.resolve() }
-                            catch (e: Exception) { call.reject(e.message ?: "install failed") }
-                        }
+                        updaterPrefs.edit().remove("download_id").apply()
+                        finishDownloadedUpdate(call, dest)
                         return@Thread
                     }
-                    DownloadManager.STATUS_FAILED, -1 -> { call.reject("download failed"); return@Thread }
-                    else -> if (total > 0) {
-                        notifyListeners("updateProgress", JSObject().put("percent", ((done * 100) / total).toInt()))
+                    DownloadManager.STATUS_FAILED -> {
+                        Log.w(TAG, "DownloadManager failed (reason=$reason); using direct download")
+                        removeSystemDownload(dm, updaterPrefs, downloadId)
+                        startDirectUpdate(call, url, dest, "DownloadManager reason $reason")
+                        return@Thread
+                    }
+                    else -> {
+                        if (total > 0) {
+                            notifyUpdateProgress(((done * 100) / total).toInt().coerceIn(1, 99))
+                        }
+
+                        // Some vendor DownloadProvider builds can leave a GitHub
+                        // release request pending/paused forever with an unknown
+                        // content length. Keep DownloadManager for normal cases,
+                        // but switch to our HTTPS downloader when it makes no
+                        // observable progress.
+                        val stalledFor = now - lastByteAt
+                        val fallback = when (status) {
+                            -1 -> now - startedAt >= DOWNLOAD_ROW_GRACE_MS
+                            DownloadManager.STATUS_PENDING,
+                            DownloadManager.STATUS_PAUSED -> stalledFor >= DOWNLOAD_PENDING_TIMEOUT_MS
+                            DownloadManager.STATUS_RUNNING -> stalledFor >= DOWNLOAD_RUNNING_TIMEOUT_MS
+                            else -> stalledFor >= DOWNLOAD_RUNNING_TIMEOUT_MS
+                        }
+                        if (fallback) {
+                            Log.w(TAG, "DownloadManager stalled (status=$status, reason=$lastReason, bytes=$done); using direct download")
+                            removeSystemDownload(dm, updaterPrefs, downloadId)
+                            startDirectUpdate(call, url, dest, "stalled status $status, reason $lastReason")
+                            return@Thread
+                        }
                     }
                 }
                 try { Thread.sleep(500) } catch (_: InterruptedException) { return@Thread }
             }
         }.start()
+    }
+
+    private fun removeSystemDownload(
+        dm: DownloadManager,
+        prefs: android.content.SharedPreferences,
+        downloadId: Long,
+    ) {
+        try { dm.remove(downloadId) } catch (_: Exception) { }
+        prefs.edit().remove("download_id").apply()
+    }
+
+    private fun startDirectUpdate(call: PluginCall, url: String, dest: File, systemFailure: String) {
+        Thread {
+            try {
+                downloadApkDirect(url, dest)
+                finishDownloadedUpdate(call, dest)
+            } catch (e: Exception) {
+                Log.e(TAG, "Both update download paths failed (system=$systemFailure)", e)
+                updateInProgress.set(false)
+                call.reject("Не удалось скачать обновление: ${e.message ?: "ошибка сети"}")
+            }
+        }.start()
+    }
+
+    private fun downloadApkDirect(url: String, dest: File) {
+        val part = File(dest.parentFile, "${dest.name}.part")
+        try { part.delete() } catch (_: Exception) { }
+        dest.parentFile?.mkdirs()
+
+        var currentUrl = URL(url)
+        var connection: HttpURLConnection? = null
+        try {
+            repeat(MAX_UPDATE_REDIRECTS + 1) { redirectIndex ->
+                connection?.disconnect()
+                connection = currentUrl.openConnection() as HttpURLConnection
+                connection!!.instanceFollowRedirects = false
+                connection!!.connectTimeout = UPDATE_CONNECT_TIMEOUT_MS
+                connection!!.readTimeout = UPDATE_READ_TIMEOUT_MS
+                connection!!.setRequestProperty("Accept", "application/vnd.android.package-archive, application/octet-stream")
+                connection!!.setRequestProperty("User-Agent", "SLAVE-VPN-Android-Updater")
+                connection!!.connect()
+
+                val status = connection!!.responseCode
+                if (status in 300..399) {
+                    if (redirectIndex == MAX_UPDATE_REDIRECTS) throw IOException("слишком много перенаправлений")
+                    val location = connection!!.getHeaderField("Location")
+                        ?: throw IOException("перенаправление без адреса")
+                    val redirected = URL(currentUrl, location)
+                    if (!redirected.protocol.equals("https", ignoreCase = true)) {
+                        throw IOException("небезопасное перенаправление")
+                    }
+                    currentUrl = redirected
+                    return@repeat
+                }
+                if (status !in 200..299) throw IOException("сервер вернул HTTP $status")
+
+                val total = connection!!.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+                if (total > MAX_UPDATE_BYTES) throw IOException("APK превышает допустимый размер")
+                if (total > 0 && dest.parentFile != null && dest.parentFile!!.usableSpace < total + MIN_FREE_SPACE_BYTES) {
+                    throw IOException("недостаточно свободного места")
+                }
+
+                var downloaded = 0L
+                var lastPercent = 1
+                notifyUpdateProgress(lastPercent)
+                connection!!.inputStream.use { input ->
+                    FileOutputStream(part).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (count == 0) continue
+                            output.write(buffer, 0, count)
+                            downloaded += count
+                            if (downloaded > MAX_UPDATE_BYTES) throw IOException("APK превышает допустимый размер")
+                            if (total > 0) {
+                                val percent = ((downloaded * 100) / total).toInt().coerceIn(1, 99)
+                                if (percent != lastPercent) {
+                                    lastPercent = percent
+                                    notifyUpdateProgress(percent)
+                                }
+                            }
+                        }
+                        output.fd.sync()
+                    }
+                }
+                if (downloaded == 0L) throw IOException("получен пустой файл")
+                if (total > 0 && downloaded != total) throw IOException("загрузка прервалась ($downloaded из $total байт)")
+                if (dest.exists() && !dest.delete()) throw IOException("не удалось заменить старый APK")
+                if (!part.renameTo(dest)) throw IOException("не удалось сохранить APK")
+                return
+            }
+            throw IOException("не удалось получить APK")
+        } finally {
+            connection?.disconnect()
+            if (!dest.exists()) try { part.delete() } catch (_: Exception) { }
+        }
+    }
+
+    private fun finishDownloadedUpdate(call: PluginCall, apk: File) {
+        try {
+            if (!apk.isFile || apk.length() <= 0L) throw IOException("APK не найден после загрузки")
+            val archive = context.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)
+                ?: throw IOException("скачанный файл не является APK")
+            if (archive.packageName != context.packageName) {
+                throw IOException("APK предназначен для другого приложения")
+            }
+            notifyUpdateProgress(100)
+            installApk(apk)
+            updateInProgress.set(false)
+            call.resolve()
+        } catch (e: Exception) {
+            updateInProgress.set(false)
+            call.reject("Не удалось установить обновление: ${e.message ?: "неизвестная ошибка"}")
+        }
+    }
+
+    private fun notifyUpdateProgress(percent: Int) {
+        notifyListeners("updateProgress", JSObject().put("percent", percent.coerceIn(0, 100)))
+    }
+
+    private companion object {
+        const val TAG = "SlaveVpnUpdater"
+        const val MAX_UPDATE_REDIRECTS = 5
+        const val UPDATE_CONNECT_TIMEOUT_MS = 20_000
+        const val UPDATE_READ_TIMEOUT_MS = 30_000
+        const val DOWNLOAD_ROW_GRACE_MS = 5_000L
+        const val DOWNLOAD_PENDING_TIMEOUT_MS = 15_000L
+        const val DOWNLOAD_RUNNING_TIMEOUT_MS = 30_000L
+        const val MAX_UPDATE_BYTES = 512L * 1024L * 1024L
+        const val MIN_FREE_SPACE_BYTES = 16L * 1024L * 1024L
     }
 
     private fun installApk(apk: File) {

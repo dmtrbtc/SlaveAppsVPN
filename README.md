@@ -28,9 +28,14 @@
 | 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.40.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Setup-v0.2.40.exe) |
 | 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.40.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Portable-v0.2.40.exe) |
 
-**Dev-канал:** [`v0.2.41-dev.2`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.2) — [Android APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.41-dev.2/SlaveAppsVPN-Android.apk). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
+**Dev-канал:** [`v0.2.41-dev.3`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.3) — [Android APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.41-dev.3/SlaveAppsVPN-Android.apk). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
 
 > Android APK подписан постоянным release-ключом и обновляется поверх предыдущих GitHub-сборок. Для sideload Android всё равно один раз запросит разрешение «Установка неизвестных приложений». Windows-сборки пока без Authenticode, поэтому SmartScreen может показать предупреждение. Windows требует прав администратора для TUN-адаптера.
+
+> В Android-сборках `v0.2.41-dev.2` и более ранних системная загрузка могла навсегда
+> оставаться на `0%`. В `v0.2.41-dev.3` добавлен автоматический резервный
+> HTTPS-канал. Если установлен старый клиент с этой ошибкой, скачайте APK
+> `v0.2.41-dev.3` по ссылке выше и один раз установите его поверх текущей версии.
 
 ---
 
