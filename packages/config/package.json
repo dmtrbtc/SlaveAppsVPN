@@ -27,7 +27,7 @@
     "@slave-vpn/dns": "workspace:*",
     "@slave-vpn/routing": "workspace:*",
     "@slave-vpn/shared": "workspace:*",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.3.1"
   },
   "devDependencies": {
     "@slave-vpn/tsconfig": "workspace:*",

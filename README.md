@@ -28,7 +28,7 @@
 | 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.40.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Setup-v0.2.40.exe) |
 | 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.40.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Portable-v0.2.40.exe) |
 
-**Dev-канал:** [`v0.2.41-dev.3`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.3) — [Android APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.41-dev.3/SlaveAppsVPN-Android.apk). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
+**Dev-канал:** [`v0.2.41-dev.4`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.4) — [Android APK](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.41-dev.4/SlaveAppsVPN-Android.apk). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
 
 > Android APK подписан постоянным release-ключом и обновляется поверх предыдущих GitHub-сборок. Для sideload Android всё равно один раз запросит разрешение «Установка неизвестных приложений». Windows-сборки пока без Authenticode, поэтому SmartScreen может показать предупреждение. Windows требует прав администратора для TUN-адаптера.
 
@@ -48,7 +48,7 @@
 Банки вроде ВТБ блокируют вход при любом активном VPN. Решается **в один тап**: «Приложения и VPN» → **«Банковские приложения — мимо VPN»** — и все банки идут напрямую, мимо туннеля, в любом режиме.
 
 ### 🎛️ Понятная маршрутизация
-Режим — главный переключатель: **Полный VPN**, **Обход**, **Раздельный**, **Свой**. На дашборде — живой индикатор **«куда идёт трафик»**. В режиме «Свой» сценарии разделены на **Базу** (выбери один профиль) и **Дополнения** (комбинируй: AI, стриминг, игры, Ad Block, RuNet Freedom).
+Режим — главный переключатель: **Полный VPN**, **Обход**, **Только заблокированное**, **Раздельный**, **Свой**. На дашборде — живой индикатор **«куда идёт трафик»**. В режиме «Свой» сценарии разделены на **Базу** (выбери один профиль) и **Дополнения** (комбинируй: AI, стриминг, игры, Ad Block, RuNet Freedom).
 
 ### 🔒 Anti-DPI под контролем
 Выбор uTLS-отпечатка (маскировка Client Hello против поведенческого DPI ТСПУ) применяется **мгновенно**. Для REALITY-серверов автоматически подбирается совместимый отпечаток — стабильное соединение из коробки.
