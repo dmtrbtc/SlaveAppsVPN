@@ -27,5 +27,17 @@
     "turbo": "^2.3.3",
     "typescript": "^5.7.3"
   },
-  "packageManager": "pnpm@9.15.4"
+  "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "overrides": {
+      "@capacitor/cli>tar": "7.5.21",
+      "@babel/core": "7.29.6",
+      "electron-builder-squirrel-windows": "26.15.3",
+      "ip-address": "10.3.1",
+      "brace-expansion@1.1.14": "1.1.18",
+      "brace-expansion@2.1.0": "2.1.4",
+      "brace-expansion@5.0.6": "5.0.9",
+      "tmp": "0.2.7"
+    }
+  }
 }
