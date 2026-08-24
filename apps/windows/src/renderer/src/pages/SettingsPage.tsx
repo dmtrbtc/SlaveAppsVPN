@@ -810,24 +810,36 @@ export function SettingsPage() {
                   onChange={v => updateSetting({ balancerEnabled: v })}
                   loading={isKeyPending('balancerEnabled')}
                 />
-                {settings.balancerEnabled && (
-                  <div className="flex items-center justify-between px-4 py-3 gap-3">
-                    <div>
-                      <p className="text-[13px] font-medium text-text-primary">Стратегия</p>
-                      <p className="text-[11px] text-text-muted mt-0.5">Критерий выбора лучшего сервера</p>
-                    </div>
-                    <Segmented<BalancerMode>
-                      options={[
-                        { value: 'latency',   label: 'Пинг'        },
-                        { value: 'stability', label: 'Стабильность' },
-                        { value: 'balanced',  label: 'Баланс'       },
-                      ]}
-                      value={settings.balancerMode ?? 'balanced'}
-                      onChange={mode => updateSetting({ balancerMode: mode })}
-                      size="sm"
-                    />
+                <div
+                  className={cn(
+                    'flex items-center justify-between px-4 py-3 gap-3 transition-opacity',
+                    !settings.balancerEnabled && 'opacity-50'
+                  )}
+                >
+                  <div>
+                    <p className="text-[13px] font-medium text-text-primary">Стратегия</p>
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      {settings.balancerEnabled
+                        ? 'Критерий выбора лучшего сервера'
+                        : 'Доступно после включения балансировщика'}
+                    </p>
                   </div>
-                )}
+                  <Segmented<BalancerMode>
+                    options={[
+                      { value: 'latency',   label: 'Пинг'        },
+                      { value: 'stability', label: 'Стабильность' },
+                      { value: 'balanced',  label: 'Баланс'       },
+                    ]}
+                    value={settings.balancerMode ?? 'balanced'}
+                    onChange={mode => updateSetting({ balancerMode: mode })}
+                    size="sm"
+                    disabled={
+                      !settings.balancerEnabled ||
+                      isKeyPending('balancerEnabled') ||
+                      isKeyPending('balancerMode')
+                    }
+                  />
+                </div>
               </div>
             </CardRow>
           ) : null}

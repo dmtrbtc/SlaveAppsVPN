@@ -70,10 +70,6 @@ function tgScheme(bot: string, startParam: string): string {
   return `tg://resolve?domain=${encodeURIComponent(bot)}&start=${encodeURIComponent(startParam)}`
 }
 
-// On Electron window.open is denied (setWindowOpenHandler) → openExternalUrl
-// routes https/tg links through the main process. Android keeps window.open.
-const openExternal = openExternalUrl
-
 export function CabinetLoginCard() {
   const autoImport = useAutoImport()
   const { notify } = useUIStore()
@@ -93,7 +89,7 @@ export function CabinetLoginCard() {
       const dl = await cabinetApi.requestDeepLink()
       deadlineRef.current = Date.now() + dl.expiresIn * 1000
       setTg({ kind: 'waiting', token: dl.token, bot: dl.botUsername, startParam: dl.startParam, httpLink: dl.tgLink })
-      openExternal(tgScheme(dl.botUsername, dl.startParam))
+      openExternalUrl(tgScheme(dl.botUsername, dl.startParam))
       stopPolling()
       pollRef.current = setInterval(() => { void pollOnce(dl.token) }, 2500)
     } catch (e) {
@@ -133,7 +129,7 @@ export function CabinetLoginCard() {
               Подтвердите вход в Telegram: <span className="font-medium">Start</span> → <span className="font-medium">«✅ Да, войти»</span>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="primary" size="sm" onClick={() => openExternal(tgScheme(tg.bot, tg.startParam))}>
+              <Button variant="primary" size="sm" onClick={() => openExternalUrl(tgScheme(tg.bot, tg.startParam))}>
                 <Send className="h-3.5 w-3.5" /> Открыть Telegram
               </Button>
               <Button variant="secondary" size="sm" loading={checking} onClick={() => void pollOnce(tg.token, true)}>
@@ -145,7 +141,7 @@ export function CabinetLoginCard() {
             </div>
             <p className="text-[10px] text-text-muted break-all">
               Не открылось?{' '}
-              <button className="text-accent underline" onClick={() => openExternal(tg.httpLink)}>ссылка t.me</button>
+              <button className="text-accent underline" onClick={() => openExternalUrl(tg.httpLink)}>ссылка t.me</button>
               {' '}или отправьте боту: <span className="font-mono text-text-secondary select-all">/start {tg.startParam}</span>
             </p>
           </>
