@@ -69,6 +69,28 @@ test('blocked mode: user rules outrank every scenario rule', () => {
   assert.equal(exact?.action, 'direct')
 })
 
+test('blocked mode: Gemini and its shared Google dependencies tunnel without proxying all Google', () => {
+  const r = resolveRoutingPolicyForMode('blocked', [])
+  assert.ok(r.policy, 'policy must compose')
+  assert.equal(r.policy.defaultAction, 'direct', 'unmatched traffic must remain direct')
+
+  for (const [type, value] of [
+    ['geosite', 'google-gemini'],
+    ['domain_suffix', 'accounts.google.com'],
+    ['domain_suffix', 'www.googleapis.com'],
+    ['domain_suffix', 'waa-pa.clients6.google.com'],
+  ] as const) {
+    const dependency = r.policy.rules.find(x => x.target.type === type && x.target.value === value)
+    assert.equal(dependency?.action, 'proxy', `${type}:${value} must tunnel`)
+    assert.equal(dependency?.source?.provider, 'scenario:ai-services')
+  }
+
+  assert.ok(
+    !r.policy.rules.some(x => x.target.type === 'domain_suffix' && x.target.value === 'google.com'),
+    'the rule must not proxy every Google service',
+  )
+})
+
 test('bypass mode: user rules ride on roscomvpn-default (proxy default kept)', () => {
   const r = resolveRoutingPolicyForMode('bypass', [], { customRules: RULES })
   assert.ok(r.policy)

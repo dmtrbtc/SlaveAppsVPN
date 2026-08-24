@@ -36,6 +36,22 @@ test('smart-russia-bypass is direct-default (only blocked/messengers tunnel)', (
   assert.equal(policy.defaultAction, 'direct')
 })
 
+test('ai-services includes Gemini category and host-specific shared dependencies', () => {
+  const { policy } = composeScenarios(['ai-services'])
+  for (const [type, value] of [
+    ['geosite', 'google-gemini'],
+    ['domain_suffix', 'accounts.google.com'],
+    ['domain_suffix', 'www.googleapis.com'],
+  ]) {
+    const dependency = policy.providerRules.find(r => r.target.type === type && r.target.value === value)
+    assert.equal(dependency?.action, 'proxy', `${type}:${value} must tunnel`)
+  }
+  assert.ok(
+    !policy.providerRules.some(r => r.target.type === 'domain_suffix' && r.target.value === 'google.com'),
+    'do not proxy all Google traffic',
+  )
+})
+
 test('duplicate rule ids across scenarios are merged (first-wins), not fatal', () => {
   // Both bases emit the shared private-net CIDRs — must dedup, not DUPLICATE_ID.
   const { policy, warnings } = composeScenarios(['roscomvpn-default', 'ai-services', 'gaming-direct'])

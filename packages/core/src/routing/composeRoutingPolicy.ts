@@ -115,10 +115,11 @@ export function composeRoutingPolicy(
 // followed whatever scenario was active. Now the mode decides.
 const BYPASS_SCENARIOS: readonly ScenarioId[] = ['roscomvpn-default']
 // «Только заблокированное» — defaultAction DIRECT, only the RKN-list rule-providers
-// (inside-raw + Re-filter, action=proxy) + AI/blocked services tunnel; everything
-// else (incl. foreign) goes DIRECT. The inverse of bypass (proxy-default). Reuses
-// smart-russia-bypass, whose defaultAction is DIRECT.
-const BLOCKED_ONLY_SCENARIOS: readonly ScenarioId[] = ['smart-russia-bypass']
+// (inside-raw + Re-filter, action=proxy) and the explicit AI-service dependencies
+// tunnel; everything else (incl. foreign) goes DIRECT. The inverse of bypass
+// (proxy-default). The AI add-on keeps defaultAction=null, so composing it with
+// smart-russia-bypass preserves the required DIRECT default.
+const BLOCKED_ONLY_SCENARIOS: readonly ScenarioId[] = ['smart-russia-bypass', 'ai-services']
 
 export interface ResolveRoutingOptions {
   /** User per-domain overrides («Свои правила») — applied in EVERY mode. */
