@@ -69,6 +69,8 @@ jobs:
         run: pnpm --filter @slave-vpn/dns test
       - name: "Run core tests (mode matrix, user routing rules)"
         run: pnpm --filter @slave-vpn/core test
+      - name: "Run runtime tests (geosite parsing and merge safety)"
+        run: pnpm --filter @slave-vpn/runtime test
 
   audit:
     name: Security Audit
