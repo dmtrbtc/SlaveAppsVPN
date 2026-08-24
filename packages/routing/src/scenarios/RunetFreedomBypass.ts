@@ -2,17 +2,28 @@ import type { RoutingRule } from '../models/RoutingRule'
 import { RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
 import type { RoutingScenario } from './types'
 
-// Curated category names from runetfreedom/russia-blocked-geosite.
-// These are referenced as `geosite:<cat>` in rules — the engine looks them
-// up in the bundled or auto-updated geosite-runetfreedom.dat / geosite.dat.
+// Category names referenced as `geosite:<cat>`. The engine resolves these
+// against the geosite.dat it loads; on mihomo the runtime MERGES
+// geosite-runetfreedom.dat into that file (see MihomoEngine.syncGeoSiteWithMerge),
+// so the RuNet-only `ru-blocked` set resolves alongside the MetaCubeX defaults.
+//
+// Any category absent from the loaded dat is dropped by the safety-net filter
+// (filterUnknownGeoSiteRules) instead of crashing mihomo — that's intentional:
+//   • ru-blocked ........ RuNet dat (merged) — the PRIMARY RKN-blocked set
+//   • youtube / discord . MetaCubeX geosite.dat
+//   • category-ads-all .. both (ads — routed through VPN so the request never
+//                         reaches ad networks at all)
+//   • antifilter-community / refilter — NOT shipped as geosite categories (they
+//     live only as upstream .txt lists, whose domains ru-blocked already
+//     aggregates). Kept as forward-compat: light up automatically if a future
+//     dat adds them, otherwise filtered out as no-ops.
 const RUNETFREEDOM_CATEGORIES: readonly string[] = [
-  'ru-blocked',         // primary blocked-in-RU domain set
+  'ru-blocked',
   'antifilter-community',
   'refilter',
   'youtube',
   'discord',
-  'category-ads-all',   // ads — typically REJECT, but we route through VPN
-                        // so request never reaches ad networks at all
+  'category-ads-all',
 ]
 
 let _id = 0
@@ -59,7 +70,7 @@ export function createRunetFreedomBypassScenario(): RoutingScenario {
   return {
     id: 'runetfreedom-bypass',
     name: 'RuNet Freedom Bypass',
-    description: 'Списки runetfreedom: ru-blocked, antifilter, refilter, youtube, discord. Авто-обновляются.',
+    description: 'Заблокированные сайты, YouTube и Discord через VPN. Geosite обновляется автоматически.',
     category: 'bypass',
     icon: 'ShieldCheck',
     defaultEnabled: false,

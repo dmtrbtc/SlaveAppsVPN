@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { createRequire } from 'module'
 import { dirname, join, resolve } from 'path'
 import { spawnSync } from 'child_process'
@@ -19,6 +19,11 @@ const rulesDir = join(repoRoot, 'apps', 'windows', 'resources', 'rules')
 const require = createRequire(import.meta.url)
 const { generateMihomoConfig } = require('../packages/config/dist/cjs/index.js')
 const { buildAndroidDnsProfile } = require('../packages/dns/dist/cjs/index.js')
+const { composeScenarios } = require('../packages/routing/dist/cjs/index.js')
+const {
+  mergeGeoSiteDat,
+  readGeoSiteCategories,
+} = require('../packages/runtime/dist/mihomo/geositeCategories.js')
 
 function fail(message) {
   console.error(`[mihomo-config-test] ERROR: ${message}`)
@@ -120,7 +125,7 @@ function androidDnsProfile(ruDirectDns) {
   })
 }
 
-function buildCases(subscriptionYaml) {
+function buildCases(subscriptionYaml, runetAvailableGeoSites) {
   const common = {
     subscriptionYaml,
     apiPort: 19090,
@@ -146,6 +151,21 @@ function buildCases(subscriptionYaml) {
         vpnMode: 'full',
         settings: { ...baseSettings, tunEnabled: true, fakeIpEnabled: true },
         rulesDir,
+      },
+    },
+    {
+      name: 'windows-runet-geosite-merge',
+      mergeRunetGeosite: true,
+      context: {
+        ...common,
+        vpnMode: 'bypass',
+        settings: baseSettings,
+        rulesDir,
+        availableGeoSites: runetAvailableGeoSites,
+        routingPolicy: (() => {
+          const policy = composeScenarios(['runetfreedom-bypass']).policy
+          return { mode: policy.mode, defaultAction: policy.defaultAction, rules: policy.providerRules }
+        })(),
       },
     },
     {
@@ -181,15 +201,25 @@ function buildCases(subscriptionYaml) {
   ]
 }
 
-function seedGeoData(homeDir) {
-  for (const file of ['geoip.dat', 'geosite.dat']) {
-    const source = join(rulesDir, file)
+function seedGeoData(homeDir, mergeRunetGeosite = false) {
+  const geoip = join(rulesDir, 'geoip.dat')
+  const geosite = join(rulesDir, 'geosite.dat')
+  for (const source of [geoip, geosite]) {
     if (!existsSync(source)) {
-      throw new Error(
-        `Required geo fixture is missing: ${source}. Run pnpm download:binaries first.`
-      )
+      throw new Error(`Required geo fixture is missing: ${source}. Run pnpm download:binaries first.`)
     }
-    copyFileSync(source, join(homeDir, file))
+  }
+  copyFileSync(geoip, join(homeDir, 'geoip.dat'))
+
+  if (mergeRunetGeosite) {
+    const runet = join(rulesDir, 'geosite-runetfreedom.dat')
+    if (!existsSync(runet)) {
+      throw new Error(`Required RuNet fixture is missing: ${runet}. Run pnpm download:binaries first.`)
+    }
+    const merged = mergeGeoSiteDat(readFileSync(geosite), [readFileSync(runet)])
+    writeFileSync(join(homeDir, 'geosite.dat'), merged)
+  } else {
+    copyFileSync(geosite, join(homeDir, 'geosite.dat'))
   }
 }
 
@@ -204,13 +234,20 @@ function main() {
 
   const tempRoot = mkdtempSync(join(tmpdir(), 'slave-mihomo-config-test-'))
   try {
-    const cases = buildCases(buildSubscription())
+    const baseCategories = readGeoSiteCategories(join(rulesDir, 'geosite.dat'))
+    const runetCategories = readGeoSiteCategories(join(rulesDir, 'geosite-runetfreedom.dat'))
+    const runetAvailableGeoSites = [...new Set([...baseCategories, ...runetCategories])]
+    const cases = buildCases(buildSubscription(), runetAvailableGeoSites)
     for (const testCase of cases) {
       const homeDir = join(tempRoot, testCase.name)
       mkdirSync(homeDir, { recursive: true })
-      seedGeoData(homeDir)
+      seedGeoData(homeDir, testCase.mergeRunetGeosite)
       const configPath = join(homeDir, 'config.yaml')
-      writeFileSync(configPath, generateMihomoConfig(testCase.context), 'utf8')
+      const yaml = generateMihomoConfig(testCase.context)
+      if (testCase.mergeRunetGeosite && !yaml.includes('GEOSITE,ru-blocked,')) {
+        throw new Error(`${testCase.name}: generated config lost the ru-blocked rule`)
+      }
+      writeFileSync(configPath, yaml, 'utf8')
       runMihomo(['-d', homeDir, '-f', configPath, '-t'], testCase.name)
       console.log(`[mihomo-config-test] ✓ ${testCase.name}`)
     }

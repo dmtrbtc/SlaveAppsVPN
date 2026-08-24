@@ -9,7 +9,7 @@ import type { VPNEngine, EngineInitConfig, ConnectionProfile } from '../engine/V
 import { EMPTY_HEALTH, type RuntimeState, type HealthStatus, type StopReason, type HotReloadType } from '../state/RuntimeState'
 import type { TrafficStats } from '@slave-vpn/shared'
 import { ProcessManager } from './ProcessManager'
-import { readGeoSiteCategories } from './geositeCategories'
+import { isGeoSiteDatValid, readGeoSiteCategories, mergeGeoSiteDat } from './geositeCategories'
 import { MihomoApiClient } from './MihomoApiClient'
 import { HealthMonitor } from './HealthMonitor'
 import { TrafficMonitor } from './TrafficMonitor'
@@ -244,24 +244,77 @@ export class MihomoEngine implements VPNEngine {
     const rulesDir = this.initConfig!.rulesDir
     if (!rulesDir) return
     const workingDir = this.initConfig!.workingDir
-    for (const name of ['geoip.dat', 'geosite.dat']) {
-      const src = path.join(rulesDir, name)
-      const dst = path.join(workingDir, name)
-      try {
-        const [srcStat, dstStat] = await Promise.all([
-          fs.stat(src),
-          fs.stat(dst).catch(() => null),
-        ])
-        if (dstStat && dstStat.size === srcStat.size && dstStat.mtimeMs >= srcStat.mtimeMs) {
-          continue // up to date
-        }
-        await fs.copyFile(src, dst)
-        console.log(`[MihomoEngine] geo synced: ${name} (${srcStat.size} bytes) -> ${dst}`)
-      } catch (err) {
-        // Source missing or copy failed — log and continue; mihomo will fall
-        // back to its built-in geox-url if the rule genuinely needs the file.
-        console.warn(`[MihomoEngine] geo sync skipped for ${name}:`, err instanceof Error ? err.message : err)
+
+    // geoip.dat — plain copy (size + mtime guard).
+    await this.copyGeoFileIfStale(
+      this.initConfig!.geoIpPath ?? path.join(rulesDir, 'geoip.dat'),
+      path.join(workingDir, 'geoip.dat'),
+    )
+
+    // geosite.dat — merge any extra dats (e.g. geosite-runetfreedom.dat carrying
+    // `ru-blocked`) into the single geosite.dat mihomo loads. Without the merge,
+    // the runetfreedom-bypass scenario's GEOSITE rules reference categories that
+    // aren't in the base MetaCubeX geosite.dat, so the safety-net filter drops
+    // them and RKN-blocked sites stop being routed through the proxy.
+    await this.syncGeoSiteWithMerge(
+      this.initConfig!.geoSitePath ?? path.join(rulesDir, 'geosite.dat'),
+      workingDir,
+    )
+  }
+
+  private async copyGeoFileIfStale(src: string, dst: string): Promise<void> {
+    try {
+      const [srcStat, dstStat] = await Promise.all([
+        fs.stat(src),
+        fs.stat(dst).catch(() => null),
+      ])
+      if (dstStat && dstStat.size === srcStat.size && dstStat.mtimeMs >= srcStat.mtimeMs) {
+        return // up to date
       }
+      await fs.copyFile(src, dst)
+      console.log(`[MihomoEngine] geo synced: ${path.basename(src)} (${srcStat.size} bytes) -> ${dst}`)
+    } catch (err) {
+      // Source missing or copy failed — log and continue; mihomo will fall back
+      // to its built-in geox-url if the rule genuinely needs the file.
+      console.warn(`[MihomoEngine] geo sync skipped for ${path.basename(src)}:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  private async syncGeoSiteWithMerge(src: string, workingDir: string): Promise<void> {
+    const dst = path.join(workingDir, 'geosite.dat')
+    const extraPaths = this.initConfig!.mergeGeoSiteDats ?? []
+    try {
+      const baseBuf = await fs.readFile(src)
+      if (!isGeoSiteDatValid(baseBuf)) {
+        throw new Error(`invalid or truncated base geosite.dat: ${src}`)
+      }
+      const extraBufs: Buffer[] = []
+      for (const p of extraPaths) {
+        try {
+          extraBufs.push(await fs.readFile(p))
+        } catch {
+          // Missing/partial overlay — skip this extra dat (merge stays a superset
+          // of the base, never less).
+        }
+      }
+      const merged = extraBufs.length > 0 ? mergeGeoSiteDat(baseBuf, extraBufs) : baseBuf
+      // Equal size does not imply equal content: an upstream rebuild can replace
+      // domains without changing the byte count. Compare bytes before skipping.
+      const current = await fs.readFile(dst).catch(() => null)
+      if (current?.equals(merged)) return
+
+      // Write beside the destination and rename only after the complete buffer
+      // has been written, so a crash cannot leave mihomo with a truncated file.
+      const tmp = `${dst}.${process.pid}.${Date.now()}.tmp`
+      try {
+        await fs.writeFile(tmp, merged)
+        await fs.rename(tmp, dst)
+      } finally {
+        await fs.rm(tmp, { force: true }).catch(() => undefined)
+      }
+      console.log(`[MihomoEngine] geosite synced: ${merged.length} bytes (base ${baseBuf.length} + ${extraBufs.length} extra) -> ${dst}`)
+    } catch (err) {
+      console.warn(`[MihomoEngine] geosite sync skipped:`, err instanceof Error ? err.message : err)
     }
   }
 

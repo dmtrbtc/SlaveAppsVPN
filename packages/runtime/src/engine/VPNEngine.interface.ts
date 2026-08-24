@@ -19,6 +19,16 @@ export interface EngineInitConfig {
   // mihomo; geoip.db / geosite.db for sing-box). When unset, engines fall back
   // to working directory and may attempt to download on first use.
   rulesDir?: string
+  // Optional per-file sources for mihomo geo databases. Windows resolves each
+  // file independently so a partial auto-update overlay never hides the other
+  // bundled database. When unset, MihomoEngine falls back to rulesDir.
+  geoIpPath?: string
+  geoSitePath?: string
+  // Absolute paths to additional `geosite.dat` files (mihomo) whose categories
+  // are merged into the single geosite.dat the engine loads — e.g. the RuNet
+  // `geosite-runetfreedom.dat` carrying `ru-blocked`. Categories already present
+  // in the base geosite.dat win; missing files are skipped silently.
+  mergeGeoSiteDats?: readonly string[]
 }
 
 export interface ConnectionProfile {

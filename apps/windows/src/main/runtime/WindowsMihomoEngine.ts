@@ -65,6 +65,42 @@ export function createWindowsEngineConfig(
   const rulesDir = overlayDir ?? bundledRulesDir
   const rulesExist = existsSync(rulesDir)
 
+  // Resolve the canonical mihomo databases independently. The updater overlay
+  // can legitimately contain only one freshly downloaded file; using the
+  // overlay directory wholesale would then hide the other bundled database.
+  const mihomoGeoPaths = engineType === 'mihomo'
+    ? (() => {
+        try {
+          const updater = getGeoUpdaterService()
+          const geoIpPath = updater.resolveFilePath('geoip.dat')
+          const geoSitePath = updater.resolveFilePath('geosite.dat')
+          return {
+            ...(existsSync(geoIpPath) ? { geoIpPath } : {}),
+            ...(existsSync(geoSitePath) ? { geoSitePath } : {}),
+          }
+        } catch {
+          return {}
+        }
+      })()
+    : {}
+
+  // Extra geosite.dat to fold into the loaded geosite.dat (mihomo only). The
+  // RuNet `geosite-runetfreedom.dat` carries `ru-blocked` (RKN-blocked domains)
+  // which the base MetaCubeX geosite.dat lacks — merging it lets the
+  // runetfreedom-bypass scenario actually route those sites through the proxy
+  // instead of having the safety-net filter drop the unknown-category rule.
+  // resolveFilePath prefers the auto-updated overlay copy, else the bundled one.
+  const mergeGeoSiteDats = engineType === 'mihomo'
+    ? (() => {
+        try {
+          const p = getGeoUpdaterService().resolveFilePath('geosite-runetfreedom.dat')
+          return existsSync(p) ? [p] : []
+        } catch {
+          return []
+        }
+      })()
+    : []
+
   // [DIAG] Binary path diagnostics — helps diagnose packaged runtime issues
   const tag = `Windows${layout.label}Engine`
   const diagLines = [
@@ -76,6 +112,8 @@ export function createWindowsEngineConfig(
     `[${tag}] binaryExists=${binaryExists}`,
     `[${tag}] rulesDir=${rulesDir}`,
     `[${tag}] rulesExist=${rulesExist}`,
+    `[${tag}] geoIpPath=${'geoIpPath' in mihomoGeoPaths ? mihomoGeoPaths.geoIpPath : '(default)'}`,
+    `[${tag}] geoSitePath=${'geoSitePath' in mihomoGeoPaths ? mihomoGeoPaths.geoSitePath : '(default)'}`,
   ]
   if (binaryExists) {
     try {
@@ -97,5 +135,7 @@ export function createWindowsEngineConfig(
     // We keep checking wintun.dll presence as a generic sanity check.
     tunHooks: new WindowsTunHooks(),
     ...(rulesExist ? { rulesDir } : {}),
+    ...mihomoGeoPaths,
+    ...(mergeGeoSiteDats.length > 0 ? { mergeGeoSiteDats } : {}),
   }
 }
