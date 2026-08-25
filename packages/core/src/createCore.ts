@@ -3,18 +3,29 @@ import type { CoreFacade } from './facade/CoreFacade.js'
 import type { Unsubscribe } from './types.js'
 import { CoreNotReadyError } from './errors.js'
 
+/** Transitional source of an already compiled engine config.
+ *
+ * Android supplies its legacy compiler through this boundary while config
+ * assembly moves into core. Once both platforms build from the shared domain
+ * inputs directly, this compatibility option can be removed.
+ */
+export interface CoreConfigProvider {
+  compile(): Promise<string>
+}
+
+export interface CreateCoreOptions {
+  configProvider?: CoreConfigProvider
+}
+
 /**
  * Build a CoreFacade from a set of platform adapters.
  *
- * P0.1 wires the trivial engine pass-throughs (status / traffic / proxies /
- * connections / events) straight to the EngineAdapter. The orchestrated methods
- * (connect/setMode/probeAll, which need subscription→config compilation) are
- * stubbed with CoreNotReadyError until the domain logic migrates in P0.2+. This
- * keeps the package real and compiling while the orchestrated connect path is
- * still being migrated. Android consumes these pass-throughs first; Windows
- * follows once its process-backed EngineAdapter is in place.
+ * Engine pass-throughs go straight to EngineAdapter. During the config-domain
+ * migration, connect accepts a typed provider for a ready config and owns the
+ * recovery → compile → start order. setMode/probeAll remain explicit
+ * CoreNotReadyError stubs until their domain policies move into core.
  */
-export function createCore(adapters: CoreAdapters): CoreFacade {
+export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = {}): CoreFacade {
   const { engine } = adapters
   const subscriptions = new Set<Unsubscribe>()
 
@@ -32,8 +43,14 @@ export function createCore(adapters: CoreAdapters): CoreFacade {
 
   return {
     vpn: {
-      connect: () => {
-        throw new CoreNotReadyError('vpn.connect (config orchestration lands in P0.2)')
+      connect: async () => {
+        const configProvider = options.configProvider
+        if (!configProvider) {
+          throw new CoreNotReadyError('vpn.connect (config provider is not wired)')
+        }
+        if (await engine.restoreCached?.()) return
+        const config = await configProvider.compile()
+        await engine.start(config)
       },
       disconnect: () => engine.stop(),
       getStatus: () => engine.getStatus(),

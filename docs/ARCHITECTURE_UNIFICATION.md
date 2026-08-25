@@ -125,8 +125,12 @@ interface CoreFacade {
     список/выбор прокси, активные соединения и runtime events проходят через
     `CoreFacade` и Android `EngineAdapter`. Guard для `getTraffic`/
     `getConnections` до состояния `connected` сохранён.
-  - Ещё на legacy-пути: запрос VPN-разрешения, компиляция конфига + `connect`,
-    смена режима и `probeAll`. Они мигрируют отдельными проверяемыми срезами.
+  - `connect` также проходит через `CoreFacade`: порядок cached recovery →
+    compilation → engine start закреплён тестами, а VPN permission и native
+    start принадлежат Android `EngineAdapter`. Legacy Android compiler временно
+    подключён как typed `CoreConfigProvider`, пока его входы переносятся в core.
+  - Ещё на legacy-пути: сама сборка Android-конфига, смена режима и `probeAll`.
+    Они мигрируют отдельными проверяемыми срезами.
 - **P0.5 — Чистка дублей.** Удалить `android/compile-config.ts`,
   `android/aggregator.ts`, `runtime-settings.ts` (логика теперь в core).
   Свести два пути генерации к одному. *Verify:* обе сборки + регресс.

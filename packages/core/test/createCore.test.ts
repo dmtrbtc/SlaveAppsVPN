@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { createCore, CoreNotReadyError } = require('../dist/cjs/index.js') as {
-  createCore: (adapters: Record<string, unknown>) => {
+  createCore: (adapters: Record<string, unknown>, options?: Record<string, unknown>) => {
     vpn: Record<string, (...args: unknown[]) => Promise<unknown>>
     events: Record<string, (cb: (value: unknown) => void) => () => void>
     dispose(): Promise<void>
@@ -12,7 +12,7 @@ const { createCore, CoreNotReadyError } = require('../dist/cjs/index.js') as {
   CoreNotReadyError: new (...args: unknown[]) => Error
 }
 
-function fixture() {
+function fixture(options: { config?: string; restoreCached?: boolean } = {}) {
   const calls: Array<[string, ...unknown[]]> = []
   let eventHandler: ((event: unknown) => void) | null = null
   const status = { state: 'connected', mode: 'blocked' }
@@ -36,8 +36,26 @@ function fixture() {
       calls.push(['subscribe'])
       return () => { calls.push(['unsubscribe']) }
     },
+    ...(options.restoreCached !== undefined
+      ? {
+          restoreCached: async () => {
+            calls.push(['restoreCached'])
+            return options.restoreCached ?? false
+          },
+        }
+      : {}),
   }
-  const facade = createCore({ engine, storage: {}, network: {}, fs: {} })
+  const coreOptions = options.config !== undefined
+    ? {
+        configProvider: {
+          compile: async () => {
+            calls.push(['compile'])
+            return options.config
+          },
+        },
+      }
+    : undefined
+  const facade = createCore({ engine, storage: {}, network: {}, fs: {} }, coreOptions)
   return {
     facade,
     calls,
@@ -86,10 +104,30 @@ test('status stream refreshes only for VPN lifecycle runtime events', async () =
   assert.deepEqual(calls.at(-1), ['unsubscribe'])
 })
 
-test('unmigrated orchestration methods fail explicitly', () => {
+test('connect compiles config and starts the engine through the facade', async () => {
+  const { facade, calls } = fixture({ config: 'mixed-port: 7890', restoreCached: false })
+
+  await facade.vpn.connect()
+
+  assert.deepEqual(calls, [
+    ['restoreCached'],
+    ['compile'],
+    ['start', 'mixed-port: 7890'],
+  ])
+})
+
+test('connect recovery skips config compilation when the cached engine config starts', async () => {
+  const { facade, calls } = fixture({ config: 'must-not-be-used', restoreCached: true })
+
+  await facade.vpn.connect()
+
+  assert.deepEqual(calls, [['restoreCached']])
+})
+
+test('unwired and unmigrated orchestration methods fail explicitly', async () => {
   const { facade } = fixture()
 
-  assert.throws(() => facade.vpn.connect(), CoreNotReadyError)
+  await assert.rejects(() => facade.vpn.connect(), CoreNotReadyError)
   assert.throws(() => facade.vpn.setMode('full'), CoreNotReadyError)
   assert.throws(() => facade.vpn.probeAll(), CoreNotReadyError)
 })
