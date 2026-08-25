@@ -650,40 +650,51 @@ export function installAndroidBridge(): void {
     {
       ...dataAdapters,
       engine: createAndroidEngineAdapter(dataAdapters),
+      logger: {
+        debug: (message) => {
+          if (message === 'vpn.connect.start') {
+            nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
+          } else {
+            nativeLog(`[core] ${message}`)
+          }
+        },
+        info: (message) => {
+          if (message === 'vpn.connect.accepted') nativeLog('[connect] запрос на старт принят ядром')
+          else nativeLog(`[core] ${message}`)
+        },
+        warn: (message) => nativeLog(`[core] WARN ${message}`),
+        error: (message, metadata) => {
+          if (message === 'vpn.connect.failed') {
+            nativeLog(`[connect] ОШИБКА: ${String(metadata?.['error'] ?? 'unknown error')}`)
+          } else {
+            nativeLog(`[core] ERROR ${message}`)
+          }
+        },
+      },
     },
     {
       // Transitional boundary: the Android-specific config inputs move into
       // core in later P0/P1 slices. Connect orchestration already lives there.
       configProvider: { compile: compileNativeConfig },
+      modeController: {
+        setMode: async (mode: VPNMode) => {
+          currentMode = mode
+          await SlaveVpn.setMode({ mode }).catch(() => undefined)
+        },
+      },
     },
   )
 
-  const connectWithDiagnostics = async (): Promise<void> => {
-    try {
-      nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
-      await core.vpn.connect()
-      nativeLog('[connect] запрос на старт принят ядром')
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
-      nativeLog(`[connect] ОШИБКА: ${message}`)
-      throw e
-    }
-  }
-
   const bridge = {
     vpn: {
-      connect: () => wrap(connectWithDiagnostics),
+      connect: () => wrap(() => core.vpn.connect()),
       disconnect: () => wrap(() => core.vpn.disconnect()),
       getStatus: () => wrap(() => core.vpn.getStatus()),
       // Changing the mode must take effect on the RUNNING tunnel, not just on the
       // next manual reconnect — otherwise picking «Полный» while connected does
       // nothing (the old rule set keeps routing RU direct). Mihomo can't hot-swap
       // the rule list via the native plugin, so recompile + reconnect.
-      setMode: (payload: { mode: VPNMode }) => wrap(async () => {
-        currentMode = payload.mode
-        await SlaveVpn.setMode(payload).catch(() => undefined)
-        await reconnectIfConnected(connectWithDiagnostics)
-      }),
+      setMode: (payload: { mode: VPNMode }) => wrap(() => core.vpn.setMode(payload.mode)),
       getConnectivity: notImplemented('vpn.getConnectivity'),
       // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
       // VpnSetProxyPayload = { proxyName }, but this handler read `payload.proxy`
@@ -1012,7 +1023,7 @@ export function installAndroidBridge(): void {
         // The fingerprint is baked into the compiled config — re-apply it to the
         // running tunnel so the change takes effect immediately (like setMode),
         // not only on the next manual reconnect.
-        if (fingerprintChanged) await reconnectIfConnected(connectWithDiagnostics)
+        if (fingerprintChanged) await reconnectIfConnected(() => core.vpn.connect())
       }),
     },
     provider: {
@@ -1103,7 +1114,7 @@ export function installAndroidBridge(): void {
       // Order is not meaningful for these proxy-action lists — accept + no-op.
       reorder: async () => ok(undefined),
       // mihomo can't hot-swap; reconnect so the new list set takes effect now.
-      reload: () => wrap(async () => { await reconnectIfConnected(connectWithDiagnostics); return undefined as never }),
+      reload: () => wrap(async () => { await reconnectIfConnected(() => core.vpn.connect()); return undefined as never }),
     },
     split: {
       getProcesses: async () => ok([] as never[]),
