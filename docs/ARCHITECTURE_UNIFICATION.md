@@ -129,8 +129,11 @@ interface CoreFacade {
     compilation → engine start закреплён тестами, а VPN permission и native
     start принадлежат Android `EngineAdapter`. Legacy Android compiler временно
     подключён как typed `CoreConfigProvider`, пока его входы переносятся в core.
-  - Ещё на legacy-пути: сама сборка Android-конфига, смена режима и `probeAll`.
-    Они мигрируют отдельными проверяемыми срезами.
+  - `setMode` сохраняет режим через typed `CoreModeController`; подключённый
+    tunnel перезапускается внутри `CoreFacade` через тот же connect-путь, а при
+    отключённом VPN новый режим только сохраняется до следующего запуска.
+  - Ещё на legacy-пути: сама сборка Android-конфига и `probeAll`. Они мигрируют
+    отдельными проверяемыми срезами.
 - **P0.5 — Чистка дублей.** Удалить `android/compile-config.ts`,
   `android/aggregator.ts`, `runtime-settings.ts` (логика теперь в core).
   Свести два пути генерации к одному. *Verify:* обе сборки + регресс.

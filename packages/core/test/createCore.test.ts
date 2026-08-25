@@ -12,10 +12,17 @@ const { createCore, CoreNotReadyError } = require('../dist/cjs/index.js') as {
   CoreNotReadyError: new (...args: unknown[]) => Error
 }
 
-function fixture(options: { config?: string; restoreCached?: boolean } = {}) {
+function fixture(options: {
+  config?: string
+  restoreCached?: boolean
+  modeController?: boolean
+  statusState?: string
+  logger?: boolean
+  compileError?: string
+} = {}) {
   const calls: Array<[string, ...unknown[]]> = []
   let eventHandler: ((event: unknown) => void) | null = null
-  const status = { state: 'connected', mode: 'blocked' }
+  const status = { state: options.statusState ?? 'connected', mode: 'blocked' }
   const traffic = { downloadBytes: 42 }
   const proxies = [{ name: 'node-a' }]
   const connections = { count: 1, connections: [{ id: 'conn-a' }] }
@@ -45,17 +52,38 @@ function fixture(options: { config?: string; restoreCached?: boolean } = {}) {
         }
       : {}),
   }
-  const coreOptions = options.config !== undefined
-    ? {
-        configProvider: {
-          compile: async () => {
-            calls.push(['compile'])
-            return options.config
+  const coreOptions = {
+    reconnectDelayMs: 0,
+    ...(options.config !== undefined || options.compileError !== undefined
+      ? {
+          configProvider: {
+            compile: async () => {
+              calls.push(['compile'])
+              if (options.compileError) throw new Error(options.compileError)
+              return options.config
+            },
           },
+        }
+      : {}),
+    ...(options.modeController
+      ? {
+          modeController: {
+            setMode: async (mode: string) => { calls.push(['setMode', mode]) },
+          },
+        }
+      : {}),
+  }
+  const logger = options.logger
+    ? {
+        debug: (message: string) => { calls.push(['log.debug', message]) },
+        info: (message: string) => { calls.push(['log.info', message]) },
+        warn: (message: string) => { calls.push(['log.warn', message]) },
+        error: (message: string, metadata?: Record<string, unknown>) => {
+          calls.push(['log.error', message, metadata?.['error']])
         },
       }
     : undefined
-  const facade = createCore({ engine, storage: {}, network: {}, fs: {} }, coreOptions)
+  const facade = createCore({ engine, storage: {}, network: {}, fs: {}, logger }, coreOptions)
   return {
     facade,
     calls,
@@ -124,11 +152,57 @@ test('connect recovery skips config compilation when the cached engine config st
   assert.deepEqual(calls, [['restoreCached']])
 })
 
+test('connect reports the same lifecycle diagnostics on failures', async () => {
+  const { facade, calls } = fixture({ compileError: 'subscription unavailable', logger: true })
+
+  await assert.rejects(() => facade.vpn.connect(), /subscription unavailable/)
+
+  assert.deepEqual(calls, [
+    ['log.debug', 'vpn.connect.start'],
+    ['compile'],
+    ['log.error', 'vpn.connect.failed', 'subscription unavailable'],
+  ])
+})
+
+test('setMode restarts a connected engine through the same connect orchestration', async () => {
+  const { facade, calls } = fixture({
+    config: 'mode: rule',
+    restoreCached: false,
+    modeController: true,
+  })
+
+  await facade.vpn.setMode('full')
+
+  assert.deepEqual(calls, [
+    ['setMode', 'full'],
+    ['getStatus'],
+    ['stop'],
+    ['restoreCached'],
+    ['compile'],
+    ['start', 'mode: rule'],
+  ])
+})
+
+test('setMode persists a disconnected mode without starting the engine', async () => {
+  const { facade, calls } = fixture({
+    config: 'must-not-be-used',
+    modeController: true,
+    statusState: 'disconnected',
+  })
+
+  await facade.vpn.setMode('bypass')
+
+  assert.deepEqual(calls, [
+    ['setMode', 'bypass'],
+    ['getStatus'],
+  ])
+})
+
 test('unwired and unmigrated orchestration methods fail explicitly', async () => {
   const { facade } = fixture()
 
   await assert.rejects(() => facade.vpn.connect(), CoreNotReadyError)
-  assert.throws(() => facade.vpn.setMode('full'), CoreNotReadyError)
+  await assert.rejects(() => facade.vpn.setMode('full'), CoreNotReadyError)
   assert.throws(() => facade.vpn.probeAll(), CoreNotReadyError)
 })
 
