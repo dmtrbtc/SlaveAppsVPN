@@ -177,6 +177,7 @@ function ruleListToProvider(e: RuleListEntry): {
 // Transitional config provider for CoreFacade. Config CONTENT is never logged
 // (only its size), so subscription credentials cannot leak into diagnostics.
 async function compileNativeConfig(): Promise<string> {
+  await settingsReady
   nativeLog('[connect] компиляция конфига mihomo…')
   const compiled = await compileMihomoConfigForAndroid({
     vpnMode: currentMode,
@@ -288,6 +289,10 @@ function toIpcEntry(e: AndroidSubscriptionEntry): AndroidSubscriptionEntry {
 let currentMode: VPNMode = 'blocked'
 let currentSelectedProxy: string | undefined
 let currentUtlsFingerprint: string = 'randomized'
+// Assigned synchronously during installAndroidBridge(). Config compilation and
+// settings IPC await it so auto-connect cannot race the durable settings load
+// and silently compile with the in-memory defaults.
+let settingsReady: Promise<void> = Promise.resolve()
 const SELECTED_PROXY_LS_KEY = 'slave.settings.selectedProxy.v1'
 // Timestamp of the most recent transition into "connected", so getStatus can
 // report stable uptime instead of resetting connectedAt on every poll.
@@ -678,7 +683,9 @@ export function installAndroidBridge(): void {
       configProvider: { compile: compileNativeConfig },
       modeController: {
         setMode: async (mode: VPNMode) => {
+          await settingsReady
           currentMode = mode
+          await patchAndroidSettings({ vpnMode: mode })
           await SlaveVpn.setMode({ mode }).catch(() => undefined)
         },
       },
@@ -988,13 +995,16 @@ export function installAndroidBridge(): void {
       // Full AppSettings now persists durably via core.SettingsStore; the live
       // cache (currentMode/currentUtlsFingerprint) is overlaid so an in-flight
       // change is reflected even before the async store write resolves.
-      get: async () =>
-        ok({
+      get: async () => {
+        await settingsReady
+        return ok({
           ...androidSettings(),
           vpnMode: currentMode,
           utlsFingerprint: currentUtlsFingerprint as UtlsFingerprintName,
-        } as never),
+        } as never)
+      },
       set: (payload: Record<string, unknown>) => wrap(async () => {
+        await settingsReady
         if (typeof payload['vpnMode'] === 'string') {
           const m = payload['vpnMode'] as VPNMode
           if (m === 'full' || m === 'bypass' || m === 'blocked' || m === 'split' || m === 'custom') {
@@ -1272,7 +1282,7 @@ export function installAndroidBridge(): void {
   // Hydrate the durable core settings store, migrating the legacy per-key prefs
   // (old vpnMode cache + uTLS) on first run, then adopt the store as the source
   // of truth for the live cache.
-  void (async () => {
+  settingsReady = (async () => {
     const oldMode = await getSubscriptionInput('__pref_vpn_mode__')
     const seedMode =
       oldMode === 'full' || oldMode === 'bypass' || oldMode === 'blocked' || oldMode === 'split' || oldMode === 'custom'
@@ -1284,7 +1294,11 @@ export function installAndroidBridge(): void {
     })
     currentMode = s.vpnMode
     currentUtlsFingerprint = s.utlsFingerprint
-  })()
+  })().catch(() => {
+    // Keep the bridge usable with in-memory defaults if durable storage is
+    // temporarily unavailable; the next settings write can still recover it.
+    nativeLog('[settings] WARN не удалось загрузить сохранённые настройки')
+  })
 
   // Warm up the geosite category cache (≈4 MB MetaCubeX dat, fetched at most
   // weekly) so the first scenario-driven connect can drop GEOSITE rules for

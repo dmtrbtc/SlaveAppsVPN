@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { WifiOff } from 'lucide-react'
+import { useVpnStore } from '../../stores/vpn.store'
+import { IS_MOBILE } from '../../lib/platform'
 
 function useOnlineStatus() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine)
@@ -20,7 +22,18 @@ function useOnlineStatus() {
 }
 
 export function OfflineBanner() {
-  const isOnline = useOnlineStatus()
+  const browserIsOnline = useOnlineStatus()
+  const vpnState = useVpnStore(s => s.status.state)
+  const connectivityOk = useVpnStore(s => s.health?.connectivityOk)
+
+  // Android WebView can emit an `offline` event while the default network is
+  // being replaced by our VPN. The VPN may already be validated and carrying
+  // traffic at that point, but navigator.onLine can remain false until another
+  // physical-network event occurs. Treat a connected, healthy Android tunnel as
+  // online; the through-tunnel health probe still makes a real outage visible.
+  const hasUsableAndroidVpn =
+    IS_MOBILE && vpnState === 'connected' && connectivityOk !== false
+  const isOnline = browserIsOnline || hasUsableAndroidVpn
 
   return (
     <AnimatePresence>
