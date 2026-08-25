@@ -5,9 +5,9 @@ import { CoreNotReadyError } from './errors.js'
 
 /** Transitional source of an already compiled engine config.
  *
- * Android supplies its legacy compiler through this boundary while config
- * assembly moves into core. Once both platforms build from the shared domain
- * inputs directly, this compatibility option can be removed.
+ * Android supplies a thin platform data provider which invokes the shared core
+ * compiler. Once CoreFacade owns those data-source APIs directly, this
+ * compatibility option can be removed.
  */
 export interface CoreConfigProvider {
   compile(): Promise<string>

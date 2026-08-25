@@ -127,15 +127,17 @@ interface CoreFacade {
     `getConnections` до состояния `connected` сохранён.
   - `connect` также проходит через `CoreFacade`: порядок cached recovery →
     compilation → engine start закреплён тестами, а VPN permission и native
-    start принадлежат Android `EngineAdapter`. Legacy Android compiler временно
-    подключён как typed `CoreConfigProvider`, пока его входы переносятся в core.
+    start принадлежат Android `EngineAdapter`. Android передаёт подписочные узлы
+    и platform-настройки через typed `CoreConfigProvider`, а routing/DNS/geosite
+    orchestration и генерация mihomo YAML выполняются `compileAndroidEngineConfig`
+    внутри `@slave-vpn/core`.
   - `setMode` сохраняет режим через typed `CoreModeController`; подключённый
     tunnel перезапускается внутри `CoreFacade` через тот же connect-путь, а при
     отключённом VPN новый режим только сохраняется до следующего запуска.
-  - Ещё на legacy-пути: сама сборка Android-конфига и `probeAll`. Они мигрируют
-    отдельными проверяемыми срезами.
+  - Ещё на legacy-пути: `probeAll`. Он мигрирует отдельным проверяемым срезом.
 - **P0.5 — Чистка дублей.** Удалить `android/compile-config.ts`,
-  `android/aggregator.ts`, `runtime-settings.ts` (логика теперь в core).
+  `android/aggregator.ts`, `runtime-settings.ts` после переноса оставшихся
+  platform data-source адаптеров (доменная сборка конфига уже живёт в core).
   Свести два пути генерации к одному. *Verify:* обе сборки + регресс.
 
 Риск большой — поэтому P0 идёт серией мелких коммитов, каждый из которых
