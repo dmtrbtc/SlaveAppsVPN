@@ -21,6 +21,13 @@ export { composeRoutingPolicy, resolveRoutingPolicyForMode } from './routing/com
 export type { ComposeRoutingResult } from './routing/composeRoutingPolicy.js'
 export { buildEngineConfig } from './runtime/buildEngineConfig.js'
 export type { BuildEngineConfigInput, BuildEngineConfigResult } from './runtime/buildEngineConfig.js'
+export { compileAndroidEngineConfig } from './runtime/compileAndroidEngineConfig.js'
+export type {
+  AndroidRoutingModeOption,
+  AndroidRuleListInput,
+  CompileAndroidEngineConfigInput,
+  CompiledAndroidEngineConfig,
+} from './runtime/compileAndroidEngineConfig.js'
 
 // DNS profile model (P0.2b) — preset/strategy resolution shared by both platforms.
 export * from './dns/index.js'

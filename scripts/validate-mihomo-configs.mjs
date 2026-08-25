@@ -17,9 +17,10 @@ const mihomoPath = resolve(
 const rulesDir = join(repoRoot, 'apps', 'windows', 'resources', 'rules')
 
 const require = createRequire(import.meta.url)
-const { generateMihomoConfig } = require('../packages/config/dist/cjs/index.js')
+const { generateMihomoConfig, parseProxiesFromYaml } = require('../packages/config/dist/cjs/index.js')
 const { buildAndroidDnsProfile } = require('../packages/dns/dist/cjs/index.js')
 const { composeScenarios } = require('../packages/routing/dist/cjs/index.js')
+const { compileAndroidEngineConfig } = require('../packages/core/dist/cjs/index.js')
 const {
   mergeGeoSiteDat,
   readGeoSiteCategories,
@@ -198,6 +199,23 @@ function buildCases(subscriptionYaml, runetAvailableGeoSites) {
         },
       },
     },
+    {
+      name: 'android-core-blocked-routing-dns',
+      compile: async () => {
+        const result = await compileAndroidEngineConfig({
+          proxies: parseProxiesFromYaml(subscriptionYaml),
+          vpnMode: 'blocked',
+          dohProvider: { id: 'cloudflare' },
+          enabledScenarios: [],
+          customRules: [],
+          ruleLists: [],
+          apiSecret: 'mihomo-config-test-only',
+          utlsFingerprint: 'chrome',
+          loadAvailableGeoSites: async () => runetAvailableGeoSites,
+        })
+        return result.config
+      },
+    },
   ]
 }
 
@@ -223,7 +241,7 @@ function seedGeoData(homeDir, mergeRunetGeosite = false) {
   }
 }
 
-function main() {
+async function main() {
   if (!existsSync(mihomoPath)) {
     throw new Error(`Mihomo binary is missing: ${mihomoPath}. Run pnpm download:binaries first.`)
   }
@@ -243,7 +261,9 @@ function main() {
       mkdirSync(homeDir, { recursive: true })
       seedGeoData(homeDir, testCase.mergeRunetGeosite)
       const configPath = join(homeDir, 'config.yaml')
-      const yaml = generateMihomoConfig(testCase.context)
+      const yaml = testCase.compile
+        ? await testCase.compile()
+        : generateMihomoConfig(testCase.context)
       if (testCase.mergeRunetGeosite && !yaml.includes('GEOSITE,ru-blocked,')) {
         throw new Error(`${testCase.name}: generated config lost the ru-blocked rule`)
       }
@@ -259,8 +279,6 @@ function main() {
   }
 }
 
-try {
-  main()
-} catch (error) {
+main().catch((error) => {
   fail(error instanceof Error ? error.message : String(error))
-}
+})

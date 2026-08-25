@@ -14,7 +14,7 @@
     "clean": "turbo run clean && rimraf node_modules",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\" --ignore-path .gitignore",
     "validate:boundaries": "node scripts/validate-boundaries.mjs",
-    "validate:mihomo-configs": "pnpm --filter @slave-vpn/runtime... build && node scripts/validate-mihomo-configs.mjs",
+    "validate:mihomo-configs": "pnpm --filter @slave-vpn/runtime... --filter @slave-vpn/core... build && node scripts/validate-mihomo-configs.mjs",
     "validate:all": "pnpm typecheck && pnpm validate:boundaries && pnpm audit --audit-level=high",
     "download:binaries": "node scripts/download-binaries.mjs",
     "download:binaries:force": "node scripts/download-binaries.mjs --force",

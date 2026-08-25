@@ -5,11 +5,9 @@ import { composeRoutingPolicy } from '../routing/composeRoutingPolicy.js'
 /**
  * Canonical engine-config builder, shared by both platforms.
  *
- * Today Windows builds the config in RuntimeServiceImpl (routingPolicy +
- * dnsProfile) and Android builds it in android/compile-config.ts
- * (androidRouting). Both call the same `generateMihomoConfig`, but with
- * different orchestration. This function centralises the orchestration so the
- * two paths converge:
+ * Windows builds the config in RuntimeServiceImpl (routingPolicy + dnsProfile),
+ * while `compileAndroidEngineConfig` prepares the Android-specific inputs. Both
+ * paths converge here before calling the same `generateMihomoConfig`:
  *
  *  - pass `enabledScenarioIds` and it composes the routing policy here (the
  *    Windows model — which P1 brings to Android), falling back to legacy
