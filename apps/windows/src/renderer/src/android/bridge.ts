@@ -16,8 +16,16 @@ import { pingProxies } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
-import { getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
-import type { AppSettings, UtlsFingerprintName, CabinetUser, CabinetSubscription } from '@slave-vpn/core'
+import { createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import type {
+  ActiveConnectionsSnapshot,
+  AppSettings,
+  CabinetSubscription,
+  CabinetUser,
+  EngineAdapter,
+  ProxyEntry,
+  UtlsFingerprintName,
+} from '@slave-vpn/core'
 import {
   loadProfiles, listProfiles, subscribeProfiles, getProfile,
   createProfile, removeProfile, markProfileApplied,
@@ -28,8 +36,8 @@ import {
   getRuleLists, addRuleList, removeRuleList, updateRuleList,
   type RuleListEntry,
 } from './runtime-settings'
-import { createAndroidDataAdapters } from './adapters'
-import { prefetchAndroidGeoSiteCategories } from './geosite-categories'
+import { createAndroidDataAdapters, type AndroidDataAdapters } from './adapters'
+import { getCachedGeoSiteCategories, prefetchAndroidGeoSiteCategories } from './geosite-categories'
 
 // Build the RoutingScenarioInfo[] the renderer expects from core scenario
 // metadata + the currently enabled set (persisted in AppSettings.enabledScenarios).
@@ -393,10 +401,7 @@ const ROUTING_MODE_LS_KEY = 'slave.settings.routingMode.v1'
 let currentRoutingMode: 'smart' | 'global' | 'direct' = 'smart'
 
 // Map mihomo's clash-API connections snapshot JSON → ActiveConnectionsSnapshot.
-function parseConnectionsSnapshot(raw: string): {
-  uploadTotal: number; downloadTotal: number; count: number
-  connections: unknown[]; fetchedAt: number
-} | null {
+function parseConnectionsSnapshot(raw: string): ActiveConnectionsSnapshot | null {
   try {
     const s = JSON.parse(raw) as {
       uploadTotal?: number; downloadTotal?: number
@@ -434,6 +439,40 @@ function parseConnectionsSnapshot(raw: string): {
   } catch {
     return null
   }
+}
+
+async function listNativeProxies(): Promise<ProxyEntry[]> {
+  // This list deliberately works while disconnected: it comes from the
+  // aggregated subscriptions, not from the native core process.
+  const servers = await listAndroidServers()
+  return servers.map(toProxyEntry)
+}
+
+async function selectNativeProxy(name: string): Promise<void> {
+  nativeLog(`[bridge] setProxy(${name}) reached the native bridge`)
+  if (!name) throw new Error('setProxy: proxyName is empty')
+  currentSelectedProxy = name
+  try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
+  // Native no-ops gracefully while disconnected. The selection is also sent
+  // on the next connect and retained by mihomo's store-selected setting.
+  await SlaveVpn.selectProxy({ name }).catch(() => undefined)
+}
+
+async function readNativeConnections(): Promise<ActiveConnectionsSnapshot | null> {
+  // HARD lifecycle guard: this native method loads gojni, so it must never be
+  // called before the foreground VPN service has brought the core up.
+  if (!coreReady()) return null
+  try {
+    const { snapshot } = await SlaveVpn.getConnections()
+    return parseConnectionsSnapshot(snapshot)
+  } catch {
+    return null
+  }
+}
+
+async function closeNativeConnection(id: string): Promise<void> {
+  if (!id || !coreReady()) return
+  try { await SlaveVpn.closeConnection({ id }) } catch { /* non-fatal */ }
 }
 
 // Rule-provider (bypass list) status — shared shape with the DiagnosticsPage
@@ -573,6 +612,60 @@ function stopRuntimePolling(): void {
   lastRuntimeActive = null
 }
 
+/**
+ * Android implementation of the engine boundary consumed by CoreFacade.
+ *
+ * The legacy connect orchestrator still compiles configs and requests Android
+ * VPN permission. The facade currently uses only the behavior-preserving
+ * pass-through methods below; `start` is ready for the later orchestration move.
+ */
+function createAndroidEngineAdapter(adapters: AndroidDataAdapters): EngineAdapter {
+  return {
+    start: async (config: string) => {
+      const permission = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
+      if (!permission.granted) {
+        const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
+        if (!requested.granted) throw new Error('Android VPN permission denied')
+      }
+      const settings = androidSettings()
+      await SlaveVpn.connect({
+        config,
+        ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+        vpnMode: currentMode,
+        splitMode: settings.splitTunnelMode ?? 'off',
+        splitApps: settings.splitProcessList ?? [],
+        killSwitch: settings.killSwitch ?? false,
+      })
+    },
+    stop: () => SlaveVpn.disconnect(),
+    getStatus: () => readNativeStatus(),
+    getTraffic: async () => {
+      // Preserve the rc8 anti-regression invariant: returning zeros is safe;
+      // touching getTraffic before connected is not.
+      if (!coreReady()) return EMPTY_TRAFFIC_STATS
+      const { traffic } = await SlaveVpn.getTraffic()
+      return traffic
+    },
+    getProxies: () => listNativeProxies(),
+    setProxy: (name: string) => selectNativeProxy(name),
+    getConnections: () => readNativeConnections(),
+    closeConnection: (id: string) => closeNativeConnection(id),
+    probeLatency: async (name: string, testUrl: string, timeoutMs: number) => {
+      const { delay } = await SlaveVpn.testDelay({ name, url: testUrl, timeout: timeoutMs })
+      return delay >= 0 ? delay : null
+    },
+    geositeCategories: () => getCachedGeoSiteCategories(adapters.storage),
+    onEvent: (handler) => {
+      runtimeEventSubs.add(handler)
+      startRuntimePolling()
+      return () => {
+        runtimeEventSubs.delete(handler)
+        if (runtimeEventSubs.size === 0) stopRuntimePolling()
+      }
+    },
+  }
+}
+
 // ─── Install ──────────────────────────────────────────────────────────────────
 
 let installed = false
@@ -582,11 +675,17 @@ export function installAndroidBridge(): void {
   installed = true
   if (typeof window === 'undefined') return
 
+  const dataAdapters = createAndroidDataAdapters()
+  const core = createCore({
+    ...dataAdapters,
+    engine: createAndroidEngineAdapter(dataAdapters),
+  })
+
   const bridge = {
     vpn: {
       connect: () => wrap(connectNative),
-      disconnect: () => wrap(() => SlaveVpn.disconnect()),
-      getStatus: () => wrap(() => readNativeStatus()),
+      disconnect: () => wrap(() => core.vpn.disconnect()),
+      getStatus: () => wrap(() => core.vpn.getStatus()),
       // Changing the mode must take effect on the RUNNING tunnel, not just on the
       // next manual reconnect — otherwise picking «Полный» while connected does
       // nothing (the old rule set keeps routing RU direct). Mihomo can't hot-swap
@@ -606,43 +705,15 @@ export function installAndroidBridge(): void {
       // Param typed against the shared IPC contract (VpnSetProxyPayload) so the
       // proxy-vs-proxyName mismatch that broke switching can't recur — it would
       // now fail typecheck.
-      setProxy: (payload: VpnSetProxyPayload) => wrap(async () => {
-        const name = payload.proxyName
-        nativeLog(`[bridge] setProxy(${name}) reached the native bridge`)
-        if (!name) throw new Error('setProxy: proxyName is empty')
-        currentSelectedProxy = name
-        try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
-        // Live-switch the mihomo SLAVE-SELECT group. Native no-ops gracefully if
-        // not connected — the choice is re-applied on the next connect via the
-        // connect payload (and persisted by mihomo store-selected).
-        await SlaveVpn.selectProxy({ name }).catch(() => undefined)
-      }),
-      getProxyList: () => wrap(async () => {
-        // The list works disconnected too (the running core isn't required) —
-        // it's the deduped subscription nodes, so the main screen never shows
-        // "Серверы не загружены" once a subscription exists.
-        const servers = await listAndroidServers()
-        return servers.map(toProxyEntry)
-      }),
-      getConnections: () => wrap(async () => {
-        // GUARDED: getConnections loads the native core — never call it before
-        // connected (the ActiveConnectionsPanel polls this).
-        if (!coreReady()) return null
-        try {
-          const { snapshot } = await SlaveVpn.getConnections()
-          return parseConnectionsSnapshot(snapshot)
-        } catch {
-          return null
-        }
-      }),
+      setProxy: (payload: VpnSetProxyPayload) => wrap(() => core.vpn.setProxy(payload.proxyName)),
+      getProxyList: () => wrap(() => core.vpn.getProxyList()),
+      getConnections: () => wrap(() => core.vpn.getConnections()),
       closeConnection: (payload: { id?: string }) => wrap(async () => {
         // Real per-connection close — the rebuilt clashbox.aar exports
         // Clashbox.closeConnection(id) (DELETE /connections/{id}). No-op if not
         // connected or the id is gone (the row is removed optimistically anyway).
         const id = payload?.id
-        if (id && coreReady()) {
-          try { await SlaveVpn.closeConnection({ id }) } catch { /* non-fatal */ }
-        }
+        if (id) await core.vpn.closeConnection(id)
         return undefined
       }),
       getBalancerState: notImplemented('vpn.getBalancerState'),
@@ -779,7 +850,7 @@ export function installAndroidBridge(): void {
         let stopped = false
         const tick = async (): Promise<void> => {
           if (stopped) return
-          const status = await readNativeStatus()
+          const status = await core.vpn.getStatus()
           if (status.state !== lastState || status.lastError !== lastError) {
             lastState = status.state
             lastError = status.lastError
@@ -799,8 +870,7 @@ export function installAndroidBridge(): void {
         let stopped = false
         const tick = async (): Promise<void> => {
           if (stopped) return
-          if (!coreReady()) { cb(EMPTY_TRAFFIC_STATS); return }
-          try { const { traffic } = await SlaveVpn.getTraffic(); cb(traffic) } catch { /* ignore */ }
+          try { cb(await core.vpn.getTraffic()) } catch { /* ignore */ }
         }
         void tick()
         const timer = setInterval(() => { void tick() }, 1000)
@@ -810,14 +880,7 @@ export function installAndroidBridge(): void {
       onVpnHealth: () => () => undefined,
       // T2: real runtime-event stream via the polling fallback above. The first
       // subscriber starts the 2s poller; the last to unsubscribe stops it.
-      onRuntimeEvent: (cb: (e: RuntimeEvent) => void) => {
-        runtimeEventSubs.add(cb)
-        startRuntimePolling()
-        return () => {
-          runtimeEventSubs.delete(cb)
-          if (runtimeEventSubs.size === 0) stopRuntimePolling()
-        }
-      },
+      onRuntimeEvent: (cb: (e: RuntimeEvent) => void) => core.events.onRuntimeEvent(cb),
       onSubscriptionUpdated: () => () => undefined,
       onAuthExpired: () => () => undefined,
       onUpdateAvailable: () => () => undefined,
@@ -1227,8 +1290,7 @@ export function installAndroidBridge(): void {
   // weekly) so the first scenario-driven connect can drop GEOSITE rules for
   // categories absent from the native engine's dat (P1.b consumes this).
   try {
-    const adapters = createAndroidDataAdapters()
-    prefetchAndroidGeoSiteCategories(adapters.network, adapters.storage)
+    prefetchAndroidGeoSiteCategories(dataAdapters.network, dataAdapters.storage)
   } catch {
     /* non-fatal */
   }

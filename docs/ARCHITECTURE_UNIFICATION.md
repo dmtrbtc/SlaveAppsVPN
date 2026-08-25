@@ -121,6 +121,12 @@ interface CoreFacade {
   (CapacitorHttp)/Fs(Capacitor Filesystem)/Engine(нативный плагин +
   `geositeCategories` через JNI или чтение файла). `android/bridge.ts` делегирует
   в тот же `CoreFacade` вместо заглушек. *Verify:* APK, подключение на телефоне.
+  - Первый безопасный срез подключён: `disconnect`, status/traffic polling,
+    список/выбор прокси, активные соединения и runtime events проходят через
+    `CoreFacade` и Android `EngineAdapter`. Guard для `getTraffic`/
+    `getConnections` до состояния `connected` сохранён.
+  - Ещё на legacy-пути: запрос VPN-разрешения, компиляция конфига + `connect`,
+    смена режима и `probeAll`. Они мигрируют отдельными проверяемыми срезами.
 - **P0.5 — Чистка дублей.** Удалить `android/compile-config.ts`,
   `android/aggregator.ts`, `runtime-settings.ts` (логика теперь в core).
   Свести два пути генерации к одному. *Verify:* обе сборки + регресс.
