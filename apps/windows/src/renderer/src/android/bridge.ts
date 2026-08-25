@@ -174,73 +174,31 @@ function ruleListToProvider(e: RuleListEntry): {
   }
 }
 
-// Compile the current config and bring the native tunnel up. Shared by vpn.connect
-// and vpn.setMode (the latter recompiles + reconnects so a mode change applies to
-// the running tunnel).
-async function connectNative(): Promise<void> {
-  // Breadcrumb EVERY connect phase into the same native log ring-buffer the
-  // «Диагностика→Логи» screen reads (SlaveVpn.getLogs). The native service already
-  // logs from «starting VPN» onward, but the renderer-side prep (config compile,
-  // VPN permission) ran SILENTLY — so a FIRST-connect failure here left the log
-  // empty («лог пишется только когда уже подключился»). Now any failure leaves a
-  // trace pinpointing the phase. Config CONTENT is never logged (only its size),
-  // so no keys/UUIDs leak into the buffer.
-  try {
-    nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
-    const perm = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
-    if (!perm.granted) {
-      nativeLog('[connect] запрос разрешения VPN')
-      const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
-      if (!requested.granted) throw new Error('Android VPN permission denied')
-    }
-    // A core failure with Kill Switch enabled intentionally blackholes DNS and
-    // all other traffic. Re-fetching subscriptions here can never succeed, so a
-    // Retry must first ask native code to restore its last known-good config.
-    const cachedRecovery = await SlaveVpn.reconnectCached().catch(() => ({ restored: false }))
-    if (cachedRecovery.restored) {
-      nativeLog('[connect] kill-switch recovery: cached native config requested')
-      return
-    }
-    nativeLog('[connect] компиляция конфига mihomo…')
-    const compiled = await compileMihomoConfigForAndroid({
-      vpnMode: currentMode,
-      ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-      utlsFingerprint: currentUtlsFingerprint,
-      routingMode: currentRoutingMode,
-    })
-    nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
-    // Surface compile warnings (failed subscriptions, dropped geosite rules,
-    // scenario composition notes) in the in-app log so «правило молча выпало»
-    // is diagnosable instead of invisible.
-    for (const w of compiled.warnings ?? []) nativeLog(`[connect] ⚠ ${w}`)
-    const s = androidSettings()
-    await SlaveVpn.connect({
-      config: compiled.config,
-      ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-      vpnMode: currentMode,
-      // Per-app split tunnel (native VpnService addAllowed/DisallowedApplication).
-      splitMode: s.splitTunnelMode ?? 'off',
-      splitApps: s.splitProcessList ?? [],
-      // Kill switch: hold the blocking TUN on a VPN drop instead of leaking.
-      killSwitch: s.killSwitch ?? false,
-    })
-    nativeLog('[connect] запрос на старт принят ядром')
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    nativeLog(`[connect] ОШИБКА: ${msg}`)
-    throw e
-  }
+// Transitional config provider for CoreFacade. Config CONTENT is never logged
+// (only its size), so subscription credentials cannot leak into diagnostics.
+async function compileNativeConfig(): Promise<string> {
+  nativeLog('[connect] компиляция конфига mihomo…')
+  const compiled = await compileMihomoConfigForAndroid({
+    vpnMode: currentMode,
+    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+    utlsFingerprint: currentUtlsFingerprint,
+    routingMode: currentRoutingMode,
+  })
+  nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
+  // Surface failed subscriptions, dropped geosite rules and composition notes.
+  for (const warning of compiled.warnings ?? []) nativeLog(`[connect] ⚠ ${warning}`)
+  return compiled.config
 }
 
 // Re-apply a config-affecting setting (mode, fingerprint, …) to the RUNNING
 // tunnel: mihomo can't hot-swap its config via the native plugin, so we recompile
 // and reconnect. No-op when disconnected (the change lands on the next connect).
-async function reconnectIfConnected(): Promise<void> {
+async function reconnectIfConnected(connect: () => Promise<void>): Promise<void> {
   const st = await readNativeStatus().catch(() => null)
   if (st && st.state === 'connected') {
     await SlaveVpn.disconnect().catch(() => undefined)
     await new Promise(r => setTimeout(r, 400))
-    await connectNative()
+    await connect()
   }
 }
 
@@ -615,18 +573,21 @@ function stopRuntimePolling(): void {
 /**
  * Android implementation of the engine boundary consumed by CoreFacade.
  *
- * The legacy connect orchestrator still compiles configs and requests Android
- * VPN permission. The facade currently uses only the behavior-preserving
- * pass-through methods below; `start` is ready for the later orchestration move.
+ * CoreFacade owns the connect order; this adapter owns Android permission,
+ * cached-config recovery and the final native engine start.
  */
+async function ensureVpnPermission(): Promise<void> {
+  const permission = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
+  if (permission.granted) return
+  nativeLog('[connect] запрос разрешения VPN')
+  const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
+  if (!requested.granted) throw new Error('Android VPN permission denied')
+}
+
 function createAndroidEngineAdapter(adapters: AndroidDataAdapters): EngineAdapter {
   return {
     start: async (config: string) => {
-      const permission = await SlaveVpn.checkPermission().catch(() => ({ granted: false }))
-      if (!permission.granted) {
-        const requested = await SlaveVpn.requestPermission().catch(() => ({ granted: false }))
-        if (!requested.granted) throw new Error('Android VPN permission denied')
-      }
+      await ensureVpnPermission()
       const settings = androidSettings()
       await SlaveVpn.connect({
         config,
@@ -636,6 +597,15 @@ function createAndroidEngineAdapter(adapters: AndroidDataAdapters): EngineAdapte
         splitApps: settings.splitProcessList ?? [],
         killSwitch: settings.killSwitch ?? false,
       })
+    },
+    restoreCached: async () => {
+      // With Android lockdown enabled a failed core intentionally blackholes the
+      // network. Restore the native last-known-good config before the renderer
+      // tries to fetch subscriptions for a new compilation.
+      await ensureVpnPermission()
+      const { restored } = await SlaveVpn.reconnectCached().catch(() => ({ restored: false }))
+      if (restored) nativeLog('[connect] kill-switch recovery: cached native config requested')
+      return restored
     },
     stop: () => SlaveVpn.disconnect(),
     getStatus: () => readNativeStatus(),
@@ -676,14 +646,33 @@ export function installAndroidBridge(): void {
   if (typeof window === 'undefined') return
 
   const dataAdapters = createAndroidDataAdapters()
-  const core = createCore({
-    ...dataAdapters,
-    engine: createAndroidEngineAdapter(dataAdapters),
-  })
+  const core = createCore(
+    {
+      ...dataAdapters,
+      engine: createAndroidEngineAdapter(dataAdapters),
+    },
+    {
+      // Transitional boundary: the Android-specific config inputs move into
+      // core in later P0/P1 slices. Connect orchestration already lives there.
+      configProvider: { compile: compileNativeConfig },
+    },
+  )
+
+  const connectWithDiagnostics = async (): Promise<void> => {
+    try {
+      nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
+      await core.vpn.connect()
+      nativeLog('[connect] запрос на старт принят ядром')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      nativeLog(`[connect] ОШИБКА: ${message}`)
+      throw e
+    }
+  }
 
   const bridge = {
     vpn: {
-      connect: () => wrap(connectNative),
+      connect: () => wrap(connectWithDiagnostics),
       disconnect: () => wrap(() => core.vpn.disconnect()),
       getStatus: () => wrap(() => core.vpn.getStatus()),
       // Changing the mode must take effect on the RUNNING tunnel, not just on the
@@ -693,7 +682,7 @@ export function installAndroidBridge(): void {
       setMode: (payload: { mode: VPNMode }) => wrap(async () => {
         currentMode = payload.mode
         await SlaveVpn.setMode(payload).catch(() => undefined)
-        await reconnectIfConnected()
+        await reconnectIfConnected(connectWithDiagnostics)
       }),
       getConnectivity: notImplemented('vpn.getConnectivity'),
       // ROOT CAUSE of "any choice → traffic via EE": the IPC contract is
@@ -1023,7 +1012,7 @@ export function installAndroidBridge(): void {
         // The fingerprint is baked into the compiled config — re-apply it to the
         // running tunnel so the change takes effect immediately (like setMode),
         // not only on the next manual reconnect.
-        if (fingerprintChanged) await reconnectIfConnected()
+        if (fingerprintChanged) await reconnectIfConnected(connectWithDiagnostics)
       }),
     },
     provider: {
@@ -1114,7 +1103,7 @@ export function installAndroidBridge(): void {
       // Order is not meaningful for these proxy-action lists — accept + no-op.
       reorder: async () => ok(undefined),
       // mihomo can't hot-swap; reconnect so the new list set takes effect now.
-      reload: () => wrap(async () => { await reconnectIfConnected(); return undefined as never }),
+      reload: () => wrap(async () => { await reconnectIfConnected(connectWithDiagnostics); return undefined as never }),
     },
     split: {
       getProcesses: async () => ok([] as never[]),

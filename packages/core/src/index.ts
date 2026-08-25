@@ -9,6 +9,7 @@ export type {
   CoreEventsApi,
 } from './facade/CoreFacade.js'
 export { createCore } from './createCore.js'
+export type { CoreConfigProvider, CreateCoreOptions } from './createCore.js'
 export { CoreNotReadyError } from './errors.js'
 
 // Orchestration (P0.2) — platform-agnostic domain logic.

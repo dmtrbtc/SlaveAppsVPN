@@ -22,6 +22,12 @@ import type {
 export interface EngineAdapter {
   /** Apply a fresh config and (re)start the tunnel. */
   start(config: string): Promise<void>
+  /**
+   * Restore a platform-owned last-known-good config, when available.
+   * Android uses this to recover while OS lockdown blocks the network; desktop
+   * engines normally omit it. `true` means the tunnel start was handled.
+   */
+  restoreCached?(): Promise<boolean>
   stop(): Promise<void>
   /** Hot-reload a new config without a full restart, when the engine supports it. */
   reload?(config: string): Promise<void>
