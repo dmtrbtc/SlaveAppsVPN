@@ -24,6 +24,13 @@ export interface ProxyEntry {
   group?: string // which group this belongs to
 }
 
+// ─── Server latency probing ──────────────────────────────────────────────────
+export interface ServerLatencyResult {
+  proxyName: string
+  latencyMs: number | null
+  success: boolean
+}
+
 // ─── Active connections (mihomo /connections) ─────────────────────────────────
 export interface ActiveConnection {
   id: string

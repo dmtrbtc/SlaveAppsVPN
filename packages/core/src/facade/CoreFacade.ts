@@ -6,6 +6,7 @@ import type {
   ActiveConnectionsSnapshot,
   VPNConnectivityInfo,
   RuntimeEvent,
+  ServerLatencyResult,
   Unsubscribe,
 } from '../types.js'
 
@@ -44,6 +45,7 @@ export interface CoreEventsApi {
   onStatus(cb: (status: VPNStatus) => void): Unsubscribe
   onTraffic(cb: (traffic: TrafficStats) => void): Unsubscribe
   onRuntimeEvent(cb: (event: RuntimeEvent) => void): Unsubscribe
+  onServerLatency(cb: (result: ServerLatencyResult) => void): Unsubscribe
 }
 
 export interface CoreFacade {

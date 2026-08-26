@@ -1,6 +1,6 @@
 import type { CoreAdapters } from './adapters/index.js'
 import type { CoreFacade } from './facade/CoreFacade.js'
-import type { Unsubscribe, VPNMode } from './types.js'
+import type { ServerLatencyResult, Unsubscribe, VPNMode } from './types.js'
 import { CoreNotReadyError } from './errors.js'
 
 /** Transitional source of an already compiled engine config.
@@ -18,9 +18,31 @@ export interface CoreModeController {
   setMode(mode: VPNMode): Promise<void>
 }
 
+/** Platform endpoint passed to the shared latency-probe orchestration. */
+export interface CoreProbeTarget {
+  name: string
+  server: string
+  port: number
+}
+
+/**
+ * Transitional platform boundary for disconnected node probes.
+ *
+ * Core owns batching, bounded concurrency, failure isolation and result events.
+ * The platform only lists targets and measures one target without touching VPN
+ * lifecycle state. Android implements the measurement with CapacitorHttp so the
+ * probe remains available before the native engine is loaded.
+ */
+export interface CoreProbeProvider {
+  listTargets(): Promise<CoreProbeTarget[]>
+  probe(target: CoreProbeTarget): Promise<number | null>
+  concurrency?: number
+}
+
 export interface CreateCoreOptions {
   configProvider?: CoreConfigProvider
   modeController?: CoreModeController
+  probeProvider?: CoreProbeProvider
   /** Platform settle time between engine stop and config-based restart. */
   reconnectDelayMs?: number
 }
@@ -31,12 +53,14 @@ export interface CreateCoreOptions {
  * Engine pass-throughs go straight to EngineAdapter. During the config-domain
  * migration, connect accepts a typed provider for a ready config and owns the
  * recovery → compile → start order. setMode uses a typed platform sink and
- * reuses connect when the engine is live. probeAll remains an explicit
- * CoreNotReadyError stub until its policy moves into core.
+ * reuses connect when the engine is live. probeAll owns the shared batching and
+ * result stream while the platform supplies a single-target latency probe.
  */
 export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = {}): CoreFacade {
   const { engine, logger } = adapters
   const subscriptions = new Set<Unsubscribe>()
+  const serverLatencySubscribers = new Set<(result: ServerLatencyResult) => void>()
+  let probeInFlight: Promise<void> | null = null
 
   const trackSubscription = (unsubscribe: Unsubscribe): Unsubscribe => {
     let active = true
@@ -88,6 +112,70 @@ export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = 
     await connect()
   }
 
+  const emitServerLatency = (result: ServerLatencyResult): void => {
+    for (const subscriber of serverLatencySubscribers) {
+      try {
+        subscriber(result)
+      } catch (error) {
+        logger?.warn('vpn.probeAll.subscriber_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+
+  const runProbes = async (): Promise<void> => {
+    const probeProvider = options.probeProvider
+    if (!probeProvider) {
+      throw new CoreNotReadyError('vpn.probeAll (probe provider is not wired)')
+    }
+
+    const targets = await probeProvider.listTargets()
+    if (targets.length === 0) return
+
+    const requestedConcurrency = Math.trunc(probeProvider.concurrency ?? 6)
+    const concurrency = Math.min(targets.length,
+      Number.isFinite(requestedConcurrency) ? Math.max(1, requestedConcurrency) : 6)
+    let nextIndex = 0
+
+    logger?.debug('vpn.probeAll.start', { targetCount: targets.length, concurrency })
+
+    const worker = async (): Promise<void> => {
+      while (nextIndex < targets.length) {
+        const target = targets[nextIndex++]!
+        let latencyMs: number | null = null
+        try {
+          latencyMs = await probeProvider.probe(target)
+          if (latencyMs !== null && (!Number.isFinite(latencyMs) || latencyMs < 0)) {
+            latencyMs = null
+          }
+        } catch (error) {
+          logger?.warn('vpn.probeAll.target_failed', {
+            proxyName: target.name,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        emitServerLatency({
+          proxyName: target.name,
+          latencyMs,
+          success: latencyMs !== null,
+        })
+      }
+    }
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()))
+    logger?.debug('vpn.probeAll.completed', { targetCount: targets.length })
+  }
+
+  // Dashboard and Servers may request a probe at the same time. Share the batch
+  // so their combined requests retain the concurrency limit and one event/node.
+  const probeAll = (): Promise<void> => {
+    if (!probeInFlight) {
+      probeInFlight = runProbes().finally(() => { probeInFlight = null })
+    }
+    return probeInFlight
+  }
+
   return {
     vpn: {
       connect,
@@ -100,9 +188,7 @@ export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = 
       getConnections: () => engine.getConnections(),
       closeConnection: (id: string) => engine.closeConnection(id),
       getTraffic: () => engine.getTraffic(),
-      probeAll: () => {
-        throw new CoreNotReadyError('vpn.probeAll (balancer policy lands in P4)')
-      },
+      probeAll,
     },
 
     events: {
@@ -119,6 +205,12 @@ export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = 
         return () => undefined
       },
       onRuntimeEvent: (cb) => trackSubscription(engine.onEvent(cb)),
+      onServerLatency: (cb) => {
+        // Each registration has its own lifetime even when a callback is reused.
+        const subscriber = (result: ServerLatencyResult) => cb(result)
+        serverLatencySubscribers.add(subscriber)
+        return trackSubscription(() => { serverLatencySubscribers.delete(subscriber) })
+      },
     },
 
     dispose: async () => {

@@ -12,6 +12,8 @@ export { createCore } from './createCore.js'
 export type {
   CoreConfigProvider,
   CoreModeController,
+  CoreProbeProvider,
+  CoreProbeTarget,
   CreateCoreOptions,
 } from './createCore.js'
 export { CoreNotReadyError } from './errors.js'

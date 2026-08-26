@@ -14,6 +14,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:queries": "node --test test/serverQueries.test.ts",
     "pack": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder --publish never",
     "clean": "rimraf out dist release"

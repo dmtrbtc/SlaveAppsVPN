@@ -134,7 +134,16 @@ interface CoreFacade {
   - `setMode` сохраняет режим через typed `CoreModeController`; подключённый
     tunnel перезапускается внутри `CoreFacade` через тот же connect-путь, а при
     отключённом VPN новый режим только сохраняется до следующего запуска.
-  - Ещё на legacy-пути: `probeAll`. Он мигрирует отдельным проверяемым срезом.
+  - `probeAll` и Android `servers.probe` используют одну оркестрацию в
+    `CoreFacade`: получение целей через typed `CoreProbeProvider`, ограничение
+    параллельности, общий batch для одновременных запросов, изоляция ошибок узлов
+    и поток `onServerLatency` с независимыми подписчиками. Android оставляет
+    только источник целей и одиночный HTTP edge-probe через CapacitorHttp;
+    проверка работает без запуска native VPN и не меняет балансер/маршрутизацию.
+  - Запрос списка серверов не приостанавливается из-за ложного offline-состояния
+    WebView (`networkMode: always` только для `servers`). Ошибки возвращает
+    платформенный bridge; глобальная online-модель не подменяется. Это сохраняет
+    рабочую кнопку обновления после переключения VPN.
 - **P0.5 — Чистка дублей.** Удалить `android/compile-config.ts`,
   `android/aggregator.ts`, `runtime-settings.ts` после переноса оставшихся
   platform data-source адаптеров (доменная сборка конфига уже живёт в core).

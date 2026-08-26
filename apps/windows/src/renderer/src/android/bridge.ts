@@ -12,7 +12,7 @@ import {
   type AndroidSubscriptionType,
 } from './subscription-store'
 import { buildAggregatedYaml, buildAggregatedProxies } from './aggregator'
-import { pingProxies } from './ping'
+import { probeProxyEdge } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
@@ -356,9 +356,6 @@ function saveUtlsToLocalStorage(value: string): void {
   try { window.localStorage.setItem(UTLS_LS_KEY, value) } catch { /* swallow */ }
 }
 
-// Registered by events.onServerLatency; probeAll pushes per-node results here.
-let serverLatencyCb: ((p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) | null = null
-
 // Android smart-routing mode (persisted) — passed to compile-config on connect.
 const ROUTING_MODE_LS_KEY = 'slave.settings.routingMode.v1'
 let currentRoutingMode: 'smart' | 'global' | 'direct' = 'smart'
@@ -689,6 +686,18 @@ export function installAndroidBridge(): void {
           await SlaveVpn.setMode({ mode }).catch(() => undefined)
         },
       },
+      probeProvider: {
+        listTargets: async () => {
+          const { proxies } = await buildAggregatedProxies()
+          return proxies.map((proxy) => ({
+            name: proxy.name,
+            server: proxy.server,
+            port: proxy.port,
+          }))
+        },
+        probe: (target) => probeProxyEdge(target),
+        concurrency: 6,
+      },
     },
   )
 
@@ -726,17 +735,9 @@ export function installAndroidBridge(): void {
       getBalancerState: notImplemented('vpn.getBalancerState'),
       setBalancerEnabled: notImplemented('vpn.setBalancerEnabled'),
       setBalancerMode: notImplemented('vpn.setBalancerMode'),
-      probeAll: () => wrap(async () => {
-        // Task 1 — NON-NATIVE ping. Measure each node's edge RTT via CapacitorHttp
-        // (OkHttp), NOT the clashbox core, so latency works even disconnected and
-        // never triggers an early native init. Results feed the same serverLatency
-        // map (ms badges) — contract unchanged. Does not affect connect/balancer.
-        const { proxies } = await buildAggregatedProxies()
-        await pingProxies(
-          proxies.map(p => ({ name: p.name, server: p.server, port: p.port })),
-          (r) => serverLatencyCb?.({ proxyName: r.name, latencyMs: r.latencyMs, success: r.latencyMs !== null }),
-        )
-      }),
+      // Shared core owns target enumeration, bounded concurrency, failure
+      // isolation and live result events. Android supplies only one edge probe.
+      probeAll: () => wrap(() => core.vpn.probeAll()),
       // Kill switch (OS-enforced): open the system VPN settings so the user can
       // turn on "Always-on VPN" + "Block connections without VPN" for us — the
       // strongest guarantee, enforced by Android even when our process is dead.
@@ -894,10 +895,8 @@ export function installAndroidBridge(): void {
       onUpdateDownloaded: () => () => undefined,
       onUpdateProgress: () => () => undefined,
       onNotification: () => () => undefined,
-      onServerLatency: (cb: (p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) => {
-        serverLatencyCb = cb
-        return () => { if (serverLatencyCb === cb) serverLatencyCb = null }
-      },
+      onServerLatency: (cb: (p: { proxyName: string; latencyMs: number | null; success: boolean }) => void) =>
+        core.events.onServerLatency(cb),
       onProxyChanged: (cb: (name: string) => void) => {
         // Drive the store's selectedProxy (active-server indication). Native
         // emits nothing, so we seed the persisted choice and then poll the real
@@ -1052,17 +1051,9 @@ export function installAndroidBridge(): void {
           return []
         }
       }),
-      // Task 1 — NON-NATIVE ping (the ServersPage refresh button calls this).
-      // Edge-RTT probe via CapacitorHttp (OkHttp), never the clashbox core, so it
-      // works disconnected and triggers no native init. Pushes live results to
-      // onServerLatency (ms badges). Independent of connect/balancer/routing.
-      probe: () => wrap(async () => {
-        const { proxies } = await buildAggregatedProxies()
-        await pingProxies(
-          proxies.map(p => ({ name: p.name, server: p.server, port: p.port })),
-          (r) => serverLatencyCb?.({ proxyName: r.name, latencyMs: r.latencyMs, success: r.latencyMs !== null }),
-        )
-      }),
+      // The ServersPage refresh button uses the same shared probe pipeline as
+      // vpn.probeAll, so both entry points now have identical behavior.
+      probe: () => wrap(() => core.vpn.probeAll()),
     },
     safeMode: {
       getStatus: async () => ok({ inSafeMode: false } as never),
