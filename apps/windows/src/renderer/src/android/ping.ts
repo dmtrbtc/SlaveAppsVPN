@@ -1,5 +1,4 @@
 import { CapacitorHttp } from '@capacitor/core'
-import type { ProxyEntry } from '@slave-vpn/config'
 
 /**
  * Non-native server latency (ping) — Task 1.
@@ -17,19 +16,18 @@ import type { ProxyEntry } from '@slave-vpn/config'
  *     UDP listener, so these typically read as 'timeout'. That is an honest
  *     fallback, not a failure of the node.
  *
+ * CoreFacade owns batching and result events; this adapter measures one target.
  * Result per node: latency in ms, or null = timeout/unreachable (UI shows
  * "timeout"). Nothing here influences connect / auto-balancer / routing.
  */
 
-export interface PingResult {
-  name: string
-  latencyMs: number | null
-}
-
 const DEFAULT_TIMEOUT_MS = 4000
-const CONCURRENCY = 6
 
-async function pingOne(server: string, port: number, timeoutMs: number): Promise<number | null> {
+export async function probeProxyEdge(
+  target: { server: string; port: number },
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<number | null> {
+  const { server, port } = target
   if (!server || !port) return null
   const url = `https://${server}:${port}/`
   const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now())
@@ -52,31 +50,4 @@ async function pingOne(server: string, port: number, timeoutMs: number): Promise
     if (elapsed < timeoutMs * 0.9) return Math.round(elapsed)
     return null
   }
-}
-
-/**
- * Ping a batch of proxy entries (bounded concurrency). `onResult` is invoked as
- * each node finishes, so the UI can update live (drives the existing
- * serverLatency map → ms badges). Returns all results when done.
- */
-export async function pingProxies(
-  entries: Pick<ProxyEntry, 'name' | 'server' | 'port'>[],
-  onResult?: (r: PingResult) => void,
-  timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<PingResult[]> {
-  const out: PingResult[] = []
-  let i = 0
-  async function worker(): Promise<void> {
-    while (i < entries.length) {
-      const idx = i++
-      const e = entries[idx]!
-      const latencyMs = await pingOne(e.server, e.port, timeoutMs)
-      const r: PingResult = { name: e.name, latencyMs }
-      out.push(r)
-      onResult?.(r)
-    }
-  }
-  const workers = Array.from({ length: Math.min(CONCURRENCY, entries.length) }, () => worker())
-  await Promise.all(workers)
-  return out
 }

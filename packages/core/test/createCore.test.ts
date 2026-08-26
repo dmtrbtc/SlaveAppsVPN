@@ -19,6 +19,9 @@ function fixture(options: {
   statusState?: string
   logger?: boolean
   compileError?: string
+  probeTargets?: Array<{ name: string; server: string; port: number }>
+  probeLatencies?: Record<string, number | null | Error>
+  probeConcurrency?: number
 } = {}) {
   const calls: Array<[string, ...unknown[]]> = []
   let eventHandler: ((event: unknown) => void) | null = null
@@ -69,6 +72,23 @@ function fixture(options: {
       ? {
           modeController: {
             setMode: async (mode: string) => { calls.push(['setMode', mode]) },
+          },
+        }
+      : {}),
+    ...(options.probeTargets
+      ? {
+          probeProvider: {
+            listTargets: async () => {
+              calls.push(['listProbeTargets'])
+              return options.probeTargets
+            },
+            probe: async (target: { name: string }) => {
+              calls.push(['probe', target.name])
+              const value = options.probeLatencies?.[target.name] ?? null
+              if (value instanceof Error) throw value
+              return value
+            },
+            concurrency: options.probeConcurrency ?? 1,
           },
         }
       : {}),
@@ -198,12 +218,163 @@ test('setMode persists a disconnected mode without starting the engine', async (
   ])
 })
 
-test('unwired and unmigrated orchestration methods fail explicitly', async () => {
+test('probeAll owns target iteration and emits live latency results', async () => {
+  const { facade, calls } = fixture({
+    statusState: 'disconnected',
+    probeTargets: [
+      { name: 'node-a', server: 'a.example', port: 443 },
+      { name: 'node-b', server: 'b.example', port: 8443 },
+    ],
+    probeLatencies: { 'node-a': 42, 'node-b': 84 },
+  })
+  const received: unknown[] = []
+  const unsubscribe = facade.events.onServerLatency((result: unknown) => { received.push(result) })
+
+  await facade.vpn.probeAll()
+
+  assert.deepEqual(calls, [
+    ['listProbeTargets'],
+    ['probe', 'node-a'],
+    ['probe', 'node-b'],
+  ])
+  assert.deepEqual(received, [
+    { proxyName: 'node-a', latencyMs: 42, success: true },
+    { proxyName: 'node-b', latencyMs: 84, success: true },
+  ])
+  unsubscribe()
+})
+
+test('probeAll isolates per-target failures and normalizes invalid latency', async () => {
+  const { facade } = fixture({
+    probeTargets: [
+      { name: 'failed', server: 'failed.example', port: 443 },
+      { name: 'invalid', server: 'invalid.example', port: 443 },
+      { name: 'healthy', server: 'healthy.example', port: 443 },
+    ],
+    probeLatencies: {
+      failed: new Error('timeout'),
+      invalid: -1,
+      healthy: 21,
+    },
+  })
+  const received: unknown[] = []
+  facade.events.onServerLatency((result: unknown) => { received.push(result) })
+
+  await assert.doesNotReject(() => facade.vpn.probeAll())
+
+  assert.deepEqual(received, [
+    { proxyName: 'failed', latencyMs: null, success: false },
+    { proxyName: 'invalid', latencyMs: null, success: false },
+    { proxyName: 'healthy', latencyMs: 21, success: true },
+  ])
+})
+
+test('probeAll handles an empty target list without touching the engine', async () => {
+  const { facade, calls } = fixture({ probeTargets: [], statusState: 'disconnected' })
+  const received: unknown[] = []
+  facade.events.onServerLatency((value) => { received.push(value) })
+
+  await facade.vpn.probeAll()
+
+  assert.deepEqual(calls, [['listProbeTargets']])
+  assert.deepEqual(received, [])
+})
+
+test('probeAll bounds concurrency and shares simultaneous calls', async () => {
+  let listCalls = 0
+  let active = 0
+  let maxActive = 0
+  const probed: string[] = []
+  const targets = Array.from({ length: 5 }, (_, i) => ({ name: `node-${i}`, server: 'example.test', port: 443 }))
+  const facade = createCore({ engine: {}, storage: {}, network: {}, fs: {} }, {
+    probeProvider: {
+      listTargets: async () => { listCalls++; return targets },
+      concurrency: 2,
+      probe: async (target: { name: string }) => {
+        probed.push(target.name)
+        active++
+        maxActive = Math.max(maxActive, active)
+        await new Promise((resolve) => setImmediate(resolve))
+        active--
+        return 10
+      },
+    },
+  })
+  const received: unknown[] = []
+  facade.events.onServerLatency((value) => { received.push(value) })
+
+  const first = facade.vpn.probeAll()
+  const second = facade.vpn.probeAll()
+  assert.equal(first, second)
+  await Promise.all([first, second])
+
+  assert.equal(listCalls, 1)
+  assert.equal(maxActive, 2)
+  assert.deepEqual(probed, targets.map((target) => target.name))
+  assert.equal(received.length, targets.length)
+  await facade.vpn.probeAll()
+  assert.equal(listCalls, 2, 'a later request must run a fresh batch')
+})
+
+test('probeAll propagates target-list errors and permits a retry', async () => {
+  let attempts = 0
+  const facade = createCore({ engine: {}, storage: {}, network: {}, fs: {} }, {
+    probeProvider: {
+      listTargets: async () => {
+        if (++attempts === 1) throw new Error('subscriptions unavailable')
+        return []
+      },
+      probe: async () => assert.fail('no targets to probe'),
+    },
+  })
+
+  await assert.rejects(() => facade.vpn.probeAll(), /subscriptions unavailable/)
+  await assert.doesNotReject(() => facade.vpn.probeAll())
+  assert.equal(attempts, 2)
+})
+
+test('invalid concurrency values still process every target', async () => {
+  for (const concurrency of [0, -1, 1.5, NaN, Infinity]) {
+    const { facade, calls } = fixture({
+      probeTargets: [{ name: 'node-a', server: 'a.example', port: 443 }],
+      probeConcurrency: concurrency,
+    })
+    await facade.vpn.probeAll()
+    assert.deepEqual(calls, [['listProbeTargets'], ['probe', 'node-a']])
+  }
+})
+
+test('latency events support independent subscribers, errors and cleanup', async () => {
+  const { facade } = fixture({
+    probeTargets: [{ name: 'node-a', server: 'a.example', port: 443 }],
+    probeLatencies: { 'node-a': 0 },
+  })
+  const received: unknown[] = []
+  const handler = (value: unknown) => { received.push(value) }
+  const unsubscribe = facade.events.onServerLatency(handler)
+  facade.events.onServerLatency(() => { throw new Error('broken observer') })
+  facade.events.onServerLatency(handler)
+
+  await facade.vpn.probeAll()
+  assert.equal(received.length, 2)
+  assert.deepEqual(received[0], { proxyName: 'node-a', latencyMs: 0, success: true })
+
+  unsubscribe()
+  unsubscribe()
+  await facade.vpn.probeAll()
+  assert.equal(received.length, 3, 'removing one registration must preserve the other')
+
+  await facade.dispose()
+  await facade.vpn.probeAll()
+  assert.equal(received.length, 3, 'dispose must release all latency subscriptions')
+})
+
+test('unwired orchestration methods fail explicitly', async () => {
   const { facade } = fixture()
 
   await assert.rejects(() => facade.vpn.connect(), CoreNotReadyError)
   await assert.rejects(() => facade.vpn.setMode('full'), CoreNotReadyError)
-  assert.throws(() => facade.vpn.probeAll(), CoreNotReadyError)
+  await assert.rejects(() => facade.vpn.probeAll(), CoreNotReadyError)
 })
 
 test('dispose attempts to stop the engine and absorbs shutdown errors', async () => {
