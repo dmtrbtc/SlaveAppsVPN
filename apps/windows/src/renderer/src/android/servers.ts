@@ -1,6 +1,6 @@
 import type { Server } from '@slave-vpn/shared'
 import type { ProxyEntry } from '@slave-vpn/config'
-import { buildAggregatedProxies } from './aggregator'
+import { buildAggregatedProxies } from './adapters/subscriptions'
 import { lookupCountry } from './geoip'
 
 /**

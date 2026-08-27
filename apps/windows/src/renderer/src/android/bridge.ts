@@ -11,7 +11,7 @@ import {
   type AndroidSubscriptionEntry,
   type AndroidSubscriptionType,
 } from './subscription-store'
-import { buildAggregatedYaml, buildAggregatedProxies } from './aggregator'
+import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
 import { probeProxyEdge } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { compileMihomoConfigForAndroid } from './compile-config'

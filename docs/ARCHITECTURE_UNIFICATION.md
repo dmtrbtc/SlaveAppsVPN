@@ -148,6 +148,21 @@ interface CoreFacade {
   `android/aggregator.ts`, `runtime-settings.ts` после переноса оставшихся
   platform data-source адаптеров (доменная сборка конфига уже живёт в core).
   Свести два пути генерации к одному. *Verify:* обе сборки + регресс.
+  - Первый срез: `android/aggregator.ts` удалён. Обработка URL/URI, восстановление
+    Hysteria2/TUIC из альтернативных форматов и запись результата загрузки
+    перенесены в `core/subscriptions/createSubscriptionFetcher` поверх typed
+    `SubscriptionSourceAdapter`. Android `adapters/subscriptions.ts` связывает
+    core с существующими HTTP и хранилищем, не меняя HWID, ключи данных и UA
+    основного запроса. Android-типы подписок теперь берутся из core.
+  - Список серверов, probe, connect и refresh используют общий путь
+    `aggregateSubscriptionProxies` / `aggregateSubscriptions`. Для Android
+    сохранён `concurrency: 1` (включая ожидание записи метаданных); дефолт core
+    остаётся параллельным. Windows пока использует общий merge-kernel напрямую:
+    его cabinet/cache-источники ещё предстоит перенести.
+  - `compile-config.ts` и `runtime-settings.ts` пока сохранены: следующий срез —
+    перенос их источников настроек без потери пользовательских DNS/rule-lists.
+    Локальные проверки и оставшийся device smoke описаны в
+    [ANDROID_SUBSCRIPTIONS_VERIFICATION.md](ANDROID_SUBSCRIPTIONS_VERIFICATION.md).
 
 Риск большой — поэтому P0 идёт серией мелких коммитов, каждый из которых
 оставляет обе сборки зелёными; на каждом шаге сверяем `mihomo -t`.

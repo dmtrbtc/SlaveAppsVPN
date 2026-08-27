@@ -1,4 +1,5 @@
 import { Preferences } from '@capacitor/preferences'
+import type { SubscriptionEntry, SubscriptionSourceType } from '@slave-vpn/core'
 
 /**
  * Renderer-side subscription store for Android.
@@ -28,25 +29,8 @@ import { Preferences } from '@capacitor/preferences'
 const INDEX_KEY = 'slave.subscriptions.index.v1'
 const INPUT_KEY = (id: string): string => `slave.subscriptions.input.v1.${id}`
 
-export type AndroidSubscriptionType =
-  | 'subscription-url'
-  | 'single-proxy'
-  | 'remnawave-key'
-  | 'provider'
-
-export interface AndroidSubscriptionEntry {
-  id: string
-  name: string
-  type: AndroidSubscriptionType
-  enabled: boolean
-  autoUpdateMinutes: 0 | 15 | 60 | 360 | 1440
-  addedAt: number
-  lastFetchedAt: number | null
-  lastError: string | null
-  nodeCount: number | null
-  urlDomain?: string
-  proxyProtocol?: string
-}
+export type AndroidSubscriptionType = SubscriptionSourceType
+export type AndroidSubscriptionEntry = SubscriptionEntry
 
 // ─── Storage backend: localStorage primary + Preferences mirror ───────────────
 
