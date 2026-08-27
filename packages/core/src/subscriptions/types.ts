@@ -36,9 +36,9 @@ export interface FetchedEntry {
   error: string | null
 }
 
-/** Platform-specific subscription fetcher (Windows ConfigSource / Android
- * CapacitorHttp + UDP recovery). The core orchestrates these; it never fetches
- * directly so HWID headers / UA rotation / CORS handling stay platform-owned. */
+/** Parsed-source provider for core aggregation. Android uses the shared
+ * createSubscriptionFetcher pipeline over native I/O. HWID headers, primary UA
+ * fallback and CORS handling stay platform-owned. */
 export interface SubscriptionFetcher {
   fetchEntry(entry: SubscriptionEntry): Promise<{ proxies: ParsedProxy[]; error: string | null }>
 }

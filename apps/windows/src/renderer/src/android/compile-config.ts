@@ -4,7 +4,7 @@ import {
   type CompiledAndroidEngineConfig,
 } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
-import { buildAggregatedProxies } from './aggregator'
+import { buildAggregatedProxies } from './adapters/subscriptions'
 import { getDnsProvider, getRuleLists } from './runtime-settings'
 import { androidSettings } from './settings-store'
 import { createAndroidStorageAdapter } from './adapters'

@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
 import { MIHOMO_WINDOWS } from './engine-manifest.mjs'
+import assert from 'node:assert/strict'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(__dirname, '..')
@@ -17,10 +18,12 @@ const mihomoPath = resolve(
 const rulesDir = join(repoRoot, 'apps', 'windows', 'resources', 'rules')
 
 const require = createRequire(import.meta.url)
-const { generateMihomoConfig, parseProxiesFromYaml } = require('../packages/config/dist/cjs/index.js')
+const { generateMihomoConfig, parseProxiesFromYaml, buildClashYaml } = require('../packages/config/dist/cjs/index.js')
 const { buildAndroidDnsProfile } = require('../packages/dns/dist/cjs/index.js')
 const { composeScenarios } = require('../packages/routing/dist/cjs/index.js')
-const { compileAndroidEngineConfig } = require('../packages/core/dist/cjs/index.js')
+const {
+  compileAndroidEngineConfig, createSubscriptionFetcher, aggregateSubscriptionProxies,
+} = require('../packages/core/dist/cjs/index.js')
 const {
   mergeGeoSiteDat,
   readGeoSiteCategories,
@@ -197,6 +200,36 @@ function buildCases(subscriptionYaml, runetAvailableGeoSites) {
           bypassProviders: [],
           geoEnabled: true,
         },
+      },
+    },
+    {
+      name: 'android-core-subscription-recovery',
+      compile: async () => {
+        const all = parseProxiesFromYaml(subscriptionYaml)
+        const primary = all.filter(p => p.type === 'vless')
+        const udp = all.filter(p => p.type !== 'vless')
+        const fetcher = createSubscriptionFetcher({
+          getInput: async () => 'https://subscription.example.test/fixture',
+          fetchText: async () => buildClashYaml(primary),
+          fetchTextWithUserAgent: async () => buildClashYaml(udp),
+          updateMeta: async (_id, patch) => { assert.equal(patch.nodeCount, 4) },
+        })
+        const aggregated = await aggregateSubscriptionProxies([{
+          id: 'fixture', name: 'Fixture', type: 'subscription-url', enabled: true,
+          autoUpdateMinutes: 360, addedAt: 1, lastFetchedAt: null, lastError: null, nodeCount: null,
+        }], fetcher, { concurrency: 1 })
+        assert.equal(aggregated.proxies.length, 4)
+        assert.equal(aggregated.proxies[0].extra.encryption, primary[0].extra.encryption)
+        assert.deepEqual(aggregated.warnings, [])
+        const result = await compileAndroidEngineConfig({
+          proxies: aggregated.proxies,
+          vpnMode: 'full',
+          dohProvider: { id: 'cloudflare' },
+          enabledScenarios: [], customRules: [], ruleLists: [],
+          apiSecret: 'mihomo-config-test-only',
+          utlsFingerprint: 'chrome',
+        })
+        return result.config
       },
     },
     {
