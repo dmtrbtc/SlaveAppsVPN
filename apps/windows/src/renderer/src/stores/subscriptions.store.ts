@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { subscriptionsApi, events } from '../lib/api'
+import { IS_MOBILE } from '../lib/platform'
+import { retryEmptyHydration } from './empty-hydration-retry'
 import type {
   SubscriptionEntry,
   SubscriptionAddPayload,
@@ -18,7 +20,7 @@ interface SubscriptionsStore {
   init: () => void
   dispose: () => void
 
-  fetch: () => Promise<void>
+  fetch: (options?: { silent?: boolean }) => Promise<void>
   add: (payload: SubscriptionAddPayload) => Promise<SubscriptionEntry>
   update: (id: string, patch: { name?: string; enabled?: boolean; autoUpdateMinutes?: SubscriptionAutoUpdate }) => Promise<void>
   remove: (id: string) => Promise<void>
@@ -28,6 +30,7 @@ interface SubscriptionsStore {
 
 // Local helpers that close over the store after creation.
 let setPending: ((key: string, on: boolean) => void) | null = null
+let hydrationRun = 0
 
 function track<T>(key: string, fn: () => Promise<T>): Promise<T> {
   setPending?.(key, true)
@@ -52,26 +55,36 @@ export const useSubscriptionsStore = create<SubscriptionsStore>((set, get) => {
 
   init: () => {
     if (get()._unsubscribe) return
+    const run = ++hydrationRun
     const unsub = events.onSubscriptionsChanged((entries: SubscriptionEntry[]) => {
       set({ entries })
     })
     set({ _unsubscribe: unsub })
-    void get().fetch()
+    void get().fetch().then(() => {
+      if (!IS_MOBILE || get().entries.length > 0 || run !== hydrationRun) return
+      void retryEmptyHydration(
+        () => get().fetch({ silent: true }),
+        () => run === hydrationRun && get()._unsubscribe !== null && get().entries.length === 0,
+      )
+    })
   },
 
   dispose: () => {
+    hydrationRun++
     const u = get()._unsubscribe
     if (u) u()
     set({ _unsubscribe: null })
   },
 
-  fetch: async () => {
-    set({ loading: true, error: null })
+  fetch: async (options) => {
+    if (!options?.silent) set({ loading: true, error: null })
     try {
       const entries = await subscriptionsApi.list()
-      set({ entries, loading: false })
+      set({ entries, loading: options?.silent ? get().loading : false })
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err), loading: false })
+      if (!options?.silent) {
+        set({ error: err instanceof Error ? err.message : String(err), loading: false })
+      }
     }
   },
 

@@ -163,6 +163,13 @@ interface CoreFacade {
     перенос их источников настроек без потери пользовательских DNS/rule-lists.
     Локальные проверки и оставшийся device smoke описаны в
     [ANDROID_SUBSCRIPTIONS_VERIFICATION.md](ANDROID_SUBSCRIPTIONS_VERIFICATION.md).
+  - Второй срез устраняет окно восстановления после очистки WebView storage:
+    subscription-store и общий Android `StorageAdapter` используют один
+    `mirrored-string-store`. Чтения Preferences имеют ограниченный retry (до
+    250 ms), один in-flight запрос на ключ и generation guard против
+    воскрешения устаревших данных после параллельного set/remove. Регрессии и
+    device-проверка описаны в
+    [ANDROID_STORAGE_HYDRATION_VERIFICATION.md](ANDROID_STORAGE_HYDRATION_VERIFICATION.md).
 
 Риск большой — поэтому P0 идёт серией мелких коммитов, каждый из которых
 оставляет обе сборки зелёными; на каждом шаге сверяем `mihomo -t`.

@@ -1,5 +1,6 @@
 import { Preferences } from '@capacitor/preferences'
 import type { SubscriptionEntry, SubscriptionSourceType } from '@slave-vpn/core'
+import { createMirroredStringStore } from './adapters/mirrored-string-store'
 
 /**
  * Renderer-side subscription store for Android.
@@ -44,51 +45,14 @@ function lsRemove(key: string): void {
   try { window.localStorage.removeItem(key) } catch { /* swallow */ }
 }
 
-async function prefGet(key: string): Promise<string | null> {
-  try {
-    const { value } = await Preferences.get({ key })
-    return value ?? null
-  } catch {
-    return null
-  }
-}
-function prefSet(key: string, value: string): void {
-  // best-effort mirror — never await on the hot path's correctness
-  Preferences.set({ key, value }).catch(() => undefined)
-}
-function prefRemove(key: string): void {
-  Preferences.remove({ key }).catch(() => undefined)
-}
-
-async function storageGet(key: string): Promise<string | null> {
-  const local = lsGet(key)
-  if (local !== null) return local
-  // localStorage empty — try the encrypted mirror (survives a WebView wipe).
-  const mirrored = await prefGet(key)
-  if (mirrored !== null) {
-    // Re-hydrate localStorage so subsequent reads are synchronous + durable.
-    lsSet(key, mirrored)
-  }
-  return mirrored
-}
-
-async function storageSet(key: string, value: string): Promise<void> {
-  const ok = lsSet(key, value)
-  prefSet(key, value)
-  if (!ok) {
-    // localStorage refused (private mode / quota). The Preferences mirror is
-    // our only durability left — surface failure only if BOTH are unusable.
-    const verify = await prefGet(key)
-    if (verify !== value) {
-      throw new Error('Both localStorage and Preferences failed to persist subscription')
-    }
-  }
-}
-
-async function storageRemove(key: string): Promise<void> {
-  lsRemove(key)
-  prefRemove(key)
-}
+const storage = createMirroredStringStore(
+  { get: lsGet, set: lsSet, remove: lsRemove },
+  {
+    get: async key => (await Preferences.get({ key })).value ?? null,
+    set: async (key, value) => { await Preferences.set({ key, value }) },
+    remove: async key => { await Preferences.remove({ key }) },
+  },
+)
 
 // ─── Public store API ─────────────────────────────────────────────────────────
 
@@ -97,7 +61,7 @@ function randomId(): string {
 }
 
 async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
-  const value = await storageGet(INDEX_KEY)
+  const value = await storage.get(INDEX_KEY)
   if (!value) return []
   try {
     const parsed = JSON.parse(value)
@@ -109,7 +73,7 @@ async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
 }
 
 async function writeIndex(entries: AndroidSubscriptionEntry[]): Promise<void> {
-  await storageSet(INDEX_KEY, JSON.stringify(entries))
+  await storage.set(INDEX_KEY, JSON.stringify(entries))
 }
 
 function safeUrlDomain(input: string): string | undefined {
@@ -121,7 +85,7 @@ export async function listSubscriptions(): Promise<AndroidSubscriptionEntry[]> {
 }
 
 export async function getSubscriptionInput(id: string): Promise<string | null> {
-  return storageGet(INPUT_KEY(id))
+  return storage.get(INPUT_KEY(id))
 }
 
 export interface AddSubscriptionOptions {
@@ -162,7 +126,7 @@ export async function addSubscription(options: AddSubscriptionOptions): Promise<
       : {}),
   }
   // Persist input FIRST so a partial failure leaves no dangling index entry.
-  await storageSet(INPUT_KEY(id), options.input)
+  await storage.set(INPUT_KEY(id), options.input)
   const entries = await readIndex()
   entries.push(entry)
   await writeIndex(entries)
@@ -172,7 +136,7 @@ export async function addSubscription(options: AddSubscriptionOptions): Promise<
 export async function removeSubscription(id: string): Promise<void> {
   const entries = await readIndex()
   await writeIndex(entries.filter(e => e.id !== id))
-  await storageRemove(INPUT_KEY(id))
+  storage.remove(INPUT_KEY(id))
 }
 
 export async function updateSubscriptionMeta(
