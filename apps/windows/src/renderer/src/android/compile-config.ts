@@ -5,8 +5,8 @@ import {
 } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
 import { buildAggregatedProxies } from './adapters/subscriptions'
-import { getDnsProvider, getRuleLists } from './runtime-settings'
 import { androidSettings } from './settings-store'
+import { getAndroidRuleLists } from './rule-providers'
 import { createAndroidStorageAdapter } from './adapters'
 import { getCachedGeoSiteCategories } from './geosite-categories'
 
@@ -52,10 +52,10 @@ export async function compileMihomoConfigForAndroid(
     ...(options.selectedProxy ? { selectedProxy: options.selectedProxy } : {}),
     utlsFingerprint: options.utlsFingerprint ?? 'randomized',
     routingMode: options.routingMode ?? 'smart',
-    dohProvider: settings.dohProvider ?? getDnsProvider(),
+    dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
     enabledScenarios: settings.enabledScenarios,
     customRules: settings.customRoutingRules ?? [],
-    ruleLists: getRuleLists(),
+    ruleLists: getAndroidRuleLists(),
     apiSecret: randomSecret(),
     // Cache-only: the connect path must never fetch the ~4 MB geosite.dat.
     loadAvailableGeoSites: () => getCachedGeoSiteCategories(createAndroidStorageAdapter()),
