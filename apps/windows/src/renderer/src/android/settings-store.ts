@@ -1,3 +1,4 @@
+import { Preferences } from '@capacitor/preferences'
 import {
   SettingsStore,
   SETTINGS_STORAGE_KEY,
@@ -5,6 +6,11 @@ import {
   type AppSettings,
 } from '@slave-vpn/core'
 import { createAndroidStorageAdapter } from './adapters/storage'
+import {
+  buildAndroidSettingsMigration,
+  readLegacyAndroidSettings,
+  removeMigratedLegacyKeys,
+} from './settings-migration'
 
 // The first Android build that persisted a full settings object seeded this set
 // (smart-russia-bypass = direct-default → blocked sites went DIRECT). We now
@@ -46,17 +52,30 @@ function getStore(): SettingsStore {
  */
 export async function initAndroidSettings(migrate?: Partial<AppSettings>): Promise<AppSettings> {
   const storage = createAndroidStorageAdapter()
-  const existing = await storage.get(SETTINGS_STORAGE_KEY)
+  const existing = await storage.get<Partial<AppSettings>>(SETTINGS_STORAGE_KEY)
+  const legacy = readLegacyAndroidSettings(window.localStorage)
   store = new SettingsStore(storage)
-  const result = await store.load()
-  loaded = true
-  if (existing == null && migrate && Object.keys(migrate).length > 0) {
-    return store.patch(migrate)
-  }
+  let result = await store.load()
+  const patch = buildAndroidSettingsMigration(existing, migrate ?? {}, legacy)
   // One-time scenario-default upgrade for installs still on the legacy seed.
   if (existing != null && sameSet(result.enabledScenarios, LEGACY_SEED_SCENARIOS)) {
-    return store.patch({ enabledScenarios: createDefaultSettings().enabledScenarios })
+    patch.enabledScenarios = createDefaultSettings().enabledScenarios
   }
+
+  if (Object.keys(patch).length > 0) result = await store.patch(patch)
+  // The generic Android StorageAdapter treats Preferences as a best-effort
+  // mirror when localStorage succeeds. Migration cleanup needs a stronger
+  // guarantee: explicitly await the native write before deleting the only old
+  // copy. On failure the legacy keys remain and the next launch retries safely.
+  if (legacy.keysToRemove.length > 0) {
+    try {
+      await Preferences.set({ key: SETTINGS_STORAGE_KEY, value: JSON.stringify(result) })
+      removeMigratedLegacyKeys(window.localStorage, legacy.keysToRemove)
+    } catch {
+      // Keep the valid legacy values until native durability is confirmed.
+    }
+  }
+  loaded = true
   return result
 }
 

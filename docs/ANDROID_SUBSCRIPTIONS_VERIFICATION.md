@@ -89,13 +89,15 @@ DNS, маршрутизация, балансер, версия Mihomo и update
 
 ## Границы проверки и следующий шаг
 
-Это ещё не завершение P0.5: Windows cabinet/cache-источники, Android
-`compile-config.ts` и `runtime-settings.ts` остаются для следующих срезов.
+Это ещё не завершение P0.5: Windows cabinet/cache-источники и Android
+`compile-config.ts` остаются для следующих срезов. `runtime-settings.ts` удалён
+следующим отдельным срезом с миграцией данных в единый `AppSettings`.
 Существующая зависимость probe от доступности подписки и межзапросные гонки
 хранилища не исправлялись; `concurrency: 1` действует внутри одного batch.
 
 Device smoke этого среза завершён. Короткое окно первой гидратации Preferences
-зафиксировано выше как follow-up; Windows cabinet/cache-источники и Android
-settings/config остаются следующими архитектурными срезами.
+зафиксировано выше как follow-up и устранено storage-hydration срезом. Windows
+cabinet/cache-источники и Android config остаются следующими архитектурными
+срезами.
 
 Production-клиент, release tags и канал обновления не изменялись.

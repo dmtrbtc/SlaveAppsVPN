@@ -40,6 +40,8 @@ export interface RuleProvider {
   lastError?: string
   category?: string // 'russia-bypass' | 'streaming' | 'ai' | 'gaming' | 'privacy' | 'work' | 'custom'
   isPreset?: boolean // built-in preset, cannot be deleted
+  /** Mihomo refresh interval retained by Android rule-list migration. */
+  intervalHours?: number
 }
 
 export interface RuleProviderAddInput {

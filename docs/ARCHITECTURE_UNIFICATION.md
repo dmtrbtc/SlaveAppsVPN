@@ -19,7 +19,7 @@ Windows — Android идёт по своему `androidRouting`).
 ```
 Сейчас:
   renderer ──IPC──► Windows main (RuntimeServiceImpl + 15 сервисов) ──► engine
-  renderer ──────► android/*.ts (compile-config, aggregator, runtime-settings) ──► native plugin
+  renderer ──────► android/*.ts (compile-config + platform adapters) ──► native plugin
                    ▲ ПАРАЛЛЕЛЬНАЯ реализация, dns/rules/routing/profiles/geo = заглушки
 ```
 
@@ -159,10 +159,15 @@ interface CoreFacade {
     сохранён `concurrency: 1` (включая ожидание записи метаданных); дефолт core
     остаётся параллельным. Windows пока использует общий merge-kernel напрямую:
     его cabinet/cache-источники ещё предстоит перенести.
-  - `compile-config.ts` и `runtime-settings.ts` пока сохранены: следующий срез —
-    перенос их источников настроек без потери пользовательских DNS/rule-lists.
-    Локальные проверки и оставшийся device smoke описаны в
-    [ANDROID_SUBSCRIPTIONS_VERIFICATION.md](ANDROID_SUBSCRIPTIONS_VERIFICATION.md).
+  - Третий срез удаляет `runtime-settings.ts`. Старые отдельные ключи DoH и
+    rule-lists один раз переносятся в `AppSettings` поверх общего
+    `StorageAdapter`; существующие unified-значения имеют приоритет. Android UI
+    и компилятор читают один `AppSettings.ruleProviders`, сохраняя отключённые
+    presets, пользовательские списки и интервалы. Подробности и проверки:
+    [ANDROID_SETTINGS_MIGRATION_VERIFICATION.md](ANDROID_SETTINGS_MIGRATION_VERIFICATION.md).
+  - `compile-config.ts` пока остаётся тонким Android-сборщиком platform inputs;
+    его удаление выполняется отдельно при переключении connect-path на единый
+    routing/DNS contract, чтобы не смешивать миграцию данных с P1-поведением.
   - Второй срез устраняет окно восстановления после очистки WebView storage:
     subscription-store и общий Android `StorageAdapter` используют один
     `mirrored-string-store`. Чтения Preferences имеют ограниченный retry (до

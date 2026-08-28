@@ -33,9 +33,11 @@ import {
 import { listScenarioMetadata } from '@slave-vpn/routing'
 import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
 import {
-  getRuleLists, addRuleList, removeRuleList, updateRuleList,
-  type RuleListEntry,
-} from './runtime-settings'
+  listAndroidRuleProviders,
+  addAndroidRuleProvider,
+  removeAndroidRuleProvider,
+  updateAndroidRuleProvider,
+} from './rule-providers'
 import { createAndroidDataAdapters, type AndroidDataAdapters } from './adapters'
 import { getCachedGeoSiteCategories, prefetchAndroidGeoSiteCategories } from './geosite-categories'
 
@@ -148,30 +150,6 @@ async function wrap<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
 
 function notImplemented(name: string): () => Promise<IpcErr> {
   return async () => err('NOT_IMPLEMENTED', `${name} not implemented on Android`)
-}
-
-// Map the Android rule-list store (runtime-settings) onto the IPC RuleProvider
-// shape the shared RoutingPage UI expects, so Android drives the SAME rules
-// screen + API as Windows (one UI, one source of truth) instead of a mobile-only
-// duplicate. These lists are all proxy-action bypass lists fed into the Android
-// compile-config; interval/behaviour stay in the store (defaults preserved).
-function ruleListToProvider(e: RuleListEntry): {
-  id: string; name: string; enabled: boolean; kind: 'github' | 'url' | 'builtin'
-  url: string; type: 'domain-list' | 'ip-cidr-list'; action: 'proxy'
-  priority: number; category: string; isPreset: boolean
-} {
-  return {
-    id: e.id,
-    name: e.name,
-    enabled: e.enabled,
-    kind: e.builtin ? 'builtin' : (/github(?:usercontent)?\.com/i.test(e.url) ? 'github' : 'url'),
-    url: e.url,
-    type: e.behavior === 'ipcidr' ? 'ip-cidr-list' : 'domain-list',
-    action: 'proxy',
-    priority: 500,
-    category: 'russia-bypass',
-    isPreset: !!e.builtin,
-  }
 }
 
 // Transitional config provider for CoreFacade. Config CONTENT is never logged
@@ -1091,26 +1069,27 @@ export function installAndroidBridge(): void {
     },
     rules: {
       // Unified with Windows: the shared RoutingPage RuleProvidersSection drives
-      // these via rulesApi. Backed by the localStorage rule-list store, which the
-      // Android compile-config reads (getRuleLists) — single source of truth.
-      list: async () => ok(getRuleLists().map(ruleListToProvider) as never),
-      add: (payload: { name: string; url: string; type?: string }) => wrap(async () => {
-        const behavior = payload.type === 'ip-cidr-list' ? 'ipcidr' as const : 'domain' as const
-        const next = addRuleList({ name: payload.name, url: payload.url, behavior })
-        const url = payload.url.trim()
-        const entry = next.find(l => l.url === url) ?? next[next.length - 1]!
-        return ruleListToProvider(entry) as never
+      // these via rulesApi. AppSettings.ruleProviders is now the durable source
+      // consumed by both the UI and Android config compiler.
+      list: () => wrap(async () => {
+        await settingsReady
+        return listAndroidRuleProviders() as never
       }),
+      add: (payload: { name: string; url: string; type?: string }) =>
+        wrap(async () => {
+          await settingsReady
+          return (await addAndroidRuleProvider(payload)) as never
+        }),
       remove: (payload: { id: string }) => wrap(async () => {
-        removeRuleList(payload.id)
+        await settingsReady
+        await removeAndroidRuleProvider(payload.id)
         return undefined as never
       }),
       update: (payload: { id: string; enabled?: boolean }) => wrap(async () => {
+        await settingsReady
         const patch: { enabled?: boolean } = {}
         if (typeof payload.enabled === 'boolean') patch.enabled = payload.enabled
-        const next = updateRuleList(payload.id, patch)
-        const entry = next.find(l => l.id === payload.id)
-        return (entry ? ruleListToProvider(entry) : null) as never
+        return (await updateAndroidRuleProvider(payload.id, patch)) as never
       }),
       // Order is not meaningful for these proxy-action lists — accept + no-op.
       reorder: async () => ok(undefined),
