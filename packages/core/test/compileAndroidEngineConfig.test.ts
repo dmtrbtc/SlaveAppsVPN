@@ -3,12 +3,15 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { compileAndroidEngineConfig } = require('../dist/cjs/index.js') as {
+const { compileAndroidEngineConfig, createAndroidEngineConfigProvider } = require('../dist/cjs/index.js') as {
   compileAndroidEngineConfig: (input: Record<string, unknown>) => Promise<{
     config: string
     proxyCount: number
     warnings: string[]
   }>
+  createAndroidEngineConfigProvider: (source: Record<string, unknown>) => {
+    compile(): Promise<{ config: string; proxyCount: number; warnings: string[] }>
+  }
 }
 
 const proxy = {
@@ -108,4 +111,39 @@ test('direct custom rules are excluded from fake-ip by the shared compiler', asy
 
   assert.match(result.config, /\+\.bank\.example/)
   assert.match(result.config, /DOMAIN-SUFFIX,bank\.example,DIRECT/)
+})
+
+test('typed Android provider owns platform-source collection before compilation', async () => {
+  const calls: string[] = []
+  const provider = createAndroidEngineConfigProvider({
+    loadProxies: async () => {
+      calls.push('proxies')
+      return { proxies: [proxy], warnings: ['cached subscription used'] }
+    },
+    loadState: async () => {
+      calls.push('state')
+      return {
+        vpnMode: 'full',
+        dohProvider: { id: 'google' },
+        enabledScenarios: [],
+        customRules: [],
+        ruleLists: [],
+      }
+    },
+    createApiSecret: () => {
+      calls.push('secret')
+      return 'provider-secret'
+    },
+    loadAvailableGeoSites: async () => {
+      calls.push('geosite')
+      return ['private']
+    },
+  })
+
+  const result = await provider.compile()
+
+  assert.deepEqual(calls, ['state', 'proxies', 'secret'])
+  assert.match(result.config, /secret: provider-secret/)
+  assert.equal(result.proxyCount, 1)
+  assert.ok(result.warnings.includes('cached subscription used'))
 })

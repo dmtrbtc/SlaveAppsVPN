@@ -21,9 +21,10 @@ Android уже компилировал часть сценариев через
   приложений уже применяется нативным `VpnService`; Windows split продолжает
   использовать PROCESS-NAME/direct-default;
 - удалён неиспользуемый Android localStorage state `smart/global/direct`;
-- `compile-config.ts` пока остаётся тонким сборщиком данных. Его удаление —
-  следующий отдельный срез, чтобы не смешивать смену routing semantics с новой
-  Core data-source границей.
+- В этом срезе `compile-config.ts` оставался тонким сборщиком данных, чтобы не
+  смешивать смену routing semantics с новой Core data-source границей. После
+  device smoke и merge P1 он удалён отдельным config-boundary срезом; см.
+  [ANDROID_CORE_CONFIG_BOUNDARY_VERIFICATION.md](ANDROID_CORE_CONFIG_BOUNDARY_VERIFICATION.md).
 
 ## Автоматические проверки
 

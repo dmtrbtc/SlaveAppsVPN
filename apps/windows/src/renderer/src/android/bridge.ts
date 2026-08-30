@@ -14,9 +14,8 @@ import {
 import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
 import { probeProxyEdge } from './ping'
 import { listAndroidServers, invalidateServerCache } from './servers'
-import { compileMihomoConfigForAndroid } from './compile-config'
 import { detectClipboardLink } from './clipboard-detect'
-import { createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import { createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
 import type {
   ActiveConnectionsSnapshot,
   AppSettings,
@@ -34,6 +33,7 @@ import { listScenarioMetadata } from '@slave-vpn/routing'
 import { initAndroidSettings, androidSettings, patchAndroidSettings } from './settings-store'
 import {
   listAndroidRuleProviders,
+  getAndroidRuleLists,
   addAndroidRuleProvider,
   removeAndroidRuleProvider,
   updateAndroidRuleProvider,
@@ -150,22 +150,6 @@ async function wrap<T>(fn: () => Promise<T>): Promise<IpcResult<T>> {
 
 function notImplemented(name: string): () => Promise<IpcErr> {
   return async () => err('NOT_IMPLEMENTED', `${name} not implemented on Android`)
-}
-
-// Transitional config provider for CoreFacade. Config CONTENT is never logged
-// (only its size), so subscription credentials cannot leak into diagnostics.
-async function compileNativeConfig(): Promise<string> {
-  await settingsReady
-  nativeLog('[connect] компиляция конфига mihomo…')
-  const compiled = await compileMihomoConfigForAndroid({
-    vpnMode: currentMode,
-    ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
-    utlsFingerprint: currentUtlsFingerprint,
-  })
-  nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
-  // Surface failed subscriptions, dropped geosite rules and composition notes.
-  for (const warning of compiled.warnings ?? []) nativeLog(`[connect] ⚠ ${warning}`)
-  return compiled.config
 }
 
 // Re-apply a config-affecting setting (mode, fingerprint, …) to the RUNNING
@@ -611,6 +595,15 @@ function createAndroidEngineAdapter(adapters: AndroidDataAdapters): EngineAdapte
   }
 }
 
+function createAndroidApiSecret(): string {
+  const bytes = new Uint8Array(16)
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error('Secure random generator is unavailable')
+  }
+  globalThis.crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 // ─── Install ──────────────────────────────────────────────────────────────────
 
 let installed = false
@@ -629,6 +622,8 @@ export function installAndroidBridge(): void {
         debug: (message) => {
           if (message === 'vpn.connect.start') {
             nativeLog(`[connect] старт · режим=${currentMode}${currentSelectedProxy ? ` · узел=${currentSelectedProxy}` : ''}`)
+          } else if (message === 'vpn.config.compiled') {
+            nativeLog('[connect] конфиг готов · передаю ядру')
           } else {
             nativeLog(`[core] ${message}`)
           }
@@ -637,7 +632,13 @@ export function installAndroidBridge(): void {
           if (message === 'vpn.connect.accepted') nativeLog('[connect] запрос на старт принят ядром')
           else nativeLog(`[core] ${message}`)
         },
-        warn: (message) => nativeLog(`[core] WARN ${message}`),
+        warn: (message, metadata) => {
+          if (message === 'vpn.config.warning') {
+            nativeLog(`[connect] ⚠ ${String(metadata?.['warning'] ?? 'config warning')}`)
+          } else {
+            nativeLog(`[core] WARN ${message}`)
+          }
+        },
         error: (message, metadata) => {
           if (message === 'vpn.connect.failed') {
             nativeLog(`[connect] ОШИБКА: ${String(metadata?.['error'] ?? 'unknown error')}`)
@@ -648,9 +649,25 @@ export function installAndroidBridge(): void {
       },
     },
     {
-      // Transitional boundary: the Android-specific config inputs move into
-      // core in later P0/P1 slices. Connect orchestration already lives there.
-      configProvider: { compile: compileNativeConfig },
+      configProvider: createAndroidEngineConfigProvider({
+        loadProxies: buildAggregatedProxies,
+        loadState: async () => {
+          await settingsReady
+          const settings = androidSettings()
+          return {
+            vpnMode: currentMode,
+            ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
+            utlsFingerprint: currentUtlsFingerprint,
+            dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
+            enabledScenarios: settings.enabledScenarios,
+            customRules: settings.customRoutingRules ?? [],
+            ruleLists: getAndroidRuleLists(),
+          }
+        },
+        createApiSecret: createAndroidApiSecret,
+        // Cache-only: connect must never fetch the ~4 MB geosite.dat.
+        loadAvailableGeoSites: () => getCachedGeoSiteCategories(dataAdapters.storage),
+      }),
       modeController: {
         setMode: async (mode: VPNMode) => {
           await settingsReady

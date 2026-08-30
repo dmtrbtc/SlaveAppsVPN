@@ -10,12 +10,15 @@ export type {
 } from './facade/CoreFacade.js'
 export { createCore } from './createCore.js'
 export type {
-  CoreConfigProvider,
   CoreModeController,
   CoreProbeProvider,
   CoreProbeTarget,
   CreateCoreOptions,
 } from './createCore.js'
+export type {
+  CompiledEngineConfig,
+  CoreConfigProvider,
+} from './runtime/EngineConfigProvider.js'
 export { CoreNotReadyError } from './errors.js'
 
 // Orchestration (P0.2) — platform-agnostic domain logic.
@@ -23,8 +26,13 @@ export { composeRoutingPolicy, resolveRoutingPolicyForMode } from './routing/com
 export type { ComposeRoutingResult } from './routing/composeRoutingPolicy.js'
 export { buildEngineConfig } from './runtime/buildEngineConfig.js'
 export type { BuildEngineConfigInput, BuildEngineConfigResult } from './runtime/buildEngineConfig.js'
-export { compileAndroidEngineConfig } from './runtime/compileAndroidEngineConfig.js'
+export {
+  compileAndroidEngineConfig,
+  createAndroidEngineConfigProvider,
+} from './runtime/compileAndroidEngineConfig.js'
 export type {
+  AndroidEngineConfigSource,
+  AndroidEngineConfigState,
   AndroidRuleListInput,
   CompileAndroidEngineConfigInput,
   CompiledAndroidEngineConfig,
