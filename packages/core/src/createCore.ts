@@ -2,16 +2,7 @@ import type { CoreAdapters } from './adapters/index.js'
 import type { CoreFacade } from './facade/CoreFacade.js'
 import type { ServerLatencyResult, Unsubscribe, VPNMode } from './types.js'
 import { CoreNotReadyError } from './errors.js'
-
-/** Transitional source of an already compiled engine config.
- *
- * Android supplies a thin platform data provider which invokes the shared core
- * compiler. Once CoreFacade owns those data-source APIs directly, this
- * compatibility option can be removed.
- */
-export interface CoreConfigProvider {
-  compile(): Promise<string>
-}
+import type { CoreConfigProvider } from './runtime/EngineConfigProvider.js'
 
 /** Transitional platform mode sink while settings ownership moves into core. */
 export interface CoreModeController {
@@ -85,8 +76,15 @@ export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = 
         logger?.info('vpn.connect.accepted')
         return
       }
-      const config = await configProvider.compile()
-      await engine.start(config)
+      const compiled = await configProvider.compile()
+      logger?.debug('vpn.config.compiled', {
+        sizeBytes: new TextEncoder().encode(compiled.config).byteLength,
+        warningCount: compiled.warnings?.length ?? 0,
+      })
+      for (const warning of compiled.warnings ?? []) {
+        logger?.warn('vpn.config.warning', { warning })
+      }
+      await engine.start(compiled.config)
       logger?.info('vpn.connect.accepted')
     } catch (error) {
       logger?.error('vpn.connect.failed', {

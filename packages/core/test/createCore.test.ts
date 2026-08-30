@@ -19,6 +19,7 @@ function fixture(options: {
   statusState?: string
   logger?: boolean
   compileError?: string
+  configWarnings?: string[]
   probeTargets?: Array<{ name: string; server: string; port: number }>
   probeLatencies?: Record<string, number | null | Error>
   probeConcurrency?: number
@@ -63,7 +64,10 @@ function fixture(options: {
             compile: async () => {
               calls.push(['compile'])
               if (options.compileError) throw new Error(options.compileError)
-              return options.config
+              return {
+                config: options.config ?? '',
+                warnings: options.configWarnings ?? [],
+              }
             },
           },
         }
@@ -95,9 +99,15 @@ function fixture(options: {
   }
   const logger = options.logger
     ? {
-        debug: (message: string) => { calls.push(['log.debug', message]) },
+        debug: (message: string, metadata?: Record<string, unknown>) => {
+          calls.push(metadata
+            ? ['log.debug', message, metadata['sizeBytes'], metadata['warningCount']]
+            : ['log.debug', message])
+        },
         info: (message: string) => { calls.push(['log.info', message]) },
-        warn: (message: string) => { calls.push(['log.warn', message]) },
+        warn: (message: string, metadata?: Record<string, unknown>) => {
+          calls.push(['log.warn', message, metadata?.['warning']])
+        },
         error: (message: string, metadata?: Record<string, unknown>) => {
           calls.push(['log.error', message, metadata?.['error']])
         },
@@ -181,6 +191,27 @@ test('connect reports the same lifecycle diagnostics on failures', async () => {
     ['log.debug', 'vpn.connect.start'],
     ['compile'],
     ['log.error', 'vpn.connect.failed', 'subscription unavailable'],
+  ])
+})
+
+test('connect surfaces compiled-config metadata and warnings through Core logger', async () => {
+  const { facade, calls } = fixture({
+    config: 'mode: rule',
+    configWarnings: ['subscription-b unavailable'],
+    restoreCached: false,
+    logger: true,
+  })
+
+  await facade.vpn.connect()
+
+  assert.deepEqual(calls, [
+    ['log.debug', 'vpn.connect.start'],
+    ['restoreCached'],
+    ['compile'],
+    ['log.debug', 'vpn.config.compiled', 10, 1],
+    ['log.warn', 'vpn.config.warning', 'subscription-b unavailable'],
+    ['start', 'mode: rule'],
+    ['log.info', 'vpn.connect.accepted'],
   ])
 })
 

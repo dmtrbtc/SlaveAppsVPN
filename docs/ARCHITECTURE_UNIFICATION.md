@@ -20,14 +20,14 @@ Windows — Android шёл по своему `androidRouting`). P0/P1 после
 ```
 Сейчас:
   renderer ──IPC──► Windows main (RuntimeServiceImpl + 15 сервисов) ──► engine
-  renderer ──────► android/*.ts (compile-config + platform adapters) ──► native plugin
+  renderer ──────► android/bridge.ts (typed platform sources/adapters) ──► native plugin
                    ▲ ПАРАЛЛЕЛЬНАЯ реализация, dns/rules/routing/profiles/geo = заглушки
 ```
 
 Исходно здесь были две модели маршрутизации, две DNS-модели, два стора правил,
 два стора настроек и два агрегатора подписок. После первых P0/P1-срезов едиными
-стали маршрутизация, DNS-компилятор, AppSettings и Android subscription pipeline;
-`compile-config.ts` пока остаётся тонким сборщиком platform inputs.
+стали маршрутизация, DNS-компилятор, AppSettings, Android subscription pipeline
+и сборка engine config: bridge передаёт типизированные platform sources в Core.
 
 ## 3. Целевая архитектура
 
@@ -168,9 +168,13 @@ interface CoreFacade {
     и компилятор читают один `AppSettings.ruleProviders`, сохраняя отключённые
     presets, пользовательские списки и интервалы. Подробности и проверки:
     [ANDROID_SETTINGS_MIGRATION_VERIFICATION.md](ANDROID_SETTINGS_MIGRATION_VERIFICATION.md).
-  - `compile-config.ts` пока остаётся тонким Android-сборщиком platform inputs;
-    его удаление выполняется отдельно при переключении connect-path на единый
-    routing/DNS contract, чтобы не смешивать миграцию данных с P1-поведением.
+  - Финальный config-boundary срез удаляет `compile-config.ts`.
+    `createAndroidEngineConfigProvider` в Core получает типизированные platform
+    sources (подписки, AppSettings, rule-lists и cache-only geosite reader),
+    вызывает единый Android compiler и возвращает config + warnings в
+    `CoreFacade`. Bridge только связывает источники и native engine; результат
+    компиляции и предупреждения журналируются через единый Core logger.
+    Подробности: [ANDROID_CORE_CONFIG_BOUNDARY_VERIFICATION.md](ANDROID_CORE_CONFIG_BOUNDARY_VERIFICATION.md).
   - Второй срез устраняет окно восстановления после очистки WebView storage:
     subscription-store и общий Android `StorageAdapter` используют один
     `mirrored-string-store`. Чтения Preferences имеют ограниченный retry (до

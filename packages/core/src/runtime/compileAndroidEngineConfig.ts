@@ -9,6 +9,7 @@ import { resolveDohUrl, type DohProviderSetting } from '../dns/dohProviders.js'
 import { resolveRoutingPolicyForMode } from '../routing/composeRoutingPolicy.js'
 import type { CustomRoutingRule } from '../settings/types.js'
 import { buildEngineConfig } from './buildEngineConfig.js'
+import type { CompiledEngineConfig, CoreConfigProvider } from './EngineConfigProvider.js'
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 
@@ -41,11 +42,53 @@ export interface CompileAndroidEngineConfigInput {
   loadAvailableGeoSites?: () => Promise<readonly string[]>
 }
 
-export interface CompiledAndroidEngineConfig {
+export interface CompiledAndroidEngineConfig extends CompiledEngineConfig {
   /** Clash YAML for mihomo. Native side appends `tun.file-descriptor`. */
   config: string
   proxyCount: number
   warnings: string[]
+}
+
+export type AndroidEngineConfigState = Omit<
+  CompileAndroidEngineConfigInput,
+  'proxies' | 'aggregationWarnings' | 'apiSecret' | 'loadAvailableGeoSites'
+>
+
+/** Android-only data access kept outside Core's routing/DNS compiler. */
+export interface AndroidEngineConfigSource {
+  loadProxies(): Promise<{
+    proxies: readonly ProxyEntry[]
+    warnings?: readonly string[]
+  }>
+  loadState(): Promise<AndroidEngineConfigState>
+  createApiSecret(): string
+  /** Cache-only reader; the connect path must not download geosite.dat. */
+  loadAvailableGeoSites?: () => Promise<readonly string[]>
+}
+
+/**
+ * Build the CoreFacade config provider from typed Android platform sources.
+ * Data access remains platform-owned; compilation order and domain assembly
+ * live in Core, so Android no longer needs its own compile-config wrapper.
+ */
+export function createAndroidEngineConfigProvider(
+  source: AndroidEngineConfigSource,
+): CoreConfigProvider<CompiledAndroidEngineConfig> {
+  return {
+    compile: async () => {
+      const state = await source.loadState()
+      const aggregation = await source.loadProxies()
+      return compileAndroidEngineConfig({
+        ...state,
+        proxies: aggregation.proxies,
+        aggregationWarnings: aggregation.warnings ?? [],
+        apiSecret: source.createApiSecret(),
+        ...(source.loadAvailableGeoSites
+          ? { loadAvailableGeoSites: source.loadAvailableGeoSites }
+          : {}),
+      })
+    },
+  }
 }
 
 /** Compile a ready-to-use Android mihomo YAML from platform-provided data. */
