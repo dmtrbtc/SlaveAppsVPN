@@ -18,9 +18,7 @@ export interface GeneratorSettings {
   splitTunnelProcesses?: string[]
 }
 
-export type AndroidRoutingMode = 'smart' | 'global' | 'direct'
-
-export interface AndroidBypassProvider {
+export interface MihomoRuleProvider {
   name: string
   behavior: 'domain' | 'ipcidr'
   url: string
@@ -31,20 +29,20 @@ export interface AndroidBypassProvider {
 }
 
 /**
- * Android "smart" routing (RU split tunnelling). When set, generateMihomoConfig
- * emits an ordered rule list (node domains DIRECT → bypass/RKN-blocked through
- * the VPN → private/RU IPs+domains DIRECT → everything else through the VPN),
- * auto-downloading geo databases and the bypass rule-providers. Unset = the
- * legacy single-MATCH behavior (Windows).
+ * Platform runtime details which are orthogonal to the shared routing policy.
+ * Android supplies these because its native engine downloads geo databases,
+ * needs proxy-node anti-loop rules, and consumes user-managed rule providers.
+ * They do not select a routing mode: vpnMode/routingPolicy remain authoritative.
  */
-export interface AndroidRoutingOptions {
-  mode: AndroidRoutingMode
+export interface MihomoRoutingExtras {
   /** Domain suffixes of the proxy nodes → DIRECT (anti-loop). e.g. ['slave-apps.online'] */
   nodeDomainSuffixes: string[]
   /** External rule-providers for RKN-blocked sites → routed through the VPN. */
-  bypassProviders: AndroidBypassProvider[]
-  /** geox-url for auto-downloaded GeoIP.dat/GeoSite.dat (RU geo rules). */
-  geoEnabled: boolean
+  bypassProviders: MihomoRuleProvider[]
+  /** Let mihomo download/update GeoIP.dat/GeoSite.dat for this runtime. */
+  geoAutoUpdate: boolean
+  /** Enable SNI/Host sniffing when the platform injects TUN outside the config. */
+  enableSniffer: boolean
 }
 
 export interface ConfigGenerationContext {
@@ -52,7 +50,7 @@ export interface ConfigGenerationContext {
   selectedProxy?: string
   vpnMode: VPNMode
   settings: GeneratorSettings
-  androidRouting?: AndroidRoutingOptions
+  routingExtras?: MihomoRoutingExtras
   apiPort: number
   apiSecret: string
   routingPolicy?: NormalizedPolicy
@@ -164,20 +162,13 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     } as ParsedProxyGroup] : []),
   ]
 
-  // Rules precedence: a composed routingPolicy (scenarios) WINS over the legacy
-  // androidRouting hardcoded rules even when both are present — this lets Android
-  // run the shared scenario routing while androidRouting still drives the
-  // Android-specific geo auto-download, DNS section and node-domain anti-loop
-  // below (P1.b). Pure capability add: the existing Windows-only (routingPolicy)
-  // and Android-only (androidRouting) callers are unaffected.
-  const rawRules = ctx.routingPolicy
-    ? mergeAndroidExtras(
-        ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules,
-        ctx.androidRouting,
-      )
-    : ctx.androidRouting
-    ? buildAndroidRules(ctx.androidRouting)
+  // vpnMode/routingPolicy is the only routing authority. Platform extras may
+  // prepend anti-loop and external RULE-SET entries, but cannot replace the
+  // shared policy with a second hardcoded route tree.
+  const policyRules = ctx.routingPolicy
+    ? ruleCompiler.compile(ctx.routingPolicy, { proxyGroupName: SLAVE_SELECT_GROUP }).rules
     : buildLegacyRules(ctx.vpnMode, ctx.settings.splitTunnelProcesses)
+  const rawRules = mergeRoutingExtras(policyRules, ctx.routingExtras)
 
   // Drop GEOSITE rules whose category isn't in the installed geosite.dat —
   // mihomo fatals at parse on an unknown category (e.g. RuNet-specific
@@ -203,9 +194,7 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     // ipv6:false mihomo rejects v6 destinations immediately, so IPv4 is used
     // without the stall. (dns.ipv6 is already false; this is the global switch.)
     ipv6: false,
-    // A routingPolicy implies rule-based routing; otherwise honor the Android
-    // smart/global/direct mode, else default to 'rule'.
-    mode: ctx.routingPolicy ? 'rule' : ctx.androidRouting ? androidClashMode(ctx.androidRouting.mode) : 'rule',
+    mode: 'rule',
     'log-level': 'info',
     'unified-delay': true,
     'tcp-concurrent': true,
@@ -219,7 +208,7 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     secret: ctx.apiSecret,
     // Geo databases: Android auto-downloads from MetaCubeX (no rulesDir, files
     // too big to ship); desktop uses the packaged file:// databases.
-    ...(ctx.androidRouting?.geoEnabled ? {
+    ...(ctx.routingExtras?.geoAutoUpdate ? {
       'geodata-mode': true,
       'geo-auto-update': true,
       'geo-update-interval': 24,
@@ -241,8 +230,8 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       // Filter out groups with no proxies — mihomo rejects empty select/url-test groups
       ...profile.proxyGroups.filter(g => g.proxies.length > 0),
     ] as unknown[],
-    ...(ctx.androidRouting && ctx.androidRouting.bypassProviders.length > 0
-      ? { 'rule-providers': buildBypassRuleProviders(ctx.androidRouting.bypassProviders) }
+    ...(ctx.routingExtras && ctx.routingExtras.bypassProviders.length > 0
+      ? { 'rule-providers': buildBypassRuleProviders(ctx.routingExtras.bypassProviders) }
       : {}),
     rules,
   }
@@ -255,7 +244,7 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   // category-ru, the RKN bypass lists) still apply. Needed on Android too, where
   // the native side injects the TUN fd so `tunEnabled` is false but mihomo still
   // owns the tunnel.
-  if (ctx.settings.tunEnabled || ctx.androidRouting) {
+  if (ctx.settings.tunEnabled || ctx.routingExtras?.enableSniffer) {
     config['sniffer'] = buildSnifferSection()
   }
 
@@ -452,7 +441,7 @@ function buildLegacyRules(mode: VPNMode, splitProcesses?: string[]): string[] {
   }
 }
 
-// ─── Android smart routing (RU split tunnelling) — verified by real curls ────
+// ─── Mihomo routing extras used by platform runtimes ─────────────────────────
 
 // Auto-downloaded geo databases (MetaCubeX/meta-rules-dat) for the GEOIP/GEOSITE
 // RU rules. mihomo fetches these on first start (needs internet once).
@@ -462,45 +451,21 @@ const META_GEOX_URL = {
   mmdb:    'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb',
 }
 
-function androidClashMode(mode: AndroidRoutingMode): 'rule' | 'global' | 'direct' {
-  // NEVER use clash `mode: global` — it IGNORES the rule list and forces every
-  // connection (DNS, the local external-controller API, even the proxy's own
-  // outbound) through the GLOBAL group, which our config doesn't define → foreign
-  // sites die, the engine API becomes unreachable and logs stop. The 'global'
-  // routing intent is expressed as RULES instead (buildAndroidRules → MATCH,
-  // SLAVE-SELECT with private-direct), so rule mode does the full tunnel safely.
-  if (mode === 'direct') return 'direct'
-  return 'rule'
-}
-
-// Ordered rules (verified: instagram→proxy, yandex→direct, node→direct, *→proxy):
-//   1. node domains → DIRECT (anti-loop)
-//   2. RKN-blocked rule-providers → SLAVE-SELECT (через VPN)  [BEFORE GEOSITE:RU]
-//   3. private/local → DIRECT
-//   4. GEOSITE,category-ru → DIRECT  +  GEOIP,ru → DIRECT     (РФ напрямую, скорость)
-//   5. MATCH → SLAVE-SELECT
 /**
- * Merge the Android-specific extras into a composed scenario policy's rules.
- *
- * When Android runs the unified `routingPolicy` (P1) the scenario rules drive
- * routing, but the `androidRouting` block still carries two things the scenario
- * model doesn't express and that MUST survive — otherwise they're silently lost
- * (the P1.b regression: rule-providers were declared but no rule referenced
- * them, so RKN-blocked sites fell through to the catch-all and dialed DIRECT):
+ * Merge platform runtime extras into rules selected by vpnMode/routingPolicy.
  *
  *   1. node-domain → DIRECT (anti-loop). Prepended FIRST so the proxy node's own
  *      hostname is never itself routed through the proxy — critical under a
  *      proxy-default scenario (roscomvpn-default / smart-global), harmless under
  *      a direct-default one.
  *   2. RKN bypass RULE-SET → SLAVE-SELECT. Placed right after the node rules
- *      (high priority, mirrors the old buildAndroidRules order) so user-managed
+ *      (high priority, preserving the previous Android order) so user-managed
  *      blocked-list domains tunnel even when the active scenario's default is
  *      DIRECT.
  *
- * No-op when there's no androidRouting (pure Windows path) or it carries no
- * extras, so the composed rules pass through unchanged.
+ * No-op for platforms without extras, so the existing Windows path is unchanged.
  */
-function mergeAndroidExtras(policyRules: readonly string[], opts?: AndroidRoutingOptions): string[] {
+function mergeRoutingExtras(policyRules: readonly string[], opts?: MihomoRoutingExtras): string[] {
   if (!opts) return [...policyRules]
   const nodeDirect = opts.nodeDomainSuffixes.map((s) => `DOMAIN-SUFFIX,${s},DIRECT`)
   const bypass = opts.bypassProviders.map((p) =>
@@ -512,33 +477,7 @@ function mergeAndroidExtras(policyRules: readonly string[], opts?: AndroidRoutin
   return [...nodeDirect, ...bypass, ...policyRules]
 }
 
-function buildAndroidRules(opts: AndroidRoutingOptions): string[] {
-  if (opts.mode === 'direct') return ['MATCH,DIRECT']
-  if (opts.mode === 'global') return [
-    // Anti-loop: the proxy node's own domain must dial DIRECT, else MATCH would
-    // route the node connection through the node itself.
-    ...opts.nodeDomainSuffixes.map((s) => `DOMAIN-SUFFIX,${s},DIRECT`),
-    ...PRIVATE_DIRECT_RULES,
-    `MATCH,${SLAVE_SELECT_GROUP}`,
-  ]
-
-  const rules: string[] = []
-  for (const s of opts.nodeDomainSuffixes) rules.push(`DOMAIN-SUFFIX,${s},DIRECT`)
-  for (const p of opts.bypassProviders) {
-    rules.push(p.behavior === 'ipcidr'
-      ? `RULE-SET,${p.name},${SLAVE_SELECT_GROUP},no-resolve`
-      : `RULE-SET,${p.name},${SLAVE_SELECT_GROUP}`)
-  }
-  rules.push(...PRIVATE_DIRECT_RULES)
-  if (opts.geoEnabled) {
-    rules.push('GEOSITE,category-ru,DIRECT')
-    rules.push('GEOIP,ru,DIRECT')
-  }
-  rules.push(`MATCH,${SLAVE_SELECT_GROUP}`)
-  return rules
-}
-
-function buildBypassRuleProviders(providers: AndroidBypassProvider[]): Record<string, unknown> {
+function buildBypassRuleProviders(providers: MihomoRuleProvider[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const p of providers) {
     out[p.name] = {

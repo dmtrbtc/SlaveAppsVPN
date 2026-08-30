@@ -23,6 +23,7 @@ const { buildAndroidDnsProfile } = require('../packages/dns/dist/cjs/index.js')
 const { composeScenarios } = require('../packages/routing/dist/cjs/index.js')
 const {
   compileAndroidEngineConfig, createSubscriptionFetcher, aggregateSubscriptionProxies,
+  resolveRoutingPolicyForMode,
 } = require('../packages/core/dist/cjs/index.js')
 const {
   mergeGeoSiteDat,
@@ -179,11 +180,13 @@ function buildCases(subscriptionYaml, runetAvailableGeoSites) {
         vpnMode: 'bypass',
         settings: { ...baseSettings, fakeIpEnabled: true },
         dnsProfile: androidDnsProfile(true),
-        androidRouting: {
-          mode: 'smart',
+        availableGeoSites: runetAvailableGeoSites,
+        routingPolicy: resolveRoutingPolicyForMode('bypass', []).policy,
+        routingExtras: {
           nodeDomainSuffixes,
           bypassProviders: [],
-          geoEnabled: true,
+          geoAutoUpdate: true,
+          enableSniffer: true,
         },
       },
     },
@@ -194,11 +197,11 @@ function buildCases(subscriptionYaml, runetAvailableGeoSites) {
         vpnMode: 'full',
         settings: { ...baseSettings, fakeIpEnabled: true },
         dnsProfile: androidDnsProfile(false),
-        androidRouting: {
-          mode: 'global',
+        routingExtras: {
           nodeDomainSuffixes,
           bypassProviders: [],
-          geoEnabled: true,
+          geoAutoUpdate: true,
+          enableSniffer: true,
         },
       },
     },

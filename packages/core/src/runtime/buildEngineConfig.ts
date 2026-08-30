@@ -12,8 +12,8 @@ import { composeRoutingPolicy } from '../routing/composeRoutingPolicy.js'
  *  - pass `enabledScenarioIds` and it composes the routing policy here (the
  *    Windows model — which P1 brings to Android), falling back to legacy
  *    vpnMode rules when composition is empty/invalid;
- *  - or pass a ready `routingPolicy` / `androidRouting` to preserve a caller's
- *    existing behaviour verbatim during the transition.
+ *  - or pass a ready `routingPolicy`; platform-only anti-loop/provider/geo
+ *    details stay in `routingExtras` and never choose the route tree.
  *
  * `availableGeoSites` (read from the engine's geosite.dat) lets the generator
  * drop GEOSITE rules for unknown categories — unified across platforms instead
@@ -39,9 +39,8 @@ export function buildEngineConfig(input: BuildEngineConfigInput): BuildEngineCon
   let routingPolicy = input.routingPolicy
   let routingValid = true
 
-  // Compose from scenario ids only when no explicit policy was supplied and the
-  // caller isn't using the legacy androidRouting path.
-  if (!routingPolicy && input.enabledScenarioIds && !input.androidRouting) {
+  // Compose from scenario ids only when no explicit policy was supplied.
+  if (!routingPolicy && input.enabledScenarioIds) {
     const composed = composeRoutingPolicy(input.enabledScenarioIds)
     warnings.push(...composed.warnings)
     routingValid = composed.valid

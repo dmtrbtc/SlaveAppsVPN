@@ -1,6 +1,5 @@
 import {
   compileAndroidEngineConfig,
-  type AndroidRoutingModeOption,
   type CompiledAndroidEngineConfig,
 } from '@slave-vpn/core'
 import type { VPNMode } from '@slave-vpn/shared'
@@ -16,10 +15,10 @@ import { getCachedGeoSiteCategories } from './geosite-categories'
  *
  * Android runs mihomo (not sing-box) because mihomo supports VLESS Encryption
  * (ML-KEM-768 / X25519). We reuse the SAME shared `generateMihomoConfig` as
- * Windows; the Android-specific behavior comes from the `androidRouting` option
- * (smart RU split tunnelling, bypass rule-providers, geo auto-download, and a
- * hardened DNS section — issue #9). `tunEnabled:false` because the native
- * SlaveVpnService injects the Android TUN (`tun.file-descriptor`) block.
+ * Windows. Shared routingPolicy/vpnMode owns route selection; Android contributes
+ * only platform extras (node anti-loop, bypass rule-providers, geo auto-update,
+ * and sniffer) plus its hardened DNS profile. `tunEnabled:false` because the
+ * native SlaveVpnService injects the Android TUN (`tun.file-descriptor`) block.
  */
 
 function randomSecret(): string {
@@ -36,8 +35,6 @@ export interface CompileMihomoConfigOptions {
   vpnMode: VPNMode
   selectedProxy?: string
   utlsFingerprint?: string
-  /** Smart RU split (default) / Global (all via VPN) / Direct (diagnostics). */
-  routingMode?: AndroidRoutingModeOption
 }
 
 export async function compileMihomoConfigForAndroid(
@@ -51,7 +48,6 @@ export async function compileMihomoConfigForAndroid(
     vpnMode: options.vpnMode,
     ...(options.selectedProxy ? { selectedProxy: options.selectedProxy } : {}),
     utlsFingerprint: options.utlsFingerprint ?? 'randomized',
-    routingMode: options.routingMode ?? 'smart',
     dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
     enabledScenarios: settings.enabledScenarios,
     customRules: settings.customRoutingRules ?? [],

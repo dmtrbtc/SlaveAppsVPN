@@ -32,7 +32,8 @@ const { resolveRoutingPolicyForMode } = require('../dist/cjs/index.js') as {
 }
 
 // «Свои правила» — user per-domain overrides. The contract these tests pin:
-//  1. NO rules → the legacy paths are untouched (full/split policy stays null).
+//  1. NO rules → full and Windows split keep their legacy paths; Android split
+//     still emits a proxy-default policy because VpnService gates apps natively.
 //  2. Rules exist → they sit ABOVE every scenario rule (priority band 50+ vs
 //     scenarios' 100+), so a user override always wins.
 //  3. full/split with rules → a minimal policy replicating the legacy MATCH
@@ -43,12 +44,20 @@ const RULES: CustomRoutingRule[] = [
   { id: 'b', domain: 'bank.ru', matchType: 'exact', action: 'direct' },
 ]
 
-test('no custom rules → full/split keep policy null (legacy path untouched)', () => {
-  for (const mode of ['full', 'split'] as const) {
-    const r = resolveRoutingPolicyForMode(mode, [])
-    assert.equal(r.policy, null, `${mode} must stay legacy with no rules`)
-    assert.equal(r.valid, true)
-  }
+test('no custom rules → full and Windows split keep the legacy path', () => {
+  const full = resolveRoutingPolicyForMode('full', [])
+  const winSplit = resolveRoutingPolicyForMode('split', [], { splitProcesses: [] })
+  assert.equal(full.policy, null)
+  assert.equal(winSplit.policy, null)
+  assert.equal(full.valid, true)
+  assert.equal(winSplit.valid, true)
+})
+
+test('Android split is proxy-default even without custom rules', () => {
+  const android = resolveRoutingPolicyForMode('split', [])
+  assert.ok(android.policy)
+  assert.equal(android.policy.defaultAction, 'proxy')
+  assert.ok(!android.policy.rules.some((x) => x.target.type === 'process_name'))
 })
 
 test('blocked mode: user rules outrank every scenario rule', () => {
