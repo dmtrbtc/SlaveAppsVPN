@@ -8,11 +8,12 @@
 ## 1. Цель
 
 Один и тот же функционал на Windows и Android, написанный **один раз**.
-Сейчас бизнес-логика живёт в Windows main-процессе (Node-сервисы), а Android
-дублирует её подмножество в рендерере или оставляет заглушками. Это причина
+На старте бизнес-логика жила в Windows main-процессе (Node-сервисы), а Android
+дублировал её подмножество в рендерере или оставлял заглушками. Это причина
 постоянного дрейфа паритета и того, что фиксы прилетают только на одну
 платформу (свежий пример: фикс RU-обхода через сценарии починил только
-Windows — Android идёт по своему `androidRouting`).
+Windows — Android шёл по своему `androidRouting`). P0/P1 последовательно
+устраняют эти дубли; актуальное состояние отмечено ниже.
 
 ## 2. Корень проблемы
 
@@ -23,8 +24,10 @@ Windows — Android идёт по своему `androidRouting`).
                    ▲ ПАРАЛЛЕЛЬНАЯ реализация, dns/rules/routing/profiles/geo = заглушки
 ```
 
-Две модели маршрутизации (`routingPolicy` vs `androidRouting`), две DNS-модели,
-два стора правил, два стора настроек, два агрегатора подписок.
+Исходно здесь были две модели маршрутизации, две DNS-модели, два стора правил,
+два стора настроек и два агрегатора подписок. После первых P0/P1-срезов едиными
+стали маршрутизация, DNS-компилятор, AppSettings и Android subscription pipeline;
+`compile-config.ts` пока остаётся тонким сборщиком platform inputs.
 
 ## 3. Целевая архитектура
 
@@ -184,6 +187,15 @@ interface CoreFacade {
 - **P1 — Единая маршрутизация.** Android переходит с `androidRouting` на
   `routingPolicy` (сценарии). Android сразу получает: композицию сценариев,
   дедуп правил, geosite-фильтр, RU-обход. Удалить `buildAndroidRules`.
+  - Первый срез завершает переключение генератора: `androidRouting` и
+    `buildAndroidRules` удалены. Android передаёт нейтральные `routingExtras`
+    только для node anti-loop, внешних rule-providers, geo auto-update и
+    sniffer; выбор маршрута принадлежит `vpnMode` / `routingPolicy`.
+  - Android split закреплён как proxy-default внутри приложений, уже выбранных
+    нативным `VpnService`; Windows split остаётся PROCESS-NAME/direct-default.
+    Legacy `smart/global/direct` localStorage state удалён как неиспользуемый.
+  - Проверки и границы среза описаны в
+    [ANDROID_UNIFIED_ROUTING_VERIFICATION.md](ANDROID_UNIFIED_ROUTING_VERIFICATION.md).
 - **P2 — Единый DNS.** Android получает DnsProfile + стратегии (вместо одного
   DoH). Удалить `buildAndroidDnsSection`; обе платформы → `MihomoDnsCompiler`.
 - **P3 — Единые списки обхода + настройки.** Один стор за `StorageAdapter`.

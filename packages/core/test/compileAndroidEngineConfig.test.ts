@@ -38,7 +38,21 @@ test('Android compiler owns config, DNS and node anti-loop assembly in core', as
   assert.match(result.config, /https:\/\/8\.8\.8\.8\/dns-query/)
   assert.match(result.config, /node\.example\.com/)
   assert.match(result.config, /MATCH,SLAVE-SELECT/)
+  assert.match(result.config, /^mode: rule$/m)
+  assert.ok(
+    result.config.indexOf('DOMAIN-SUFFIX,node.example.com,DIRECT') <
+      result.config.indexOf('MATCH,SLAVE-SELECT'),
+    'node anti-loop rule must precede the proxy catch-all',
+  )
   assert.deepEqual(result.warnings, [])
+})
+
+test('Android split stays proxy-default after removing legacy androidRouting', async () => {
+  const result = await compileAndroidEngineConfig({ ...base, vpnMode: 'split' })
+
+  assert.match(result.config, /DOMAIN-SUFFIX,node\.example\.com,DIRECT/)
+  assert.match(result.config, /MATCH,SLAVE-SELECT/)
+  assert.doesNotMatch(result.config, /MATCH,DIRECT/)
 })
 
 test('full mode does not read geosite categories when no policy needs them', async () => {

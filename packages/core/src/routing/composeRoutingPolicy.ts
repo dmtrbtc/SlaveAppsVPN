@@ -60,7 +60,7 @@ function privateDirectRules(): RoutingRule[] {
  *
  * This is the platform-agnostic version of the Windows-only
  * RoutingScenarioService.composePolicy — moved into core so BOTH platforms
- * share one routing model (Android currently uses a separate hardcoded path).
+ * share one routing model.
  *
  * Returns `policy: null` when no scenarios are enabled OR when the composed
  * policy fails pipeline validation — the caller then falls back to legacy
@@ -100,8 +100,9 @@ export function composeRoutingPolicy(
 //
 //   full   → null  → engine emits the legacy full-tunnel rules (MATCH→proxy);
 //                    EVERYTHING (incl. RU) goes through the VPN.
-//   split  → null  → engine emits the legacy split rules (only selected
-//                    processes/apps through the VPN, MATCH→DIRECT).
+//   split  → Windows keeps legacy PROCESS-NAME/direct-default semantics;
+//                    Android uses proxy-default because VpnService has already
+//                    selected which apps are allowed into the tunnel.
 //   bypass → roscomvpn-default → RU services/banks/sites DIRECT (geoip:RU +
 //                    geosite:category-ru), and EVERYTHING ELSE (blocked-in-RU and
 //                    foreign) through the VPN (defaultAction=proxy). The default
@@ -175,23 +176,24 @@ export function resolveRoutingPolicyForMode(
         ? { policy: null, warnings: [], valid: true, errors: [] }
         : minimalPolicy('full', 'proxy', userRules)
     case 'split': {
+      // Android omits splitProcesses because VpnService gates apps before their
+      // traffic reaches mihomo. Everything inside that native allow-list must
+      // therefore remain proxy-default even when there are no user rules.
+      if (opts.splitProcesses === undefined) {
+        return minimalPolicy('split', 'proxy', userRules)
+      }
       if (userRules.length === 0) {
         return { policy: null, warnings: [], valid: true, errors: [] }
       }
-      // Windows (splitProcesses provided): PROCESS-NAME allow-list, MATCH→DIRECT
-      // — replicates legacy split. Android (no splitProcesses): apps are selected
-      // natively, in-tunnel traffic keeps its proxy-default (legacy 'global').
-      if (opts.splitProcesses !== undefined) {
-        const processRules: RoutingRule[] = opts.splitProcesses.map((p, i) => ({
-          id: `split:${p}`,
-          target: { type: 'process_name' as const, value: p },
-          action: 'proxy' as const,
-          priority: 10 + i,
-          source: { provider: 'split-tunnel' },
-        }))
-        return minimalPolicy('split', 'direct', userRules, processRules)
-      }
-      return minimalPolicy('split', 'proxy', userRules)
+      // Windows supplies the process allow-list and remains direct-default.
+      const processRules: RoutingRule[] = opts.splitProcesses.map((p, i) => ({
+        id: `split:${p}`,
+        target: { type: 'process_name' as const, value: p },
+        action: 'proxy' as const,
+        priority: 10 + i,
+        source: { provider: 'split-tunnel' },
+      }))
+      return minimalPolicy('split', 'direct', userRules, processRules)
     }
     case 'bypass':
       return composeRoutingPolicy(BYPASS_SCENARIOS, userRules)

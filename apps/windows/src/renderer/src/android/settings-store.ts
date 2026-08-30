@@ -32,8 +32,8 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
  *
  * Previously Android only kept an in-memory `currentMode` + a couple of
  * localStorage keys, so DNS/routing/scenario choices never persisted. This makes
- * the same settings model Windows uses persist on Android too — the foundation
- * for the connect-path switch in P1.
+ * the same settings model Windows uses persist on Android too; P1 now consumes
+ * those values through the unified routingPolicy compiler.
  */
 
 let store: SettingsStore | null = null

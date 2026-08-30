@@ -11,8 +11,9 @@ const { generateMihomoConfig } = require('../dist/cjs/index.js') as {
 const { buildAndroidDnsProfile } = require('@slave-vpn/dns') as {
   buildAndroidDnsProfile: (opts: { dohUrl: string; nodeDomainSuffixes: string[]; ruDirectDns?: boolean }) => unknown
 }
-const { composeScenarios } = require('@slave-vpn/routing') as {
+const { composeScenarios, RoutingPipeline } = require('@slave-vpn/routing') as {
   composeScenarios: (ids: string[]) => { policy: { providerRules: Array<{ target: { type: string; value: string }; action: string; priority: number }> } }
+  RoutingPipeline: new () => { process(policy: unknown): { policy: unknown } }
 }
 
 const SUB = `
@@ -20,29 +21,32 @@ proxies:
   - { name: NL, type: vless, server: nl.example.online, port: 443, uuid: 00000000-0000-4000-8000-000000000000, tls: true, servername: nl.example.online, flow: xtls-rprx-vision, reality-opts: { public-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, short-id: 0123456789abcdef } }
 `.trim()
 
-// `smart` keeps RU-direct DNS (bypass); `global` is the full tunnel (no RU-direct).
-function gen(mode: 'smart' | 'global' | 'direct'): string {
+const bypassPolicy = new RoutingPipeline().process(composeScenarios(['roscomvpn-default']).policy).policy
+
+// Unified bypass policy keeps RU-direct DNS; full is the full tunnel (no RU-direct).
+function gen(mode: 'bypass' | 'full'): string {
   return generateMihomoConfig({
     subscriptionYaml: SUB,
-    vpnMode: 'full',
+    vpnMode: mode,
     settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://1.1.1.1/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
     apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
     dnsProfile: buildAndroidDnsProfile({
       dohUrl: 'https://1.1.1.1/dns-query',
       nodeDomainSuffixes: ['nl.example.online'],
-      ruDirectDns: mode === 'smart',
+      ruDirectDns: mode === 'bypass',
     }),
-    androidRouting: {
-      mode,
+    ...(mode === 'bypass' ? { routingPolicy: bypassPolicy } : {}),
+    routingExtras: {
       nodeDomainSuffixes: ['nl.example.online'],
-      geoEnabled: true,
+      geoAutoUpdate: true,
+      enableSniffer: true,
       bypassProviders: [{ name: 'bypass-domains', behavior: 'domain', url: 'https://example/list.lst', path: './rules/b.list' }],
     },
   })
 }
 
-test('smart mode: rules ordered — node DIRECT, bypass BEFORE GEOSITE:RU, MATCH last', () => {
-  const out = gen('smart')
+test('unified bypass policy: node DIRECT, provider BEFORE GEOSITE:RU, MATCH last', () => {
+  const out = gen('bypass')
   const rules: string[] = JSON.parse(JSON.stringify(require('js-yaml').load(out).rules))
   const idxNode = rules.findIndex(r => r.startsWith('DOMAIN-SUFFIX,nl.example.online,DIRECT'))
   const idxBypass = rules.findIndex(r => r.includes('RULE-SET,bypass-domains,SLAVE-SELECT'))
@@ -54,8 +58,8 @@ test('smart mode: rules ordered — node DIRECT, bypass BEFORE GEOSITE:RU, MATCH
   assert.ok(idxMatch === rules.length - 1, 'MATCH must be last')
 })
 
-test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plaintext nameserver)', () => {
-  const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
+test('bypass mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plaintext nameserver)', () => {
+  const doc = require('js-yaml').load(gen('bypass')) as { dns: Record<string, unknown> }
   assert.equal(doc.dns['respect-rules'], true)
   assert.equal(doc.dns['prefer-h3'], false, 'h3 (QUIC) disabled so DoH stays on TCP/443')
   const ns = doc.dns['nameserver'] as string[]
@@ -73,7 +77,7 @@ test('smart mode: hardened DNS (DoH-only pool, proxy-server-nameserver, no plain
 })
 
 test('v0.2.34: Android DNS has an IP-literal DoT fallback pool + RU fallback-filter', () => {
-  const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
+  const doc = require('js-yaml').load(gen('bypass')) as { dns: Record<string, unknown> }
   // Before v0.2.34 there was NO fallback: the DoH pool dying = total DNS failure.
   const fb = doc.dns['fallback'] as string[]
   assert.ok(Array.isArray(fb) && fb.length >= 2, 'fallback pool present (>=2)')
@@ -83,8 +87,8 @@ test('v0.2.34: Android DNS has an IP-literal DoT fallback pool + RU fallback-fil
   assert.ok(ff && ff.geoip === true && ff['geoip-code'] === 'RU', 'fallback-filter geoip:RU present')
 })
 
-test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
-  const doc = require('js-yaml').load(gen('smart')) as { dns: Record<string, unknown> }
+test('bypass mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
+  const doc = require('js-yaml').load(gen('bypass')) as { dns: Record<string, unknown> }
   const policy = doc.dns['nameserver-policy'] as Record<string, unknown>
   // RU domains → two Russian (Yandex) resolvers, both direct — NO foreign 8.8.8.8
   // (it's a non-RU IP that respect-rules sent through the tunnel → cancelled DNS).
@@ -100,7 +104,7 @@ test('smart mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, n
 })
 
 test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plaintext leak', () => {
-  const doc = require('js-yaml').load(gen('global')) as { dns: Record<string, unknown> }
+  const doc = require('js-yaml').load(gen('full')) as { dns: Record<string, unknown> }
   const policy = (doc.dns['nameserver-policy'] ?? {}) as Record<string, unknown>
   assert.equal(policy['+.ru'], undefined, 'no RU TLD policy in full tunnel')
   assert.equal(policy['geosite:category-ru'], undefined, 'no category-ru policy in full tunnel')
@@ -109,7 +113,7 @@ test('full tunnel (global): NO RU-direct DNS — RU resolves via DoH, no plainte
 })
 
 test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + interval:60', () => {
-  const doc = require('js-yaml').load(gen('smart')) as {
+  const doc = require('js-yaml').load(gen('bypass')) as {
     'proxy-groups': Array<Record<string, unknown>>
     'keep-alive-interval'?: number
   }
@@ -125,7 +129,7 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + inter
 })
 
 test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8080 sniff-wait)', () => {
-  const doc = require('js-yaml').load(gen('smart')) as {
+  const doc = require('js-yaml').load(gen('bypass')) as {
     ipv6?: boolean
     sniffer?: { sniff?: { HTTP?: { ports?: unknown[] } } }
   }
@@ -138,7 +142,7 @@ test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8
 })
 
 test('perf: sniffer skips Telegram DC ranges (MTProto on :443 is not TLS → no sniff-stall on media)', () => {
-  const doc = require('js-yaml').load(gen('smart')) as {
+  const doc = require('js-yaml').load(gen('bypass')) as {
     sniffer?: { 'skip-dst-address'?: string[] }
   }
   const skip = doc.sniffer?.['skip-dst-address']
@@ -188,16 +192,11 @@ test('messengers → proxy in BOTH bypass bases (WhatsApp/Telegram calls work in
   }
 })
 
-test('global mode → clash mode:RULE (never global) + MATCH proxy; direct mode → mode:direct', () => {
-  // clash `mode: global` IGNORES the rule list and routes everything (incl. DNS,
-  // the local API, the proxy's own dial) through the undefined GLOBAL group →
-  // breaks the engine. The full-tunnel intent is the RULE list instead.
-  const g = require('js-yaml').load(gen('global')) as { mode: string; rules: string[] }
-  assert.equal(g.mode, 'rule', 'full tunnel uses rule mode, NOT clash global')
-  assert.equal(g.rules[g.rules.length - 1], 'MATCH,SLAVE-SELECT')
-  const d = require('js-yaml').load(gen('direct')) as { mode: string; rules: string[] }
-  assert.equal(d.mode, 'direct')
-  assert.ok(d.rules.includes('MATCH,DIRECT'))
+test('full tunnel uses shared RULE mode with a proxy catch-all', () => {
+  const full = require('js-yaml').load(gen('full')) as { mode: string; rules: string[] }
+  assert.equal(full.mode, 'rule')
+  assert.equal(full.rules[0], 'DOMAIN-SUFFIX,nl.example.online,DIRECT')
+  assert.equal(full.rules[full.rules.length - 1], 'MATCH,SLAVE-SELECT')
 })
 
 // ─── Telegram load-balance (v0.2.39) ────────────────────────────────────────
@@ -228,7 +227,12 @@ function genPolicy(sub: string, policy: unknown): Record<string, unknown> {
     apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
     routingPolicy: policy,
     dnsProfile: buildAndroidDnsProfile({ dohUrl: 'https://1.1.1.1/dns-query', nodeDomainSuffixes: ['ee.example.online', 'nl.example.online'], ruDirectDns: true }),
-    androidRouting: { mode: 'smart', nodeDomainSuffixes: ['ee.example.online', 'nl.example.online'], geoEnabled: true, bypassProviders: [] },
+    routingExtras: {
+      nodeDomainSuffixes: ['ee.example.online', 'nl.example.online'],
+      geoAutoUpdate: true,
+      enableSniffer: true,
+      bypassProviders: [],
+    },
   })
   return require('js-yaml').load(out) as Record<string, unknown>
 }

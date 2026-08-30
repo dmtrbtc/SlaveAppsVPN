@@ -161,7 +161,6 @@ async function compileNativeConfig(): Promise<string> {
     vpnMode: currentMode,
     ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
     utlsFingerprint: currentUtlsFingerprint,
-    routingMode: currentRoutingMode,
   })
   nativeLog(`[connect] конфиг готов (${compiled.config.length} Б) · передаю ядру`)
   // Surface failed subscriptions, dropped geosite rules and composition notes.
@@ -333,10 +332,6 @@ function loadUtlsFromLocalStorage(): void {
 function saveUtlsToLocalStorage(value: string): void {
   try { window.localStorage.setItem(UTLS_LS_KEY, value) } catch { /* swallow */ }
 }
-
-// Android smart-routing mode (persisted) — passed to compile-config on connect.
-const ROUTING_MODE_LS_KEY = 'slave.settings.routingMode.v1'
-let currentRoutingMode: 'smart' | 'global' | 'direct' = 'smart'
 
 // Map mihomo's clash-API connections snapshot JSON → ActiveConnectionsSnapshot.
 function parseConnectionsSnapshot(raw: string): ActiveConnectionsSnapshot | null {
@@ -1112,9 +1107,8 @@ export function installAndroidBridge(): void {
     },
     routing: {
       // Real scenario catalogue from @slave-vpn/core (shared with Windows). The
-      // enabled set persists in AppSettings.enabledScenarios. NOTE: the selection
-      // starts driving the actual config in P1 (compile-config switch); for now
-      // it lists + persists so the Маршруты screen is real instead of a stub.
+      // enabled set persists in AppSettings.enabledScenarios and drives the same
+      // routingPolicy compiler used by Windows.
       listScenarios: async () => ok(buildScenarioInfo() as never),
       setEnabledScenarios: (payload: { scenarioIds?: string[] }) =>
         wrap(async () => {
@@ -1238,13 +1232,6 @@ export function installAndroidBridge(): void {
     if (saved) currentSelectedProxy = saved
   } catch { /* swallow */ }
 
-  // Restore the persisted routing mode (Smart/Global/Direct). The Settings UI
-  // writes this key; it's applied to the config on the next connect.
-  try {
-    const m = window.localStorage.getItem(ROUTING_MODE_LS_KEY)
-    if (m === 'smart' || m === 'global' || m === 'direct') currentRoutingMode = m
-  } catch { /* swallow */ }
-
   // (rc8 guard) Removed the install-time `SlaveVpn.getTraffic()` ping: it forced
   // the native gojni core to load at app launch. The sparkline reads
   // EMPTY_TRAFFIC_STATS until connected, then onVpnTraffic feeds real numbers.
@@ -1272,7 +1259,7 @@ export function installAndroidBridge(): void {
 
   // Warm up the geosite category cache (≈4 MB MetaCubeX dat, fetched at most
   // weekly) so the first scenario-driven connect can drop GEOSITE rules for
-  // categories absent from the native engine's dat (P1.b consumes this).
+  // categories absent from the native engine's dat.
   try {
     prefetchAndroidGeoSiteCategories(dataAdapters.network, dataAdapters.storage)
   } catch {

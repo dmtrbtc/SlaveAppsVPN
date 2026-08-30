@@ -25,7 +25,6 @@ export { buildEngineConfig } from './runtime/buildEngineConfig.js'
 export type { BuildEngineConfigInput, BuildEngineConfigResult } from './runtime/buildEngineConfig.js'
 export { compileAndroidEngineConfig } from './runtime/compileAndroidEngineConfig.js'
 export type {
-  AndroidRoutingModeOption,
   AndroidRuleListInput,
   CompileAndroidEngineConfigInput,
   CompiledAndroidEngineConfig,

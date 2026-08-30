@@ -12,8 +12,6 @@ import { buildEngineConfig } from './buildEngineConfig.js'
 
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/
 
-export type AndroidRoutingModeOption = 'smart' | 'global' | 'direct'
-
 /** Persisted Android rule-list shape consumed by the shared config compiler. */
 export interface AndroidRuleListInput {
   id: string
@@ -34,7 +32,6 @@ export interface CompileAndroidEngineConfigInput {
   vpnMode: VPNMode
   selectedProxy?: string
   utlsFingerprint?: string
-  routingMode?: AndroidRoutingModeOption
   dohProvider: DohProviderSetting
   enabledScenarios: readonly string[]
   customRules: readonly CustomRoutingRule[]
@@ -68,11 +65,6 @@ export async function compileAndroidEngineConfig(
   const composed = resolveRoutingPolicyForMode(input.vpnMode, input.enabledScenarios, {
     customRules: input.customRules,
   })
-  const androidMode: AndroidRoutingModeOption =
-    input.vpnMode === 'full' || input.vpnMode === 'split'
-      ? 'global'
-      : (input.routingMode ?? 'smart')
-
   const availableGeoSites = composed.policy && input.loadAvailableGeoSites
     ? await input.loadAvailableGeoSites()
     : []
@@ -111,10 +103,10 @@ export async function compileAndroidEngineConfig(
     }),
     ...(composed.policy ? { routingPolicy: composed.policy } : {}),
     ...(composed.policy && availableGeoSites.length > 0 ? { availableGeoSites } : {}),
-    androidRouting: {
-      mode: androidMode,
+    routingExtras: {
       nodeDomainSuffixes,
-      geoEnabled: true,
+      geoAutoUpdate: true,
+      enableSniffer: true,
       bypassProviders: enabledLists.map((list) => ({
         name: list.id,
         behavior: list.behavior,
