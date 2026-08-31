@@ -24,6 +24,7 @@ interface SubscriptionsStore {
   add: (payload: SubscriptionAddPayload) => Promise<SubscriptionEntry>
   update: (id: string, patch: { name?: string; enabled?: boolean; autoUpdateMinutes?: SubscriptionAutoUpdate }) => Promise<void>
   remove: (id: string) => Promise<void>
+  reorder: (ids: string[]) => Promise<void>
   refresh: (id: string) => Promise<void>
   refreshAll: () => Promise<void>
 }
@@ -90,7 +91,14 @@ export const useSubscriptionsStore = create<SubscriptionsStore>((set, get) => {
 
   add: async (payload) => {
     return track('__add__', async () => {
-      const entry = await subscriptionsApi.add(payload)
+      const outcome = await subscriptionsApi.add(payload)
+      const { entry } = outcome
+      if (!outcome.created) {
+        set(s => ({ entries: s.entries.some(e => e.id === entry.id)
+          ? s.entries.map(e => e.id === entry.id ? entry : e)
+          : [...s.entries, entry] }))
+        throw new Error('Эта подписка уже добавлена')
+      }
       // Event will refresh the list, but optimistically:
       set(s => ({ entries: s.entries.some(e => e.id === entry.id) ? s.entries : [...s.entries, entry] }))
       return entry
@@ -107,6 +115,21 @@ export const useSubscriptionsStore = create<SubscriptionsStore>((set, get) => {
     return track(id, async () => {
       await subscriptionsApi.remove({ id })
       set(s => ({ entries: s.entries.filter(e => e.id !== id) }))
+    })
+  },
+
+  reorder: async (ids) => {
+    return track('__reorder__', async () => {
+      const previous = get().entries
+      const byId = new Map(previous.map(entry => [entry.id, entry]))
+      set({ entries: ids.map(id => byId.get(id)).filter((entry): entry is SubscriptionEntry => !!entry) })
+      try {
+        const entries = await subscriptionsApi.reorder({ ids })
+        set({ entries })
+      } catch (err) {
+        set({ entries: previous })
+        throw err
+      }
     })
   },
 

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   RefreshCw, Plus, Trash2, ToggleLeft, ToggleRight, X, Link as LinkIcon,
   KeyRound, ScanLine, AlertCircle, Loader2, Edit3, Check, CircleUser, ChevronRight,
+  ArrowUp, ArrowDown,
 } from 'lucide-react'
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
@@ -86,13 +87,23 @@ function timeAgo(ts: number | null): string {
 
 // ─── Entry row ────────────────────────────────────────────────────────────────
 
-function EntryRow({ entry }: { entry: SubscriptionEntry }) {
+function EntryRow({
+  entry,
+  position,
+  total,
+  onMove,
+}: {
+  entry: SubscriptionEntry
+  position: number
+  total: number
+  onMove: (direction: -1 | 1) => void
+}) {
   const { update, remove, refresh, pending } = useSubscriptionsStore()
   const { notify } = useUIStore()
   const [renaming, setRenaming] = useState(false)
   const [nameDraft, setNameDraft] = useState(entry.name)
 
-  const isPending = pending.has(entry.id)
+  const isPending = pending.has(entry.id) || pending.has('__reorder__')
 
   const handleToggle = () => {
     void update(entry.id, { enabled: !entry.enabled })
@@ -196,6 +207,7 @@ function EntryRow({ entry }: { entry: SubscriptionEntry }) {
               <span className="font-mono">{entry.nodeCount} нод</span>
             )}
             <span>обновлено {timeAgo(entry.lastFetchedAt)}</span>
+            <span>приоритет {position + 1}</span>
           </div>
 
           {/* Last error */}
@@ -209,6 +221,22 @@ function EntryRow({ entry }: { entry: SubscriptionEntry }) {
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => onMove(-1)}
+            disabled={isPending || position === 0}
+            className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-bg-secondary disabled:opacity-30 transition-colors"
+            title="Повысить приоритет"
+          >
+            <ArrowUp className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => onMove(1)}
+            disabled={isPending || position === total - 1}
+            className="p-1.5 rounded-md text-text-muted hover:text-accent hover:bg-bg-secondary disabled:opacity-30 transition-colors"
+            title="Понизить приоритет"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+          </button>
           <button
             onClick={() => void handleRefresh()}
             disabled={isPending}
@@ -396,13 +424,17 @@ function AddSubscriptionModal({ open, onClose }: { open: boolean; onClose: () =>
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function SubscriptionsPage() {
-  const { entries, loading, refreshAll, pending } = useSubscriptionsStore()
+  const { entries, loading, refreshAll, reorder, pending } = useSubscriptionsStore()
+  const { notify } = useUIStore()
   const [addOpen, setAddOpen] = useState(false)
 
   const refreshingAll = pending.has('__refreshAll__')
 
   const sorted = useMemo(
-    () => [...entries].sort((a, b) => b.addedAt - a.addedAt),
+    () => entries
+      .map((entry, index) => ({ entry, index }))
+      .sort((a, b) => (a.entry.priority ?? a.index * 10) - (b.entry.priority ?? b.index * 10) || a.index - b.index)
+      .map(({ entry }) => entry),
     [entries],
   )
 
@@ -413,6 +445,18 @@ export function SubscriptionsPage() {
 
   const handleRefreshAll = () => {
     void refreshAll()
+  }
+
+  const handleMove = async (position: number, direction: -1 | 1) => {
+    const target = position + direction
+    if (target < 0 || target >= sorted.length) return
+    const ids = sorted.map(entry => entry.id)
+    ;[ids[position], ids[target]] = [ids[target]!, ids[position]!]
+    try {
+      await reorder(ids)
+    } catch (err) {
+      notify({ type: 'error', title: 'Не удалось изменить приоритет', message: err instanceof Error ? err.message : String(err) })
+    }
   }
 
   return (
@@ -467,9 +511,17 @@ export function SubscriptionsPage() {
           />
         ) : (
           <>
-            {sorted.map(entry => <EntryRow key={entry.id} entry={entry} />)}
+            {sorted.map((entry, position) => (
+              <EntryRow
+                key={entry.id}
+                entry={entry}
+                position={position}
+                total={sorted.length}
+                onMove={direction => { void handleMove(position, direction) }}
+              />
+            ))}
             <p className="mt-1 px-1 text-[11px] text-text-muted">
-              Включённые подписки объединяются и дедуплицируются; приоритет нод — по порядку в списке.
+              Верхняя подписка имеет высший приоритет. Одинаковые ноды берутся из неё; порядок можно менять стрелками.
             </p>
           </>
         )}

@@ -1,6 +1,7 @@
 import { buildClashYaml } from '@slave-vpn/config'
 import type { SubscriptionEntry, SubscriptionFetcher, AggregationResult, FetchedEntry } from './types.js'
 import { aggregateProxies } from './aggregateProxies.js'
+import { sortSubscriptionsByPriority } from './sourceOrder.js'
 
 export interface AggregateSubscriptionsResult extends AggregationResult {
   /** Clash YAML ready for the config generator. */
@@ -28,7 +29,7 @@ export async function aggregateSubscriptionProxies(
   fetcher: SubscriptionFetcher,
   opts: AggregateSubscriptionsOptions = {},
 ): Promise<AggregationResult> {
-  const enabled = entries.filter((e) => e.enabled)
+  const enabled = sortSubscriptionsByPriority(entries).filter((e) => e.enabled)
   if (enabled.length === 0) {
     throw new Error('No enabled subscriptions')
   }

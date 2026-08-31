@@ -11,6 +11,8 @@ import type {
 const require = createRequire(import.meta.url)
 const {
   aggregateSubscriptionProxies, aggregateSubscriptions, createSubscriptionFetcher,
+  canonicalSubscriptionSource, normalizeSubscriptionPriorities, reorderSubscriptionsByIds,
+  deduplicateSubscriptionSources,
 } = require('../dist/cjs/index.js') as typeof import('../src/subscriptions/index.ts')
 const { buildClashYaml, parseProxiesFromYaml } = require('@slave-vpn/config')
 
@@ -169,6 +171,52 @@ test('disabled-only source lists reject without fetching', async () => {
     await assert.rejects(aggregateSubscriptionProxies(entries, fetcher), /No enabled subscriptions/)
   }
   assert.equal(calls, 0)
+})
+
+test('subscription source identity normalizes URL fragments and surrounding whitespace', () => {
+  assert.equal(
+    canonicalSubscriptionSource('subscription-url', ' HTTPS://Example.COM/path?token=a#screen '),
+    canonicalSubscriptionSource('subscription-url', 'https://example.com/path?token=a'),
+  )
+  assert.notEqual(
+    canonicalSubscriptionSource('single-proxy', 'same'),
+    canonicalSubscriptionSource('remnawave-key', 'same'),
+  )
+})
+
+test('legacy priorities normalize stably and explicit reorder assigns top priority', () => {
+  const normalized = normalizeSubscriptionPriorities([
+    entry('legacy-a'), entry('high', { priority: 5 }), entry('legacy-b'),
+  ])
+  assert.deepEqual(normalized.map(e => e.id), ['legacy-a', 'high', 'legacy-b'])
+  assert.deepEqual(normalized.map(e => e.priority), [10, 20, 30])
+
+  const reordered = reorderSubscriptionsByIds(normalized, ['legacy-b', 'legacy-a', 'high'])
+  assert.deepEqual(reordered.map(e => [e.id, e.priority]), [
+    ['legacy-b', 10], ['legacy-a', 20], ['high', 30],
+  ])
+  assert.throws(() => reorderSubscriptionsByIds(normalized, ['legacy-a']), /every entry/)
+})
+
+test('duplicate subscription migration keeps the highest-priority source', () => {
+  const result = deduplicateSubscriptionSources([
+    { entry: entry('second', { priority: 20 }), input: 'https://EXAMPLE.com/sub#two' },
+    { entry: entry('first', { priority: 10 }), input: ' https://example.com/sub ' },
+    { entry: entry('node', { type: 'single-proxy', priority: 30 }), input: 'https://example.com/sub' },
+  ])
+  assert.deepEqual(result.entries.map(e => [e.id, e.priority]), [['first', 10], ['node', 20]])
+  assert.deepEqual(result.duplicateIds, ['second'])
+})
+
+test('aggregation uses explicit subscription priority for duplicate-node winner', async () => {
+  const fetcher: SubscriptionFetcher = {
+    fetchEntry: async e => ({ proxies: [node('duplicate')], error: null }),
+  }
+  const result = await aggregateSubscriptionProxies([
+    entry('low', { priority: 20 }), entry('high', { priority: 10 }),
+  ], fetcher, { concurrency: 1 })
+  assert.equal(result.proxies[0]?.extra['slave-source'], 'high')
+  assert.deepEqual(result.perSubscription, { high: 1, low: 0 })
 })
 
 test('Android sequential aggregation awaits metadata, skips disabled entries and retains partial success', async () => {

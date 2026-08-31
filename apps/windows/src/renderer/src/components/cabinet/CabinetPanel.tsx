@@ -47,6 +47,9 @@ function useAutoImport() {
       if (res.imported) {
         await Promise.all([useAuthStore.getState().bootstrap(), fetchSubs()])
         notify({ type: 'success', title: 'Кабинет подключён', message: 'Подписка добавлена автоматически' })
+      } else if (res.alreadyImported) {
+        await fetchSubs()
+        notify({ type: 'info', title: 'Кабинет подключён', message: 'Эта подписка уже добавлена' })
       } else {
         notify({ type: 'info', title: 'Вход выполнен', message: 'Активная подписка в кабинете не найдена' })
       }

@@ -20,6 +20,7 @@ import type {
   RoutingSetEnabledScenariosPayload,
   SubscriptionAddPayload,
   SubscriptionRemovePayload,
+  SubscriptionReorderPayload,
   SubscriptionUpdatePayload,
   SubscriptionRefreshPayload,
   SubscriptionEntry,
@@ -368,6 +369,9 @@ const bridge: SlaveVPNBridge = {
 
     remove: (payload: SubscriptionRemovePayload) =>
       invoke(IpcChannel.SUBSCRIPTIONS_REMOVE, payload),
+
+    reorder: (payload: SubscriptionReorderPayload) =>
+      invoke(IpcChannel.SUBSCRIPTIONS_REORDER, payload),
 
     update: (payload: SubscriptionUpdatePayload) =>
       invoke(IpcChannel.SUBSCRIPTIONS_UPDATE, payload),

@@ -153,6 +153,7 @@ export const IpcChannel = {
   SUBSCRIPTIONS_LIST: 'subscriptions:list',
   SUBSCRIPTIONS_ADD: 'subscriptions:add',
   SUBSCRIPTIONS_REMOVE: 'subscriptions:remove',
+  SUBSCRIPTIONS_REORDER: 'subscriptions:reorder',
   SUBSCRIPTIONS_UPDATE: 'subscriptions:update',
   SUBSCRIPTIONS_REFRESH: 'subscriptions:refresh',
   SUBSCRIPTIONS_REFRESH_ALL: 'subscriptions:refreshAll',

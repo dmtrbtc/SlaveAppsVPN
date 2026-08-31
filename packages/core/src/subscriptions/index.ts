@@ -19,3 +19,11 @@ export {
   type SubscriptionSourceAdapter,
   type SubscriptionFetchMeta,
 } from './createSubscriptionFetcher.js'
+export {
+  canonicalSubscriptionSource,
+  sortSubscriptionsByPriority,
+  normalizeSubscriptionPriorities,
+  deduplicateSubscriptionSources,
+  type SubscriptionSourceRecord,
+  reorderSubscriptionsByIds,
+} from './sourceOrder.js'
