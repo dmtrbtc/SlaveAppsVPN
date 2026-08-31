@@ -1,4 +1,8 @@
 import { CapacitorHttp, Capacitor } from '@capacitor/core'
+import {
+  parseGitHubReleasesAtom,
+  type GitHubRelease,
+} from '@shared/update/parseGitHubReleasesAtom'
 
 /**
  * Lightweight in-app update check for the Android build — "notify + by button".
@@ -26,18 +30,6 @@ export interface UpdateInfo {
   releaseUrl: string       // html page
   downloadUrl: string | null  // platform asset (.apk on Android, Setup .exe on Windows)
   publishedAt: number
-}
-
-interface GhAsset { name: string; browser_download_url: string }
-interface GhRelease {
-  tag_name: string
-  name: string | null
-  body: string | null
-  html_url: string
-  draft: boolean
-  prerelease: boolean
-  published_at: string
-  assets: GhAsset[]
 }
 
 /**
@@ -129,34 +121,12 @@ export async function getInstalledVersionNotes(): Promise<{ version: string; not
  * prerelease/draft flags or assets: `prerelease` is inferred from the tag suffix
  * (-dev/-rc/-alpha/-beta, matching our channel policy), `draft` is always false
  * (only published releases appear), and `assets` is empty (checkForUpdate derives
- * the per-platform download URL from the tag). Mirror of the Node parser in
- * update.handler.ts.
+ * the per-platform download URL from the tag). The shared parser is also used
+ * by Electron main, so both platforms interpret the feed identically.
  */
-export function parseAtomReleases(xml: string): GhRelease[] {
-  const decode = (s: string): string =>
-    s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
-  const out: GhRelease[] = []
-  for (const entry of xml.split('<entry>').slice(1)) {
-    const tag = /<title>([^<]+)<\/title>/.exec(entry)?.[1]?.trim()
-    if (!tag) continue
-    const updated = /<updated>([^<]+)<\/updated>/.exec(entry)?.[1]?.trim() ?? ''
-    const href = /<link[^>]*href="([^"]+)"/.exec(entry)?.[1] ?? ''
-    const content = /<content[^>]*>([\s\S]*?)<\/content>/.exec(entry)?.[1] ?? ''
-    out.push({
-      tag_name: tag,
-      name: tag,
-      body: decode(content).replace(/<[^>]+>/g, '').trim(),
-      html_url: href || `https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/${tag}`,
-      draft: false,
-      prerelease: /-(?:dev|rc|alpha|beta)/i.test(tag),
-      published_at: updated,
-      assets: [],
-    })
-  }
-  return out
-}
+export const parseAtomReleases = parseGitHubReleasesAtom
 
-async function fetchReleases(): Promise<GhRelease[]> {
+async function fetchReleases(): Promise<GitHubRelease[]> {
   const headers = { 'User-Agent': 'SlaveVPN-update' }
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.get({ url: RELEASES_ATOM, headers, readTimeout: 15000, connectTimeout: 15000 } as Parameters<typeof CapacitorHttp.get>[0])
@@ -168,7 +138,7 @@ async function fetchReleases(): Promise<GhRelease[]> {
   const bridge = (window as unknown as { slaveVPN?: { update?: { fetchReleases?: () => Promise<unknown[]> } } }).slaveVPN
   if (bridge?.update?.fetchReleases) {
     const data = await bridge.update.fetchReleases()
-    return Array.isArray(data) ? data as GhRelease[] : []
+    return Array.isArray(data) ? data as GitHubRelease[] : []
   }
   // Dev fallback (no preload bridge, e.g. plain browser): try a direct fetch.
   const res = await fetch(RELEASES_ATOM, { headers })

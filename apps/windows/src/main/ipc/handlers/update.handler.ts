@@ -5,6 +5,7 @@ import { IpcChannel } from '../../../shared/ipc/channels'
 import { okResult, errResult } from '../../../shared/ipc/types'
 import { getUpdateService } from '../../services/UpdateService'
 import { openExternalUrl } from '../../window'
+import { parseGitHubReleasesAtom } from '../../../shared/update/parseGitHubReleasesAtom'
 
 const UpdateChannelSchema = z.object({
   channel: z.enum(['stable', 'beta']),
@@ -59,7 +60,7 @@ export function registerUpdateHandlers(): void {
         { headers: { 'User-Agent': 'SlaveVPN-update' }, signal: AbortSignal.timeout(12_000) },
       )
       if (!res.ok) return []
-      return parseReleasesAtom(await res.text())
+      return parseGitHubReleasesAtom(await res.text())
     } catch {
       return []
     }
@@ -84,41 +85,4 @@ export function registerUpdateHandlers(): void {
       return errResult('UPDATE_INSTALL_FAILED', err instanceof Error ? err.message : String(err))
     }
   })
-}
-
-function decodeXmlEntities(s: string): string {
-  return s
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
-}
-
-/**
- * Parse GitHub's releases.atom into the same shape the renderer's update-check
- * consumes from the REST API. The atom feed carries no prerelease/draft flags or
- * assets, so: `prerelease` is inferred from the tag suffix (-dev/-rc/-alpha/-beta)
- * — which matches our channel policy — `draft` is always false (the feed only
- * lists published releases), and `assets` is empty (the renderer derives the
- * per-platform download URL from the tag). Mirror of the parser in update-check.ts.
- */
-function parseReleasesAtom(xml: string): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  for (const entry of xml.split('<entry>').slice(1)) {
-    const tag = /<title>([^<]+)<\/title>/.exec(entry)?.[1]?.trim()
-    if (!tag) continue
-    const updated = /<updated>([^<]+)<\/updated>/.exec(entry)?.[1]?.trim() ?? ''
-    const href = /<link[^>]*href="([^"]+)"/.exec(entry)?.[1] ?? ''
-    const content = /<content[^>]*>([\s\S]*?)<\/content>/.exec(entry)?.[1] ?? ''
-    out.push({
-      tag_name: tag,
-      name: tag,
-      body: decodeXmlEntities(content).replace(/<[^>]+>/g, '').trim(),
-      html_url: href || `https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/${tag}`,
-      draft: false,
-      prerelease: /-(?:dev|rc|alpha|beta)/i.test(tag),
-      published_at: updated,
-      assets: [],
-    })
-  }
-  return out
 }
