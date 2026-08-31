@@ -14,7 +14,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts",
+    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts",
     "test:queries": "pnpm test:renderer",
     "pack": "pnpm build && electron-builder --dir",
     "dist": "pnpm build && electron-builder --publish never",

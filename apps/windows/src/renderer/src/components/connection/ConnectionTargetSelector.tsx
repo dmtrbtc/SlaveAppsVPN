@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Bot, CircleDot, Wifi } from 'lucide-react'
+import { Bot, Wifi } from 'lucide-react'
 import { cn, countryFlagEmoji } from '../../lib/utils'
 import { IS_MOBILE } from '../../lib/platform'
 import { vpnApi } from '../../lib/api'
@@ -18,7 +18,7 @@ import {
 
 function LatencyBadge({ ms }: { ms: number | null | undefined }) {
   if (ms === undefined || ms === null) {
-    return <CircleDot className="h-3 w-3 text-text-muted shrink-0" />
+    return <span className="text-[10px] font-mono text-text-muted shrink-0">—</span>
   }
   const color =
     ms < 100 ? 'text-connected' :
@@ -53,9 +53,9 @@ export function ConnectionTargetSelector() {
 
   // Dashboard ping (BOTH platforms): kick a latency probe once nodes are loaded
   // and again when connected, so the ms badges populate on the dashboard — not
-  // only after opening the Servers tab. Android → non-native edge-RTT (works
-  // disconnected); Windows → the mihomo API URLTest via the balancer (latency
-  // appears once connected). Safe: doesn't touch connect/routing.
+  // only after opening the Servers tab. Both platforms use the engine's real
+  // proxy URLTest; latency therefore appears only while connected. Safe: this
+  // doesn't change the selected proxy or routing.
   const proxyCount = proxyList.length
   useEffect(() => {
     if (proxyCount === 0) return

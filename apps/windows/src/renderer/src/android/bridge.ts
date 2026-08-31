@@ -12,7 +12,7 @@ import {
   type AndroidSubscriptionType,
 } from './subscription-store'
 import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
-import { probeProxyEdge } from './ping'
+import { probeMihomoNodeLatency } from './node-latency'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { detectClipboardLink } from './clipboard-detect'
 import { createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
@@ -685,8 +685,17 @@ export function installAndroidBridge(): void {
             port: proxy.port,
           }))
         },
-        probe: (target) => probeProxyEdge(target),
-        concurrency: 6,
+        // A real proxy URLTest, not an HTTPS request to the raw server port.
+        // testDelay is native-lifecycle-safe, but only produces a meaningful
+        // result while the foreground VPN core is connected.
+        probe: (target) => probeMihomoNodeLatency(
+          target.name,
+          coreReady(),
+          (options) => SlaveVpn.testDelay(options),
+        ),
+        // Avoid distorting mobile measurements by starting too many TLS proxy
+        // handshakes at once. Mihomo still tests a typical subscription quickly.
+        concurrency: 4,
       },
     },
   )
