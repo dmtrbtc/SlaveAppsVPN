@@ -16,7 +16,7 @@ import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscrip
 import { probeMihomoNodeLatency } from './node-latency'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { detectClipboardLink } from './clipboard-detect'
-import { createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import { buildDnsProfileConfig, createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
 import type {
   ActiveConnectionsSnapshot,
   AppSettings,
@@ -660,6 +660,9 @@ export function installAndroidBridge(): void {
             ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
             utlsFingerprint: currentUtlsFingerprint,
             dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
+            dnsPreset: settings.dnsPreset,
+            dnsStrategy: settings.dnsStrategy,
+            customDnsProfile: settings.customDnsProfile,
             enabledScenarios: settings.enabledScenarios,
             customRules: settings.customRoutingRules ?? [],
             ruleLists: getAndroidRuleLists(),
@@ -1083,8 +1086,21 @@ export function installAndroidBridge(): void {
       clear: async () => ok(undefined),
     },
     dns: {
-      getProfile: async () => ok(null as never),
-      setProfile: notImplemented('dns.setProfile'),
+      getProfile: () => wrap(async () => {
+        await settingsReady
+        const settings = androidSettings()
+        return buildDnsProfileConfig(settings.dnsPreset, settings.customDnsProfile) as never
+      }),
+      setProfile: (payload: { profile: AppSettings['customDnsProfile'] }) => wrap(async () => {
+        await settingsReady
+        const profile = payload.profile
+        if (!profile) throw new Error('DNS profile is required')
+        await patchAndroidSettings({
+          dnsPreset: profile.preset,
+          customDnsProfile: profile,
+        })
+        return undefined as never
+      }),
       // Preset + strategy catalogues now come from @slave-vpn/core (shared with
       // Windows) instead of empty stubs, so the DNS screen shows real options.
       getPresets: async () => ok(getDnsPresets() as never),

@@ -56,6 +56,111 @@ export interface AndroidDnsProfileOptions {
   extraFakeIpFilter?: readonly string[]
 }
 
+export interface AndroidDnsPolicyOptions {
+  /** Proxy node domains — excluded from fake-ip and resolved without system DNS. */
+  nodeDomainSuffixes: readonly string[]
+  /** Whether RU destinations are resolved directly in bypass-style modes. */
+  ruDirectDns?: boolean
+  /** Domains from user DIRECT routing rules that need real addresses. */
+  extraFakeIpFilter?: readonly string[]
+  /** Keep preset DoH on TCP/443 unless the user explicitly configured resolvers. */
+  disablePreferH3?: boolean
+}
+
+function dedupe(values: readonly string[]): string[] {
+  return [...new Set(values)]
+}
+
+function disableResolverH3(resolvers: readonly DnsResolver[]): DnsResolver[] {
+  return resolvers.map((resolver) => resolver.type === 'doh'
+    ? { ...resolver, preferH3: false }
+    : resolver)
+}
+
+/**
+ * Add Android/VpnService safety rules to any shared DNS profile.
+ *
+ * The selected preset, strategy and advanced user settings remain owned by the
+ * shared profile. This decorator only adds the platform constraints that cannot
+ * be expressed by a generic desktop profile: node anti-loop resolution, RU
+ * direct resolution for bypass-style modes and fake-ip exclusions for DIRECT
+ * routing rules.
+ */
+export function applyAndroidDnsPolicy(
+  profile: DnsProfile,
+  opts: AndroidDnsPolicyOptions,
+): DnsProfile {
+  const ruDirectDns = opts.ruDirectDns ?? true
+  const primaryResolvers = opts.disablePreferH3
+    ? disableResolverH3(profile.nameservers)
+    : [...profile.nameservers]
+  const fallbackResolvers = profile.fallbackNameservers
+    ? opts.disablePreferH3
+      ? disableResolverH3(profile.fallbackNameservers)
+      : [...profile.fallbackNameservers]
+    : undefined
+  const bootstrapResolvers = profile.bootstrapNameservers
+    ? opts.disablePreferH3
+      ? disableResolverH3(profile.bootstrapNameservers)
+      : [...profile.bootstrapNameservers]
+    : undefined
+  const defaultResolvers = profile.defaultNameservers
+    ? opts.disablePreferH3
+      ? disableResolverH3(profile.defaultNameservers)
+      : [...profile.defaultNameservers]
+    : undefined
+
+  const ruRules: DnsRule[] = ruDirectDns
+    ? [
+        { id: 'android-ru-tld', matchType: 'domain_suffix', value: 'ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
+        { id: 'android-rf-tld', matchType: 'domain_suffix', value: 'рф', resolverTag: [...RU_DIRECT_RESOLVERS] },
+        { id: 'android-ru-geosite', matchType: 'geosite', value: 'category-ru', resolverTag: [...RU_DIRECT_RESOLVERS] },
+      ]
+    : []
+  const nodeResolverTags = primaryResolvers.map((resolver) => resolver.url)
+  const nodeRules: DnsRule[] = opts.nodeDomainSuffixes.map((suffix, index) => ({
+    id: `android-node-${index}`,
+    matchType: 'domain_suffix',
+    value: suffix,
+    resolverTag: nodeResolverTags,
+  }))
+
+  const fakeIpFilter = profile.fakeIp.enabled
+    ? dedupe([
+        ...(profile.fakeIp.filter ?? []),
+        ...(ruDirectDns ? ANDROID_FAKE_IP_FILTER_RU : []),
+        ...opts.nodeDomainSuffixes.map((suffix) => `+.${suffix}`),
+        ...(opts.extraFakeIpFilter ?? []),
+      ])
+    : profile.fakeIp.filter
+
+  return {
+    ...profile,
+    nameservers: primaryResolvers,
+    ...(fallbackResolvers ? { fallbackNameservers: fallbackResolvers } : {}),
+    ...(bootstrapResolvers ? { bootstrapNameservers: bootstrapResolvers } : {}),
+    ...(defaultResolvers ? { defaultNameservers: defaultResolvers } : {}),
+    proxyServerNameservers: primaryResolvers,
+    ...(opts.disablePreferH3
+      ? { preferH3: false }
+      : profile.preferH3 !== undefined
+        ? { preferH3: profile.preferH3 }
+        : {}),
+    fakeIp: {
+      ...profile.fakeIp,
+      ...(fakeIpFilter ? { filter: fakeIpFilter } : {}),
+    },
+    rules: [
+      ...ruRules,
+      { id: 'android-private-geosite', matchType: 'geosite', value: 'private', resolverTag: 'system' },
+      ...(profile.rules ?? []),
+      // Node anti-loop rules are deliberately last so user rules cannot make a
+      // proxy endpoint depend on the tunnel that is still being established.
+      ...nodeRules,
+    ],
+  }
+}
+
 export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfile {
   const primaryDoh = opts.dohUrl || 'https://1.1.1.1/dns-query'
   // DoH pool: the chosen provider + Cloudflare + Google IP-literal fallbacks, deduped
@@ -120,7 +225,7 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
     { url: 'tls://8.8.8.8', type: 'dot' },
   ]
 
-  return {
+  const profile: DnsProfile = {
     mode: 'fake-ip',
     nameservers: dohPool,
     fallbackNameservers: fallbackPool,
@@ -158,4 +263,6 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
     strategy: 'prefer_ipv4',
     rules,
   }
+
+  return profile
 }

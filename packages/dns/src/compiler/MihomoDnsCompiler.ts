@@ -3,7 +3,7 @@ import type { DnsProfile, DnsResolver, DnsStrategy } from '../profiles/DnsProfil
 
 // Resolves the effective IPv6 toggle from explicit ipv6 flag + strategy override.
 // strategy wins if present, since it conveys more user intent.
-function resolveIPv6Enabled(profile: DnsProfile): boolean {
+export function resolveDnsIpv6Enabled(profile: DnsProfile): boolean {
   const strategy = profile.strategy
   if (strategy === 'ipv4_only') return false
   if (strategy === 'ipv6_only') return true
@@ -27,7 +27,7 @@ export class MihomoDnsCompiler implements DnsCompiler {
     const config: Record<string, unknown> = {
       enable: true,
       listen: '0.0.0.0:1053',
-      ipv6: resolveIPv6Enabled(profile),
+      ipv6: resolveDnsIpv6Enabled(profile),
       'use-system-hosts': false,
       'default-nameserver': (profile.defaultNameservers ?? profile.bootstrapNameservers ?? profile.nameservers).map(resolverUrl),
       'enhanced-mode': profile.mode,

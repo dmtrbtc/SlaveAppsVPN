@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { compileAndroidEngineConfig, createAndroidEngineConfigProvider } = require('../dist/cjs/index.js') as {
+const { buildDnsProfileConfig, compileAndroidEngineConfig, createAndroidEngineConfigProvider } = require('../dist/cjs/index.js') as {
+  buildDnsProfileConfig: (preset: string, custom: Record<string, unknown> | null) => Record<string, unknown>
   compileAndroidEngineConfig: (input: Record<string, unknown>) => Promise<{
     config: string
     proxyCount: number
@@ -27,6 +28,9 @@ const base = {
   proxies: [proxy],
   vpnMode: 'full',
   dohProvider: { id: 'google' },
+  dnsPreset: 'secure',
+  dnsStrategy: 'prefer_ipv4',
+  customDnsProfile: null,
   enabledScenarios: [],
   customRules: [],
   ruleLists: [],
@@ -39,6 +43,7 @@ test('Android compiler owns config, DNS and node anti-loop assembly in core', as
   assert.equal(result.proxyCount, 1)
   assert.match(result.config, /secret: test-secret/)
   assert.match(result.config, /https:\/\/8\.8\.8\.8\/dns-query/)
+  assert.doesNotMatch(result.config, /#h3=true/)
   assert.match(result.config, /node\.example\.com/)
   assert.match(result.config, /MATCH,SLAVE-SELECT/)
   assert.match(result.config, /^mode: rule$/m)
@@ -113,6 +118,64 @@ test('direct custom rules are excluded from fake-ip by the shared compiler', asy
   assert.match(result.config, /DOMAIN-SUFFIX,bank\.example,DIRECT/)
 })
 
+test('Android compiler applies the selected shared DNS preset and strategy', async () => {
+  const minimal = await compileAndroidEngineConfig({
+    ...base,
+    dnsPreset: 'minimal',
+    dnsStrategy: 'ipv6_only',
+  })
+
+  assert.match(minimal.config, /enhanced-mode: redir-host/)
+  assert.match(minimal.config, /^ipv6: true$/m)
+  assert.match(minimal.config, /^  ipv6: true$/m)
+  assert.doesNotMatch(minimal.config, /fake-ip-range:/)
+})
+
+test('Android compiler preserves advanced DNS resolvers, rules and prefetch', async () => {
+  const result = await compileAndroidEngineConfig({
+    ...base,
+    dnsPreset: 'secure',
+    customDnsProfile: {
+      preset: 'secure',
+      primaryDoh: 'https://8.8.8.8/dns-query',
+      fallbackDns: ['tls://1.1.1.1'],
+      fakeIpEnabled: true,
+      ipv6Enabled: false,
+      bootstrapDns: ['8.8.8.8'],
+      customResolvers: [{ id: 'custom-doh', type: 'doh', url: 'https://9.9.9.9/dns-query', preferH3: true }],
+      customRules: [{ id: 'example', matchType: 'domain_suffix', value: 'example.org', resolverTag: 'primary' }],
+      prefetchDomains: ['example.org'],
+    },
+  })
+
+  assert.match(result.config, /https:\/\/9\.9\.9\.9\/dns-query/)
+  assert.match(result.config, /https:\/\/9\.9\.9\.9\/dns-query#h3=true/)
+  assert.match(result.config, /\+\.example\.org/)
+  assert.match(result.config, /prefetch-domain:/)
+  assert.match(result.config, /- example\.org/)
+})
+
+test('DNS preset switching preserves advanced profile overlays', () => {
+  const advanced = {
+    preset: 'custom',
+    primaryDoh: 'https://9.9.9.9/dns-query',
+    fallbackDns: [],
+    fakeIpEnabled: true,
+    ipv6Enabled: false,
+    bootstrapDns: [],
+    customResolvers: [{ id: 'custom', type: 'doh', url: 'https://9.9.9.9/dns-query' }],
+    customRules: [{ id: 'rule', matchType: 'domain', value: 'example.org', resolverTag: 'primary' }],
+    prefetchDomains: ['example.org'],
+  }
+
+  const profile = buildDnsProfileConfig('balanced', advanced)
+
+  assert.equal(profile.preset, 'balanced')
+  assert.deepEqual(profile.customResolvers, advanced.customResolvers)
+  assert.deepEqual(profile.customRules, advanced.customRules)
+  assert.deepEqual(profile.prefetchDomains, advanced.prefetchDomains)
+})
+
 test('typed Android provider owns platform-source collection before compilation', async () => {
   const calls: string[] = []
   const provider = createAndroidEngineConfigProvider({
@@ -125,6 +188,9 @@ test('typed Android provider owns platform-source collection before compilation'
       return {
         vpnMode: 'full',
         dohProvider: { id: 'google' },
+        dnsPreset: 'secure',
+        dnsStrategy: 'prefer_ipv4',
+        customDnsProfile: null,
         enabledScenarios: [],
         customRules: [],
         ruleLists: [],

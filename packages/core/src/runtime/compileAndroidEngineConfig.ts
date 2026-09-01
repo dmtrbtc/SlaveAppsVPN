@@ -3,9 +3,11 @@ import {
   type GeneratorSettings,
   type ProxyEntry,
 } from '@slave-vpn/config'
-import { buildAndroidDnsProfile } from '@slave-vpn/dns'
+import { applyAndroidDnsPolicy } from '@slave-vpn/dns'
 import type { VPNMode } from '@slave-vpn/shared'
 import { resolveDohUrl, type DohProviderSetting } from '../dns/dohProviders.js'
+import { resolveDnsProfile } from '../dns/resolveDnsProfile.js'
+import type { DnsPresetName, DnsProfileConfig, DnsStrategyName } from '../dns/types.js'
 import { resolveRoutingPolicyForMode } from '../routing/composeRoutingPolicy.js'
 import type { CustomRoutingRule } from '../settings/types.js'
 import { buildEngineConfig } from './buildEngineConfig.js'
@@ -34,6 +36,9 @@ export interface CompileAndroidEngineConfigInput {
   selectedProxy?: string
   utlsFingerprint?: string
   dohProvider: DohProviderSetting
+  dnsPreset?: DnsPresetName
+  dnsStrategy?: DnsStrategyName
+  customDnsProfile?: DnsProfileConfig | null
   enabledScenarios: readonly string[]
   customRules: readonly CustomRoutingRule[]
   ruleLists: readonly AndroidRuleListInput[]
@@ -113,6 +118,13 @@ export async function compileAndroidEngineConfig(
     : []
   const dohUrl = resolveDohUrl(input.dohProvider)
   const enabledLists = input.ruleLists.filter((list) => list.enabled)
+  const sharedDnsProfile = resolveDnsProfile(
+    input.dnsPreset ?? 'secure',
+    input.customDnsProfile ?? null,
+    input.dnsStrategy ?? 'prefer_ipv4',
+    dohUrl,
+  )
+  const hasCustomResolvers = (input.customDnsProfile?.customResolvers?.length ?? 0) > 0
 
   const generatorSettings: GeneratorSettings = {
     // SlaveVpnService injects the Android TUN fd block natively.
@@ -132,8 +144,7 @@ export async function compileAndroidEngineConfig(
     utlsFingerprint: input.utlsFingerprint ?? 'randomized',
     apiPort: 9090,
     apiSecret: input.apiSecret,
-    dnsProfile: buildAndroidDnsProfile({
-      dohUrl,
+    dnsProfile: applyAndroidDnsPolicy(sharedDnsProfile, {
       nodeDomainSuffixes,
       ruDirectDns:
         input.vpnMode === 'bypass' ||
@@ -143,6 +154,9 @@ export async function compileAndroidEngineConfig(
       extraFakeIpFilter: input.customRules
         .filter((rule) => rule.action === 'direct')
         .map((rule) => (rule.matchType === 'suffix' ? `+.${rule.domain}` : rule.domain)),
+      // Preserve the stable TCP/443 behavior for built-in profiles. An explicit
+      // advanced resolver with preferH3 remains an opt-in and is not rewritten.
+      disablePreferH3: !hasCustomResolvers,
     }),
     ...(composed.policy ? { routingPolicy: composed.policy } : {}),
     ...(composed.policy && availableGeoSites.length > 0 ? { availableGeoSites } : {}),

@@ -108,7 +108,20 @@ export function buildDnsProfileConfig(
   custom?: DnsProfileConfig | null,
 ): DnsProfileConfig {
   if (preset === 'custom' && custom) return custom
-  return { preset, ...DNS_PRESET_CONFIGS[preset] }
+  const base = { preset, ...DNS_PRESET_CONFIGS[preset] }
+  if (!custom) return base
+
+  // Advanced fields are overlays, not a fifth-preset-only feature. Preserve
+  // them while switching between secure/balanced/performance/minimal so the DNS
+  // page does not silently erase user resolvers, per-domain rules or prefetch.
+  return {
+    ...base,
+    ...(custom.strategy ? { strategy: custom.strategy } : {}),
+    ...(custom.customResolvers ? { customResolvers: [...custom.customResolvers] } : {}),
+    ...(custom.customRules ? { customRules: [...custom.customRules] } : {}),
+    ...(custom.prefetchDomains ? { prefetchDomains: [...custom.prefetchDomains] } : {}),
+    ...(custom.customNameservers ? { customNameservers: [...custom.customNameservers] } : {}),
+  }
 }
 
 export function getDnsPresets(): DnsPresetInfo[] {

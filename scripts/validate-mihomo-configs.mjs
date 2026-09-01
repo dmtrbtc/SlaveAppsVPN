@@ -252,6 +252,50 @@ function buildCases(subscriptionYaml, runetAvailableGeoSites) {
         return result.config
       },
     },
+    {
+      name: 'android-core-advanced-dns',
+      compile: async () => {
+        const result = await compileAndroidEngineConfig({
+          proxies: parseProxiesFromYaml(subscriptionYaml),
+          vpnMode: 'full',
+          dohProvider: { id: 'cloudflare' },
+          dnsPreset: 'minimal',
+          dnsStrategy: 'ipv6_only',
+          customDnsProfile: {
+            preset: 'minimal',
+            primaryDoh: '8.8.8.8',
+            fallbackDns: ['1.1.1.1'],
+            fakeIpEnabled: false,
+            ipv6Enabled: false,
+            bootstrapDns: [],
+            customResolvers: [{
+              id: 'custom-doh',
+              type: 'doh',
+              url: 'https://9.9.9.9/dns-query',
+              preferH3: true,
+            }],
+            customRules: [{
+              id: 'example',
+              matchType: 'domain_suffix',
+              value: 'example.org',
+              resolverTag: 'primary',
+            }],
+            prefetchDomains: ['example.org'],
+          },
+          enabledScenarios: [],
+          customRules: [],
+          ruleLists: [],
+          apiSecret: 'mihomo-config-test-only',
+          utlsFingerprint: 'chrome',
+        })
+        assert.match(result.config, /^ipv6: true$/m)
+        assert.match(result.config, /enhanced-mode: redir-host/)
+        assert.match(result.config, /https:\/\/9\.9\.9\.9\/dns-query#h3=true/)
+        assert.match(result.config, /\+\.example\.org/)
+        assert.match(result.config, /prefetch-domain:/)
+        return result.config
+      },
+    },
   ]
 }
 
