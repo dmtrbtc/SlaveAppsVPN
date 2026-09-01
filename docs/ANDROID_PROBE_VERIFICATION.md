@@ -69,8 +69,9 @@ enabled again. The original navigator property/event state was restored.
   a subsequent request succeeded with VPN still disconnected. Subscription
   fetching remains a prerequisite for probing. Cached targets / reconnect-time
   fetch resilience are a separate follow-up, not implemented by this migration.
-- Android probing preserves the existing HTTP/TLS edge-latency semantics. It is
-  not a proxy-throughput benchmark or a reliable UDP-only-node health test.
+- This report records the historical `probe2` HTTP/TLS edge-latency behavior.
+  It was superseded on 2026-08-31 by native Mihomo URLTest measurements through
+  each node; see `ANDROID_NODE_LATENCY_SUBSCRIPTION_PRIORITY_VERIFICATION.md`.
 
 ## End state
 
