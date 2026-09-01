@@ -29,6 +29,7 @@ const AddSchema = z.object({
 })
 
 const RemoveSchema = z.object({ id: z.string().min(1) })
+const ReorderSchema = z.object({ ids: z.array(z.string().min(1)).max(1000) })
 
 const UpdateSchema = z.object({
   id: z.string().min(1),
@@ -103,7 +104,7 @@ export function registerSubscriptionsHandlers(): void {
         return errResult('SUBSCRIPTIONS_INVALID', validation.error ?? 'Validation failed')
       }
 
-      const entry = store.add({
+      const outcome = store.add({
         type,
         rawInput: payload.input.trim(),
         ...(payload.name ? { name: payload.name } : {}),
@@ -112,11 +113,13 @@ export function registerSubscriptionsHandlers(): void {
         autoUpdateMinutes: (payload.autoUpdateMinutes ?? 60) as SubscriptionAutoUpdate,
       })
 
-      scheduler.reconcile()
-      triggerHotReload()
-      sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
-      log.info({ id: entry.id, type }, 'Subscription added')
-      return okResult(entry)
+      if (outcome.created) {
+        scheduler.reconcile()
+        triggerHotReload()
+        sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
+        log.info({ id: outcome.entry.id, type }, 'Subscription added')
+      }
+      return okResult(outcome)
     } catch (err) {
       return errResult('SUBSCRIPTIONS_ERROR', err instanceof Error ? err.message : String(err))
     }
@@ -131,6 +134,18 @@ export function registerSubscriptionsHandlers(): void {
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
       log.info({ id }, 'Subscription removed')
       return okResult(undefined)
+    } catch (err) {
+      return errResult('SUBSCRIPTIONS_ERROR', err instanceof Error ? err.message : String(err))
+    }
+  })
+
+  handleIpc(IpcChannel.SUBSCRIPTIONS_REORDER, ReorderSchema, async ({ ids }) => {
+    try {
+      const list = store.reorder(ids)
+      aggregator.invalidateAll()
+      triggerHotReload()
+      sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, list)
+      return okResult(list)
     } catch (err) {
       return errResult('SUBSCRIPTIONS_ERROR', err instanceof Error ? err.message : String(err))
     }

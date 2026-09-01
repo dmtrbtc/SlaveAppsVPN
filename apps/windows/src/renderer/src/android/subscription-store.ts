@@ -1,5 +1,12 @@
 import { Preferences } from '@capacitor/preferences'
-import type { SubscriptionEntry, SubscriptionSourceType } from '@slave-vpn/core'
+import {
+  canonicalSubscriptionSource,
+  deduplicateSubscriptionSources,
+  normalizeSubscriptionPriorities,
+  reorderSubscriptionsByIds,
+  type SubscriptionEntry,
+  type SubscriptionSourceType,
+} from '@slave-vpn/core'
 import { createMirroredStringStore } from './adapters/mirrored-string-store'
 
 /**
@@ -76,12 +83,32 @@ async function writeIndex(entries: AndroidSubscriptionEntry[]): Promise<void> {
   await storage.set(INDEX_KEY, JSON.stringify(entries))
 }
 
+let mutationQueue = Promise.resolve()
+
+function serializeMutation<T>(mutation: () => Promise<T>): Promise<T> {
+  const pending = mutationQueue.catch(() => undefined).then(mutation)
+  mutationQueue = pending.then(() => undefined, () => undefined)
+  return pending
+}
+
+async function repairIndex(): Promise<AndroidSubscriptionEntry[]> {
+  const original = await readIndex()
+  const records = await Promise.all(original.map(async entry => ({
+    entry,
+    input: await storage.get(INPUT_KEY(entry.id)),
+  })))
+  const { entries: repaired, duplicateIds } = deduplicateSubscriptionSources(records)
+  if (JSON.stringify(repaired) !== JSON.stringify(original)) await writeIndex(repaired)
+  for (const id of duplicateIds) storage.remove(INPUT_KEY(id))
+  return repaired
+}
+
 function safeUrlDomain(input: string): string | undefined {
   try { return new URL(input).hostname } catch { return undefined }
 }
 
 export async function listSubscriptions(): Promise<AndroidSubscriptionEntry[]> {
-  return readIndex()
+  return serializeMutation(repairIndex)
 }
 
 export async function getSubscriptionInput(id: string): Promise<string | null> {
@@ -107,51 +134,84 @@ export function detectInputType(input: string, fallback: AndroidSubscriptionType
   return PROXY_URI_RE.test(input.trim()) ? 'single-proxy' : fallback
 }
 
-export async function addSubscription(options: AddSubscriptionOptions): Promise<AndroidSubscriptionEntry> {
-  const id = randomId()
-  // Auto-correct a proxy-URI key pasted into the URL field → 'single-proxy'.
-  const type = detectInputType(options.input, options.type)
-  const entry: AndroidSubscriptionEntry = {
-    id,
-    name: options.name?.trim() || defaultName({ ...options, type }),
-    type,
-    enabled: true,
-    autoUpdateMinutes: options.autoUpdateMinutes ?? 360,
-    addedAt: Date.now(),
-    lastFetchedAt: null,
-    lastError: null,
-    nodeCount: null,
-    ...(type === 'subscription-url'
-      ? { urlDomain: safeUrlDomain(options.input) ?? '' }
-      : {}),
-  }
-  // Persist input FIRST so a partial failure leaves no dangling index entry.
-  await storage.set(INPUT_KEY(id), options.input)
-  const entries = await readIndex()
-  entries.push(entry)
-  await writeIndex(entries)
-  return entry
+export interface AddSubscriptionResult {
+  entry: AndroidSubscriptionEntry
+  created: boolean
+}
+
+export async function addSubscription(options: AddSubscriptionOptions): Promise<AddSubscriptionResult> {
+  return serializeMutation(async () => {
+    const input = options.input.trim()
+    const type = detectInputType(input, options.type)
+    const identity = canonicalSubscriptionSource(type, input)
+    const entries = await repairIndex()
+    for (const existing of entries) {
+      const existingInput = await storage.get(INPUT_KEY(existing.id))
+      if (existingInput && canonicalSubscriptionSource(existing.type, existingInput) === identity) {
+        return { entry: existing, created: false }
+      }
+    }
+
+    const id = randomId()
+    const entry: AndroidSubscriptionEntry = {
+      id,
+      name: options.name?.trim() || defaultName({ ...options, input, type }),
+      type,
+      enabled: true,
+      autoUpdateMinutes: options.autoUpdateMinutes ?? 360,
+      priority: (entries.length + 1) * 10,
+      addedAt: Date.now(),
+      lastFetchedAt: null,
+      lastError: null,
+      nodeCount: null,
+      ...(type === 'subscription-url'
+        ? { urlDomain: safeUrlDomain(input) ?? '' }
+        : {}),
+    }
+    // Persist input FIRST so a partial failure leaves no dangling index entry.
+    await storage.set(INPUT_KEY(id), input)
+    await writeIndex([...entries, entry])
+    return { entry, created: true }
+  })
 }
 
 export async function removeSubscription(id: string): Promise<void> {
-  const entries = await readIndex()
-  await writeIndex(entries.filter(e => e.id !== id))
-  storage.remove(INPUT_KEY(id))
+  return serializeMutation(async () => {
+    const entries = await repairIndex()
+    await writeIndex(normalizeSubscriptionPriorities(entries.filter(e => e.id !== id)))
+    storage.remove(INPUT_KEY(id))
+  })
 }
 
 export async function updateSubscriptionMeta(
   id: string,
   patch: Partial<AndroidSubscriptionEntry>,
 ): Promise<AndroidSubscriptionEntry | null> {
-  const entries = await readIndex()
-  const idx = entries.findIndex(e => e.id === id)
-  if (idx < 0) return null
-  const existing = entries[idx]
-  if (!existing) return null
-  const updated: AndroidSubscriptionEntry = { ...existing, ...patch, id: existing.id }
-  entries[idx] = updated
-  await writeIndex(entries)
-  return updated
+  return serializeMutation(async () => {
+    const entries = await repairIndex()
+    const idx = entries.findIndex(e => e.id === id)
+    if (idx < 0) return null
+    const existing = entries[idx]
+    if (!existing) return null
+    const updated: AndroidSubscriptionEntry = {
+      ...existing,
+      ...patch,
+      id: existing.id,
+      priority: existing.priority ?? (idx + 1) * 10,
+    }
+    entries[idx] = updated
+    await writeIndex(entries)
+    return updated
+  })
+}
+
+export async function reorderSubscriptions(ids: readonly string[]): Promise<AndroidSubscriptionEntry[]> {
+  return serializeMutation(async () => {
+    const entries = await repairIndex()
+    const reordered = reorderSubscriptionsByIds(entries, ids)
+    await writeIndex(reordered)
+    return reordered
+  })
 }
 
 function defaultName(options: AddSubscriptionOptions): string {

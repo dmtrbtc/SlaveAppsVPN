@@ -14,6 +14,7 @@ import type {
   BalancerState,
   SubscriptionAddPayload,
   SubscriptionRemovePayload,
+  SubscriptionReorderPayload,
   SubscriptionUpdatePayload,
   SubscriptionRefreshPayload,
   ProfileCreateInput,
@@ -305,6 +306,8 @@ export const subscriptionsApi = {
     unwrap(requireBridge().subscriptions.add(payload)),
   remove: (payload: SubscriptionRemovePayload) =>
     unwrap(requireBridge().subscriptions.remove(payload)),
+  reorder: (payload: SubscriptionReorderPayload) =>
+    unwrap(requireBridge().subscriptions.reorder(payload)),
   update: (payload: SubscriptionUpdatePayload) =>
     unwrap(requireBridge().subscriptions.update(payload)),
   refresh: (payload: SubscriptionRefreshPayload) =>

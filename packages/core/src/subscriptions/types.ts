@@ -21,6 +21,8 @@ export interface SubscriptionEntry {
   type: SubscriptionSourceType
   enabled: boolean
   autoUpdateMinutes: SubscriptionAutoUpdate
+  /** Lower values have higher priority. Missing values are legacy entries. */
+  priority?: number
   addedAt: number
   lastFetchedAt: number | null
   lastError: string | null

@@ -159,7 +159,7 @@ export type CabinetPasswordForgotResult = IpcResult<void>
 export type CabinetPasswordResetResult = IpcResult<void>
 export type CabinetGetMeResult = IpcResult<CabinetUserInfo>
 export type CabinetGetSubscriptionResult = IpcResult<CabinetSubscriptionStatusInfo>
-export type CabinetImportSubscriptionResult = IpcResult<{ imported: boolean }>
+export type CabinetImportSubscriptionResult = IpcResult<{ imported: boolean; alreadyImported?: boolean }>
 export type CabinetLogoutResult = IpcResult<void>
 export type CabinetGetBalanceResult = IpcResult<{ balanceKopeks: number; balanceRubles: number }>
 export type CabinetGetTransactionsResult = IpcResult<CabinetTransactionPageInfo>
@@ -882,6 +882,8 @@ export interface SubscriptionEntry {
   type: ConfigSourceType
   enabled: boolean
   autoUpdateMinutes: SubscriptionAutoUpdate
+  /** Lower values have higher priority. Optional for persisted legacy entries. */
+  priority?: number
   addedAt: number
   lastFetchedAt: number | null
   lastError: string | null
@@ -908,6 +910,15 @@ export interface SubscriptionRemovePayload {
   id: string
 }
 
+export interface SubscriptionReorderPayload {
+  ids: string[]
+}
+
+export interface SubscriptionAddOutcome {
+  entry: SubscriptionEntry
+  created: boolean
+}
+
 export interface SubscriptionRefreshPayload {
   id: string
 }
@@ -920,8 +931,9 @@ export interface ClipboardDetectResult {
 }
 
 export type SubscriptionsListResult = IpcResult<SubscriptionEntry[]>
-export type SubscriptionsAddResult = IpcResult<SubscriptionEntry>
+export type SubscriptionsAddResult = IpcResult<SubscriptionAddOutcome>
 export type SubscriptionsRemoveResult = IpcResult<void>
+export type SubscriptionsReorderResult = IpcResult<SubscriptionEntry[]>
 export type SubscriptionsUpdateResult = IpcResult<SubscriptionEntry>
 export type SubscriptionsRefreshResult = IpcResult<SubscriptionEntry>
 export type SubscriptionsRefreshAllResult = IpcResult<SubscriptionEntry[]>
@@ -1145,6 +1157,7 @@ export interface SlaveVPNBridge {
     list: () => Promise<SubscriptionsListResult>
     add: (payload: SubscriptionAddPayload) => Promise<SubscriptionsAddResult>
     remove: (payload: SubscriptionRemovePayload) => Promise<SubscriptionsRemoveResult>
+    reorder: (payload: SubscriptionReorderPayload) => Promise<SubscriptionsReorderResult>
     update: (payload: SubscriptionUpdatePayload) => Promise<SubscriptionsUpdateResult>
     refresh: (payload: SubscriptionRefreshPayload) => Promise<SubscriptionsRefreshResult>
     refreshAll: () => Promise<SubscriptionsRefreshAllResult>

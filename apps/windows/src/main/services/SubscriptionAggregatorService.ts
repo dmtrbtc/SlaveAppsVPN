@@ -71,6 +71,11 @@ export class SubscriptionAggregatorService {
     this.sources.delete(id)
   }
 
+  invalidateAll(): void {
+    this.sources.clear()
+    this.lastSnapshot = null
+  }
+
   private async fetchOne(entry: SubscriptionEntry): Promise<{ proxies: ProxyEntry[]; error: string | null }> {
     const store = getSubscriptionStore()
     const source = this.getOrCreateSource(entry)

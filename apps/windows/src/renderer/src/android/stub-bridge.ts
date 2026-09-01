@@ -41,6 +41,7 @@ export function installStubBridge(reason: string): void {
       list: async () => ok([] as never[]),
       add: allErrorWithName('subscriptions.add'),
       remove: allErrorWithName('subscriptions.remove'),
+      reorder: allErrorWithName('subscriptions.reorder'),
       update: allErrorWithName('subscriptions.update'),
       refresh: allErrorWithName('subscriptions.refresh'),
       refreshAll: allError,

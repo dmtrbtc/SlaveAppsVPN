@@ -6,6 +6,11 @@ import type {
   SubscriptionAutoUpdate,
   ConfigSourceType,
 } from '../../shared/ipc/types'
+import {
+  canonicalSubscriptionSource,
+  deduplicateSubscriptionSources,
+  reorderSubscriptionsByIds,
+} from '@slave-vpn/core'
 
 // Secure-storage keys:
 //   subscriptions:index   — JSON metadata array (without raw input)
@@ -67,6 +72,7 @@ export class SubscriptionStore {
     }
 
     this.runMigration()
+    this.repairEntries()
   }
 
   // One-shot migration from the legacy single-source ConfigSource paradigm.
@@ -89,6 +95,7 @@ export class SubscriptionStore {
         type: parsed.type,
         enabled: true,
         autoUpdateMinutes: 60 as SubscriptionAutoUpdate,
+        priority: 10,
         addedAt: parsed.addedAt || Date.now(),
         lastFetchedAt: null,
         lastError: null,
@@ -109,6 +116,22 @@ export class SubscriptionStore {
     // Persist without `input` — that lives in per-id encrypted blobs.
     const safeIndex: StoredEntry[] = this.entries.map(({ ...rest }) => rest)
     getSecureStorage().write(INDEX_KEY, JSON.stringify(safeIndex))
+  }
+
+  private repairEntries(): void {
+    const storage = getSecureStorage()
+    const { entries, duplicateIds } = deduplicateSubscriptionSources(
+      this.entries.map(entry => ({
+        entry,
+        input: storage.read(`${INPUT_KEY_PREFIX}${entry.id}`),
+      })),
+    )
+    this.entries = entries
+    for (const id of duplicateIds) storage.delete(`${INPUT_KEY_PREFIX}${id}`)
+    this.persistIndex()
+    if (duplicateIds.length > 0) {
+      getLogger().info({ removed: duplicateIds.length }, 'Removed duplicate subscriptions')
+    }
   }
 
   list(): SubscriptionEntry[] {
@@ -137,8 +160,16 @@ export class SubscriptionStore {
     urlDomain?: string
     proxyProtocol?: string
     nodeCount?: number | null
-  }): SubscriptionEntry {
+  }): { entry: SubscriptionEntry; created: boolean } {
     this.ensureLoaded()
+    const rawInput = input.rawInput.trim()
+    const identity = canonicalSubscriptionSource(input.type, rawInput)
+    const existing = this.entries.find(entry => {
+      const storedInput = getSecureStorage().read(`${INPUT_KEY_PREFIX}${entry.id}`)
+      return storedInput !== null && canonicalSubscriptionSource(entry.type, storedInput) === identity
+    })
+    if (existing) return { entry: { ...existing }, created: false }
+
     const id = randomUUID()
     const entry: StoredEntry = {
       id,
@@ -146,6 +177,7 @@ export class SubscriptionStore {
       type: input.type,
       enabled: true,
       autoUpdateMinutes: isValidAutoUpdate(input.autoUpdateMinutes) ? input.autoUpdateMinutes : (60 as SubscriptionAutoUpdate),
+      priority: (this.entries.length + 1) * 10,
       addedAt: Date.now(),
       lastFetchedAt: null,
       lastError: null,
@@ -154,9 +186,16 @@ export class SubscriptionStore {
       ...(input.proxyProtocol ? { proxyProtocol: input.proxyProtocol } : {}),
     }
     this.entries.push(entry)
-    getSecureStorage().write(`${INPUT_KEY_PREFIX}${id}`, input.rawInput)
+    getSecureStorage().write(`${INPUT_KEY_PREFIX}${id}`, rawInput)
     this.persistIndex()
-    return { ...entry }
+    return { entry: { ...entry }, created: true }
+  }
+
+  reorder(ids: readonly string[]): SubscriptionEntry[] {
+    this.ensureLoaded()
+    this.entries = reorderSubscriptionsByIds(this.entries, ids)
+    this.persistIndex()
+    return this.list()
   }
 
   update(id: string, patch: Partial<Pick<SubscriptionEntry, 'name' | 'enabled' | 'autoUpdateMinutes'>>): SubscriptionEntry {

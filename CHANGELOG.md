@@ -6,6 +6,11 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Changed
 
+- Android node latency now uses Mihomo's native URLTest through the selected
+  proxy instead of timing a direct HTTPS request to the server endpoint.
+- Subscription order is now an explicit priority: the top enabled source wins
+  when identical nodes are deduplicated, and sources can be moved with up/down
+  controls on desktop and Android.
 - Windows Mihomo core updated from `v1.19.27` to `v1.19.30` (`ac017cd`).
 - Android `clashbox.aar` updated to the same Mihomo `v1.19.30` source and rebuilt reproducibly with Go `1.26.6`; independent clean checkouts now produce the pinned artifact SHA-256.
 - Engine downloads now verify the pinned release-archive and extracted-binary SHA-256 before replacing an installed core.
@@ -13,6 +18,11 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- Repeated cabinet login, deep-link delivery, onboarding, or manual import no
+  longer creates duplicate subscriptions. Existing duplicates are collapsed
+  automatically on first load without exposing stored subscription inputs.
+- Android no longer reports failed TLS handshakes or VPN-routed connection time
+  as implausibly high node latency; unavailable URLTest results are shown as `—`.
 - Windows binary setup no longer requires a separately installed `unzip`; it falls back to the system `tar` implementation available on Windows and GitHub runners.
 - A stale `mihomo.exe` is no longer silently accepted after the pinned engine version changes.
 - Android now loads the gomobile `libgojni.so` and supplies its application context before the first Mihomo call, preventing the VPN service crash observed only on a physical device.

@@ -6,13 +6,14 @@ import {
   listSubscriptions,
   addSubscription,
   removeSubscription,
+  reorderSubscriptions,
   getSubscriptionInput,
   updateSubscriptionMeta,
   type AndroidSubscriptionEntry,
   type AndroidSubscriptionType,
 } from './subscription-store'
 import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
-import { probeProxyEdge } from './ping'
+import { probeMihomoNodeLatency } from './node-latency'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { detectClipboardLink } from './clipboard-detect'
 import { createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
@@ -685,8 +686,17 @@ export function installAndroidBridge(): void {
             port: proxy.port,
           }))
         },
-        probe: (target) => probeProxyEdge(target),
-        concurrency: 6,
+        // A real proxy URLTest, not an HTTPS request to the raw server port.
+        // testDelay is native-lifecycle-safe, but only produces a meaningful
+        // result while the foreground VPN core is connected.
+        probe: (target) => probeMihomoNodeLatency(
+          target.name,
+          coreReady(),
+          (options) => SlaveVpn.testDelay(options),
+        ),
+        // Avoid distorting mobile measurements by starting too many TLS proxy
+        // handshakes at once. Mihomo still tests a typical subscription quickly.
+        concurrency: 4,
       },
     },
   )
@@ -762,17 +772,22 @@ export function installAndroidBridge(): void {
       list: () => wrap(async () => (await listSubscriptions()).map(toIpcEntry)),
       add: (payload: { type: AndroidSubscriptionType; input: string; name?: string }) =>
         wrap(async () => {
-          const entry = await addSubscription({
+          const outcome = await addSubscription({
             type: payload.type,
             input: payload.input,
             ...(payload.name ? { name: payload.name } : {}),
           })
-          invalidateServerCache()
-          return toIpcEntry(entry)
+          if (outcome.created) invalidateServerCache()
+          return { entry: toIpcEntry(outcome.entry), created: outcome.created }
         }),
       remove: (payload: { id: string }) => wrap(async () => {
         await removeSubscription(payload.id)
         invalidateServerCache()
+      }),
+      reorder: (payload: { ids: string[] }) => wrap(async () => {
+        const entries = await reorderSubscriptions(payload.ids)
+        invalidateServerCache()
+        return entries.map(toIpcEntry)
       }),
       update: (payload: { id: string; name?: string; enabled?: boolean; autoUpdateMinutes?: AndroidSubscriptionEntry['autoUpdateMinutes'] }) => wrap(async () => {
         const patch: Partial<AndroidSubscriptionEntry> = {}
@@ -942,7 +957,7 @@ export function installAndroidBridge(): void {
       // Persist via addSubscription so onboarding/settings adds survive relaunch
       // and feed the aggregator + server list exactly like the Подписки tab.
       set: (payload: { type: AndroidSubscriptionType; input: string }) => wrap(async () => {
-        const entry = await addSubscription({ type: payload.type, input: payload.input.trim() })
+        const { entry } = await addSubscription({ type: payload.type, input: payload.input.trim() })
         invalidateServerCache()
         const meta: ConfigSourceMetaShape = {
           type: entry.type,
@@ -1214,9 +1229,9 @@ export function installAndroidBridge(): void {
       importSubscription: () => wrapCabinet(async () => {
         const url = await cabinetClient().getSubscriptionUrl()
         if (!url) return { imported: false }
-        await addSubscription({ type: 'subscription-url', input: url })
-        invalidateServerCache()
-        return { imported: true }
+        const outcome = await addSubscription({ type: 'subscription-url', input: url })
+        if (outcome.created) invalidateServerCache()
+        return { imported: outcome.created, alreadyImported: !outcome.created }
       }),
       getBalance: () => wrapCabinet(() => cabinetClient().getBalance()),
       getTransactions: () => wrapCabinet(() => cabinetClient().getTransactions()),
