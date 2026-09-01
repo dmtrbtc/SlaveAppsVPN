@@ -6,6 +6,12 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Changed
 
+- Android now compiles the selected shared DNS preset, IPv4/IPv6 strategy and
+  advanced resolver/rule/prefetch settings instead of always using one fixed
+  mobile DNS profile. Built-in profiles retain Android node anti-loop, RU-direct
+  and TCP/443 DoH hardening.
+- Advanced DNS controls are available on both Windows and Android; switching a
+  preset preserves the user's custom DNS overlays.
 - Android node latency now uses Mihomo's native URLTest through the selected
   proxy instead of timing a direct HTTPS request to the server endpoint.
 - Subscription order is now an explicit priority: the top enabled source wins
@@ -18,6 +24,9 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- IPv6 DNS strategies now enable Mihomo globally as well as inside its DNS
+  section; legacy Android config callers safely fall back to the secure IPv4
+  profile when the newly persisted DNS fields are absent.
 - Repeated cabinet login, deep-link delivery, onboarding, or manual import no
   longer creates duplicate subscriptions. Existing duplicates are collapsed
   automatically on first load without exposing stored subscription inputs.

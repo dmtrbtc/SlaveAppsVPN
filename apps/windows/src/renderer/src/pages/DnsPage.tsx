@@ -5,7 +5,6 @@ import { Badge } from '../components/ui/badge'
 import { cn } from '../lib/utils'
 import { useUIStore } from '../stores/ui.store'
 import { dnsApi, settingsApi } from '../lib/api'
-import { IS_MOBILE } from '../lib/platform'
 import { DnsAdvancedSection } from '../components/dns/DnsAdvancedSection'
 import { DnsProviderSelector } from '../components/settings/DnsProviderSelector'
 import type { DnsPresetName, DnsStrategyName, DnsStrategyInfo } from '@shared/ipc/types'
@@ -97,15 +96,11 @@ export function DnsPage() {
     setIsApplying(true)
     try {
       await settingsApi.set({ dnsPreset: key })
-      // Desktop also mirrors the preset into the engine DnsProfile. On Android the
-      // DNS section is built from settings at compile time and dns.getProfile/
-      // setProfile are no-ops (getProfile → null, setProfile → stub), so calling
-      // them would null-crash and show a false error toast over a save that worked.
-      if (!IS_MOBILE) {
-        const profile = await dnsApi.getProfile()
-        if (profile && profile.preset !== key) {
-          await dnsApi.setProfile({ profile: { ...profile, preset: key } })
-        }
+      // Keep the persisted advanced profile in sync on both platforms. Android
+      // now resolves this same profile through Core before Mihomo compilation.
+      const profile = await dnsApi.getProfile()
+      if (profile && profile.preset !== key) {
+        await dnsApi.setProfile({ profile: { ...profile, preset: key } })
       }
       setSelected(key)
       const profileDef = DNS_PROFILES.find(p => p.key === key)!
@@ -261,11 +256,8 @@ export function DnsPage() {
           </motion.div>
         )}
 
-        {/* G.1 + G.2 + G.4 — Custom resolvers / per-domain rules / prefetch.
-            Desktop only: this edits the engine DnsProfile via dns.setProfile, which
-            is a no-op on Android (DNS there = preset + DoH provider from settings,
-            both still configurable above via the provider selector). */}
-        {!IS_MOBILE && <DnsAdvancedSection />}
+        {/* G.1 + G.2 + G.4 — shared custom resolvers, per-domain rules and prefetch. */}
+        <DnsAdvancedSection />
       </div>
     </div>
   )

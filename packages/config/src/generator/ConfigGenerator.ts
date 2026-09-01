@@ -3,7 +3,7 @@ import type { VPNMode } from '@slave-vpn/shared'
 import type { NormalizedPolicy } from '@slave-vpn/routing'
 import { MihomoRuleCompiler } from '@slave-vpn/routing'
 import type { DnsProfile } from '@slave-vpn/dns'
-import { MihomoDnsCompiler } from '@slave-vpn/dns'
+import { MihomoDnsCompiler, resolveDnsIpv6Enabled } from '@slave-vpn/dns'
 import { SubscriptionParser } from '../parser/SubscriptionParser'
 import type { ParsedProxy, ParsedProxyGroup } from '../parser/ParsedProfile'
 import { applyUtlsRotation, type UtlsFingerprint } from '../utls/applyUtlsRotation'
@@ -186,14 +186,11 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
     'allow-lan': false,
-    // Global IPv6 OFF. The device/uplink has no working IPv6 route, yet apps with
-    // their own DoH resolve AAAA and dial v6 into the tunnel (the TUN advertises
-    // ::/0). mihomo would then attempt the v6 destination and only fail with
-    // «network is unreachable» before the app's happy-eyeballs falls back to IPv4
-    // — a wasted connect leg on every dual-stack host (slowdown + log spam). With
-    // ipv6:false mihomo rejects v6 destinations immediately, so IPv4 is used
-    // without the stall. (dns.ipv6 is already false; this is the global switch.)
-    ipv6: false,
+    // Keep global IPv6 aligned with the selected DNS strategy. The safe default
+    // remains off (`prefer_ipv4` + ipv6.disabled), but an explicit prefer/only-v6
+    // choice must enable Mihomo globally as well as AAAA resolution or the UI
+    // setting would be ineffective.
+    ipv6: ctx.dnsProfile ? resolveDnsIpv6Enabled(ctx.dnsProfile) : false,
     mode: 'rule',
     'log-level': 'info',
     'unified-delay': true,

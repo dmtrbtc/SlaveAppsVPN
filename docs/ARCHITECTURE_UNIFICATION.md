@@ -202,6 +202,16 @@ interface CoreFacade {
     [ANDROID_UNIFIED_ROUTING_VERIFICATION.md](ANDROID_UNIFIED_ROUTING_VERIFICATION.md).
 - **P2 — Единый DNS.** Android получает DnsProfile + стратегии (вместо одного
   DoH). Удалить `buildAndroidDnsSection`; обе платформы → `MihomoDnsCompiler`.
+  - Android config provider передаёт `dnsPreset`, `dnsStrategy` и
+    `customDnsProfile` в Core. `resolveDnsProfile` строит ту же общую модель, что
+    и Windows, а `applyAndroidDnsPolicy` добавляет только platform-specific
+    safety: node anti-loop, RU-direct policy и fake-IP исключения.
+  - `dns.getProfile`/`setProfile` больше не заглушки, поэтому advanced resolvers,
+    per-domain DNS rules и prefetch доступны в общем UI без `IS_MOBILE`-ветки.
+  - IPv6 strategy синхронно управляет `dns.ipv6` и глобальным `ipv6` Mihomo;
+    старые настройки мигрируют в безопасный secure/prefer-IPv4 default.
+  - Проверки и границы среза описаны в
+    [ANDROID_UNIFIED_DNS_VERIFICATION.md](ANDROID_UNIFIED_DNS_VERIFICATION.md).
 - **P3 — Единые списки обхода + настройки.** Один стор за `StorageAdapter`.
   RKN-geosite follow-up (geosite-runetfreedom → rule-providers) решается здесь
   один раз для обеих платформ. Раз-гейтить UI (убрать IS_MOBILE-форки).
