@@ -91,6 +91,8 @@ export class SubscriptionScheduler {
   }
 
   private async runJob(entryId: string): Promise<void> {
+    const job = this.jobs.get(entryId)
+    if (!this.started || !job) return
     const log = getLogger()
     const entry = getSubscriptionStore().getById(entryId)
 
@@ -106,12 +108,13 @@ export class SubscriptionScheduler {
 
     try {
       await getSubscriptionAggregator().refreshOne(entryId)
+      if (!this.started || this.jobs.get(entryId) !== job) return
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, getSubscriptionStore().list())
       // Hot-reload if engine is running
       try {
         if (services.has('runtime')) {
           const runtime = services.resolve<RuntimeService>('runtime')
-          void runtime.notifySubscriptionsChanged()
+          await runtime.notifySubscriptionsChanged('scheduled-subscription-refresh')
         }
       } catch {
         // Non-fatal
@@ -123,6 +126,7 @@ export class SubscriptionScheduler {
 
     // Re-arm the timer for the next interval. Read interval again — the user
     // may have edited it while we were running.
+    if (!this.started || this.jobs.get(entryId) !== job) return
     const fresh = getSubscriptionStore().getById(entryId)
     if (!fresh || !fresh.enabled || fresh.autoUpdateMinutes === 0) {
       this.jobs.delete(entryId)

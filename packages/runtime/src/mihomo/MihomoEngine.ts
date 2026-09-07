@@ -13,6 +13,7 @@ import { isGeoSiteDatValid, readGeoSiteCategories, mergeGeoSiteDat } from './geo
 import { MihomoApiClient } from './MihomoApiClient'
 import { HealthMonitor } from './HealthMonitor'
 import { TrafficMonitor } from './TrafficMonitor'
+import { connectionProfilesEqual } from '../profile/ConnectionProfileFingerprint'
 
 const API_READY_TIMEOUT_MS = 15_000
 const API_POLL_INTERVAL_MS = 500
@@ -55,6 +56,12 @@ export class MihomoEngine implements VPNEngine {
       throw new Error(`Cannot start engine in state: ${state}`)
     }
 
+    // A failed termination can leave the old process alive even in error state.
+    // Confirm its exit before touching its config or starting a replacement.
+    if (this.processManager.getPid() !== null) {
+      await this.processManager.kill('intentional')
+    }
+
     // Error is a terminal state — reset to idle before transitioning to starting
     if (state === 'error') {
       this.fsm.transition('idle', 'error_reset')
@@ -88,9 +95,7 @@ export class MihomoEngine implements VPNEngine {
       } catch { /* non-critical */ }
 
       if (profile.selectedProxy) {
-        try {
-          await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
-        } catch { /* non-critical — proxy may not exist yet */ }
+        await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
       }
 
       this.healthMonitor!.configure({
@@ -103,6 +108,8 @@ export class MihomoEngine implements VPNEngine {
       this.fsm.transition('running')
       this.events.emit('stateChanged', { state: 'running' })
     } catch (err) {
+      this.healthMonitor?.stop()
+      this.trafficMonitor?.stop()
       await this.processManager.kill('intentional').catch(() => undefined)
       this.fsm.tryTransition('error', String(err))
       this.events.emit('stateChanged', { state: this.fsm.state })
@@ -117,6 +124,7 @@ export class MihomoEngine implements VPNEngine {
     this.trafficMonitor?.stop()
 
     this.fsm.tryTransition('stopping', reason)
+    this.events.emit('stateChanged', { state: this.fsm.state })
     this.processManager.setNextStopReason(reason)
     await this.processManager.kill(reason)
 
@@ -175,28 +183,62 @@ export class MihomoEngine implements VPNEngine {
     if (!this.currentProfile) throw new Error('Engine not started')
     if (this.fsm.state !== 'running') throw new Error(`Cannot update profile in state: ${this.fsm.state}`)
 
-    const reloadType = this.classifyProfileChange(this.currentProfile, profile)
-    this.currentProfile = profile
+    const previousProfile = this.currentProfile
+    if (connectionProfilesEqual(previousProfile, profile)) return 'none'
+    const reloadType = this.classifyProfileChange(previousProfile, profile)
 
-    switch (reloadType) {
-      case 'hot':
-        if (profile.selectedProxy) {
-          await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+    try {
+      switch (reloadType) {
+        case 'none':
+          break
+        case 'hot':
+          if (profile.selectedProxy) {
+            try {
+              await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+            } catch (error) {
+              await this.recoverProfile(previousProfile)
+              throw error
+            }
+          }
+          break
+
+        case 'reconnect': {
+          // Refuse to mutate when the recovery artifact cannot be read.
+          const previousConfig = await fs.readFile(this.configPath(), 'utf-8')
+          try {
+            await this.writeConfig(profile)
+            await this.api!.reloadConfig(this.configPath())
+            await this.api!.closeAllConnections()
+            if (profile.selectedProxy) {
+              await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+            }
+          } catch (error) {
+            await this.recoverProfile(previousProfile, previousConfig)
+            throw error
+          }
+          break
         }
-        break
 
-      case 'reconnect':
-        await this.writeConfig(profile)
-        await this.api!.reloadConfig(this.configPath())
-        await this.api!.closeAllConnections()
-        if (profile.selectedProxy) {
-          await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy).catch(() => undefined)
-        }
-        break
-
-      case 'full_restart':
-        await this.restart('config_reload')
-        break
+        case 'full_restart':
+          this.currentProfile = profile
+          try {
+            await this.restart('config_reload')
+          } catch (error) {
+            try {
+              await this.stop('config_reload')
+              await this.start(previousProfile)
+            } catch {
+              await this.failRecovery()
+              throw new Error('Profile update and restart recovery failed')
+            }
+            throw error
+          }
+          break
+      }
+      this.currentProfile = profile
+    } catch (error) {
+      this.currentProfile = previousProfile
+      throw error
     }
 
     this.events.emit('reloadCompleted', { type: reloadType })
@@ -205,6 +247,37 @@ export class MihomoEngine implements VPNEngine {
 
   getState(): RuntimeState {
     return this.fsm.state
+  }
+
+  private async recoverProfile(profile: ConnectionProfile, config?: string): Promise<void> {
+    try {
+      if (config !== undefined) {
+        await fs.writeFile(this.configPath(), config, 'utf-8')
+        await this.api!.reloadConfig(this.configPath())
+      }
+      // With no explicit previous target, only reloading its config restores
+      // the default selection after an ambiguous API failure.
+      if (profile.selectedProxy) {
+        await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+      } else if (config === undefined) {
+        await this.api!.reloadConfig(this.configPath())
+      }
+    } catch {
+      await this.failRecovery()
+      throw new Error('Profile update and rollback failed')
+    }
+  }
+
+  private async failRecovery(): Promise<void> {
+    this.healthMonitor?.stop()
+    this.trafficMonitor?.stop()
+    this.fsm.tryTransition('stopping', 'rollback_failed')
+    try {
+      await this.processManager.kill('intentional')
+    } finally {
+      this.fsm.tryTransition('error', 'rollback_failed')
+      this.events.emit('stateChanged', { state: this.fsm.state })
+    }
   }
 
   getHealth(): HealthStatus {
@@ -347,9 +420,9 @@ export class MihomoEngine implements VPNEngine {
     })
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
 
-    // Log generated config for production diagnostics (secret is obfuscated in yaml already)
+    // Do not log config contents: subscription credentials and proxy identities
+    // can be present even when the API secret itself is obfuscated.
     console.log(`[MihomoEngine] config written to: ${this.configPath()}`)
-    console.log(`[MihomoEngine] config preview (first 2000 chars):\n${yaml.slice(0, 2000)}`)
   }
 
   private async waitForApi(): Promise<void> {
@@ -393,16 +466,7 @@ export class MihomoEngine implements VPNEngine {
       return 'full_restart'
     }
 
-    if (
-      prev.vpnMode === next.vpnMode &&
-      prev.subscriptionYaml === next.subscriptionYaml &&
-      ps.fakeIpEnabled === ns.fakeIpEnabled &&
-      ps.dnsOverHttps === ns.dnsOverHttps &&
-      JSON.stringify(ps.fallbackDns) === JSON.stringify(ns.fallbackDns) &&
-      JSON.stringify(ps.splitTunnelProcesses) === JSON.stringify(ns.splitTunnelProcesses) &&
-      JSON.stringify(prev.dnsProfile) === JSON.stringify(next.dnsProfile) &&
-      JSON.stringify(prev.routingPolicy) === JSON.stringify(next.routingPolicy)
-    ) {
+    if (next.selectedProxy && connectionProfilesEqual({ ...prev, selectedProxy: next.selectedProxy }, next)) {
       return 'hot'
     }
 

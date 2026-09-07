@@ -24,6 +24,13 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- Windows lifecycle fixes packaged locally as `0.2.41-dev.11`: serialize engine
+  mutations, skip semantically identical profiles, retain manual/AUTO intent,
+  and restore the previous configuration after failed updates.
+- Windows recovery now has one owner and respects explicit disconnects;
+  process termination must be confirmed before restarting. Subscription
+  refreshes preserve last-good data and discard stale asynchronous results.
+
 - IPv6 DNS strategies now enable Mihomo globally as well as inside its DNS
   section; legacy Android config callers safely fall back to the secure IPv4
   profile when the newly persisted DNS fields are absent.

@@ -15,6 +15,7 @@ import { getSafeModeManager } from './services/SafeModeManager'
 import { getNodeHealthManager } from './services/NodeHealthManager'
 import { getSubscriptionStore } from './services/SubscriptionStore'
 import { getSubscriptionScheduler } from './services/SubscriptionScheduler'
+import { getSubscriptionAggregator } from './services/SubscriptionAggregatorService'
 import { getNodeBalancerService } from './services/NodeBalancerService'
 import { getProfileStore } from './services/ProfileStore'
 import { getGeoUpdaterService } from './services/GeoUpdaterService'
@@ -87,7 +88,8 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const selectedEngine = settings.get('selectedEngine') ?? 'mihomo'
   const engineConfig = createWindowsEngineConfig(userDataPath, apiSecret, selectedEngine)
 
-  runtimeManager = new RuntimeManager()
+  // Windows recovery is owned by RecoveryCoordinator through RuntimeService.
+  runtimeManager = new RuntimeManager(undefined, { autoReconnect: false })
   await runtimeManager.initialize(selectedEngine, engineConfig)
   log.debug({ engine: selectedEngine }, 'RuntimeManager initialized')
 
@@ -148,6 +150,7 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
     apiSecret,
     binaryPath: engineConfig.binaryPath,
     workingDir: engineConfig.workingDir,
+    setSettings: (patch) => settings.patch(patch),
   })
 
   recoveryCoordinator = new RecoveryCoordinator(runtimeManager)
@@ -225,7 +228,7 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
       profileStore.markApplied(id)
       updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
       if (runtime.getState() === 'running') {
-        runtime.notifySubscriptionsChanged().catch(() => undefined)
+        await runtime.notifySubscriptionsChanged('profile-apply')
       }
     },
   })
@@ -283,6 +286,7 @@ export function updateRuntimeConfigSource(): void {
   const source = configSourceService.createConfigSource()
   if (source && runtimeService) {
     runtimeService.setConfigSource(source)
+    getSubscriptionAggregator().invalidateConfigSource()
     getLogger().info('Runtime config source updated')
   }
 }

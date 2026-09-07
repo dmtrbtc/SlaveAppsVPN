@@ -9,6 +9,7 @@ import type {
 } from '../../../shared/ipc/types'
 import { handleIpc, services } from '../registry'
 import type { RuntimeService } from '../../services/RuntimeService'
+import type { ConfigUpdateReason } from '../../services/impl/RuntimeServiceImpl'
 import { EmptySchema } from '../../../shared/ipc/schemas'
 import { getSubscriptionStore } from '../../services/SubscriptionStore'
 import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
@@ -78,12 +79,11 @@ export function registerSubscriptionsHandlers(): void {
 
   // Fire a hot-reload on the engine if connected. Safe to call frequently;
   // RuntimeServiceImpl no-ops when state !== 'running'.
-  const triggerHotReload = (): void => {
+  const triggerHotReload = async (reason: ConfigUpdateReason): Promise<void> => {
     try {
       if (!services.has('runtime')) return
       const runtime = services.resolve<RuntimeService>('runtime')
-      runtime.notifySubscriptionsChanged().catch((err: unknown) =>
-        log.warn({ err }, 'Subscriptions hot-reload error'))
+      await runtime.notifySubscriptionsChanged(reason)
     } catch (err) {
       log.warn({ err }, 'Cannot trigger subscription hot-reload')
     }
@@ -114,8 +114,9 @@ export function registerSubscriptionsHandlers(): void {
       })
 
       if (outcome.created) {
+        aggregator.invalidateSnapshot()
         scheduler.reconcile()
-        triggerHotReload()
+        await triggerHotReload('subscription-added')
         sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
         log.info({ id: outcome.entry.id, type }, 'Subscription added')
       }
@@ -130,7 +131,7 @@ export function registerSubscriptionsHandlers(): void {
       store.remove(id)
       aggregator.invalidate(id)
       scheduler.reconcile()
-      triggerHotReload()
+      await triggerHotReload('subscription-removed')
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
       log.info({ id }, 'Subscription removed')
       return okResult(undefined)
@@ -142,8 +143,8 @@ export function registerSubscriptionsHandlers(): void {
   handleIpc(IpcChannel.SUBSCRIPTIONS_REORDER, ReorderSchema, async ({ ids }) => {
     try {
       const list = store.reorder(ids)
-      aggregator.invalidateAll()
-      triggerHotReload()
+      aggregator.invalidateSnapshot()
+      await triggerHotReload('subscription-reordered')
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, list)
       return okResult(list)
     } catch (err) {
@@ -162,7 +163,10 @@ export function registerSubscriptionsHandlers(): void {
       const updated = store.update(payload.id, patch)
       scheduler.reconcile()
       // enabled flag affects which entries the aggregator sees → hot-reload
-      if (payload.enabled !== undefined) triggerHotReload()
+      if (payload.enabled !== undefined) {
+        aggregator.invalidateSnapshot()
+        await triggerHotReload('subscription-enabled-change')
+      }
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
       return okResult(updated)
     } catch (err) {
@@ -174,7 +178,7 @@ export function registerSubscriptionsHandlers(): void {
     try {
       const updated = await aggregator.refreshOne(id)
       if (!updated) return errResult('SUBSCRIPTIONS_NOT_FOUND', `Subscription not found: ${id}`)
-      triggerHotReload()
+      await triggerHotReload('manual-subscription-refresh')
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, store.list())
       return okResult(updated)
     } catch (err) {
@@ -185,7 +189,7 @@ export function registerSubscriptionsHandlers(): void {
   handleIpc(IpcChannel.SUBSCRIPTIONS_REFRESH_ALL, EmptySchema, async () => {
     try {
       const list = await aggregator.refreshAll()
-      triggerHotReload()
+      await triggerHotReload('manual-subscription-refresh')
       sendToRenderer(IpcChannel.EVENT_SUBSCRIPTIONS_CHANGED, list)
       return okResult(list)
     } catch (err) {

@@ -16,16 +16,18 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node --test test/geositeCategories.test.cjs",
+    "test": "pnpm build && node --test test/geositeCategories.test.cjs test/lifecycle.test.cjs test/mihomoRollback.test.cjs",
     "clean": "rimraf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "js-yaml": "^4.3.1",
     "@slave-vpn/config": "workspace:*",
     "@slave-vpn/dns": "workspace:*",
     "@slave-vpn/routing": "workspace:*",
     "@slave-vpn/shared": "workspace:*"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@slave-vpn/tsconfig": "workspace:*",
     "@types/node": "^22.10.5",
     "rimraf": "^6.0.1",

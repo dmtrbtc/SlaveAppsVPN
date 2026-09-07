@@ -2,6 +2,7 @@ import { type IpcMainInvokeEvent } from 'electron'
 import { type ZodSchema, type ZodError } from 'zod'
 import { errResult, type IpcResult } from '../../shared/ipc/types'
 import { getLogger } from '../logger'
+import { randomUUID } from 'crypto'
 
 type Handler<TInput, TOutput> = (
   data: TInput,
@@ -15,9 +16,16 @@ type ValidatedHandler<TOutput> = (
 
 export function validated<TInput, TOutput>(
   schema: ZodSchema<TInput>,
-  handler: Handler<TInput, TOutput>
+  handler: Handler<TInput, TOutput>,
+  channel = 'unknown',
 ): ValidatedHandler<TOutput> {
   return async (event: IpcMainInvokeEvent, rawData: unknown): Promise<IpcResult<TOutput>> => {
+    const metadata = {
+      channel,
+      requestId: randomUUID(),
+      operation: channel,
+      payloadType: rawData === null ? 'null' : Array.isArray(rawData) ? 'array' : typeof rawData,
+    }
     if (!isValidIpcOrigin(event)) {
       getLogger().warn('IPC call from unexpected origin blocked')
       return errResult('FORBIDDEN', 'Invalid IPC origin')
@@ -27,7 +35,9 @@ export function validated<TInput, TOutput>(
 
     if (!parseResult.success) {
       const formatted = formatZodError(parseResult.error)
-      getLogger().warn({ errors: formatted }, 'IPC payload validation failed')
+      // Codes identify the failed constraint without serializing user input or
+      // custom schema messages, which can embed credentials.
+      getLogger().warn({ ...metadata, reasons: parseResult.error.issues.map(issue => issue.code) }, 'IPC payload validation failed')
       return errResult('VALIDATION_ERROR', `Invalid payload: ${formatted}`)
     }
 

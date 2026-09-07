@@ -96,21 +96,27 @@ export class ProcessManager {
 
     this.watcher.setNextStopReason(reason)
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const proc = this.process!
-
-      const timeout = setTimeout(() => {
-        proc.kill('SIGKILL')
-        resolve()
-      }, 5_000)
-
-      proc.once('exit', () => {
+      let timeout: ReturnType<typeof setTimeout>
+      const cleanup = () => {
         clearTimeout(timeout)
-        this.process = null
+        proc.off('exit', onExit)
+      }
+      const fail = (error: unknown) => { cleanup(); reject(error) }
+      const onExit = () => {
+        cleanup()
+        if (this.process === proc) this.process = null
         resolve()
-      })
-
-      proc.kill('SIGTERM')
+      }
+      proc.once('exit', onExit)
+      timeout = setTimeout(() => {
+        // Sending a signal does not prove exit. Retain the process reference on
+        // timeout so a subsequent start cannot overwrite a live process config.
+        timeout = setTimeout(() => fail(new Error('Mihomo process exit not confirmed after termination')), 5_000)
+        try { proc.kill('SIGKILL') } catch (error) { fail(error) }
+      }, 5_000)
+      try { proc.kill('SIGTERM') } catch (error) { fail(error) }
     })
   }
 

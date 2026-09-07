@@ -73,6 +73,8 @@ jobs:
         run: pnpm --filter @slave-vpn/windows test:renderer
       - name: "Run runtime tests (geosite parsing and merge safety)"
         run: pnpm --filter @slave-vpn/runtime test
+      - name: "Run Windows lifecycle service regressions"
+        run: pnpm --filter @slave-vpn/windows test:lifecycle
 
   audit:
     name: Security Audit

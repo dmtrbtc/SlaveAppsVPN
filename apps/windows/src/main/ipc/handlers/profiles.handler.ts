@@ -99,8 +99,7 @@ export function registerProfilesHandlers(): void {
       // Trigger hot reload if connected and the user opted in
       if (changed && hotReload && services.has('runtime')) {
         const runtime = services.resolve<RuntimeService>('runtime')
-        runtime.notifySubscriptionsChanged().catch((err: unknown) =>
-          log.warn({ err }, 'Profile hot reload failed'))
+        await runtime.notifySubscriptionsChanged('profile-apply')
       }
 
       sendToRenderer(IpcChannel.EVENT_PROFILES_CHANGED, {

@@ -1,0 +1,100 @@
+[
+  {
+    "time": "2026-09-07T19:32:17.112Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-07T19:32:17.704Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-07T19:32:17.763Z",
+    "step": "clean-start",
+    "version": "v1.19.30"
+  },
+  {
+    "time": "2026-09-07T19:32:18.080Z",
+    "step": "delayed-identical-refresh-none"
+  },
+  {
+    "time": "2026-09-07T19:32:18.117Z",
+    "step": "manual-auto-manual-hot"
+  },
+  {
+    "time": "2026-09-07T19:32:18.165Z",
+    "step": "mode-reload-preserves-process-selection"
+  },
+  {
+    "time": "2026-09-07T19:32:18.214Z",
+    "step": "real-http-selection-failure-restores-config-selection"
+  },
+  {
+    "time": "2026-09-07T19:32:18.214Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-07T19:32:18.220Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-07T19:32:18.220Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-07T19:32:18.764Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-07T19:32:18.768Z",
+    "step": "full-restart-confirmed"
+  },
+  {
+    "time": "2026-09-07T19:32:18.772Z",
+    "step": "state",
+    "state": "crashed"
+  },
+  {
+    "time": "2026-09-07T19:32:18.822Z",
+    "step": "state",
+    "state": "reconnecting"
+  },
+  {
+    "time": "2026-09-07T19:32:18.822Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-07T19:32:19.370Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-07T19:32:19.373Z",
+    "step": "real-process-crash-restart"
+  },
+  {
+    "time": "2026-09-07T19:32:19.373Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-07T19:32:19.378Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-07T19:32:19.379Z",
+    "step": "stop-confirms-exit"
+  },
+  {
+    "time": "2026-09-07T19:32:19.379Z",
+    "step": "result",
+    "passed": true
+  }
+]

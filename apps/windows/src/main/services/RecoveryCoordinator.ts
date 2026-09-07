@@ -42,12 +42,20 @@ export class RecoveryCoordinator {
   private recovering = false
   private recoverTimer: ReturnType<typeof setTimeout> | null = null
   private connectFn: (() => Promise<void>) | null = null
+  private generation = 0
+  private disposed = false
+  private readonly unsubscribe: () => void
 
   constructor(manager: RuntimeManager, policy: RecoveryPolicy = DEFAULT_POLICY) {
     this.manager = manager
     this.policy = policy
 
-    manager.on('stateChanged', ({ state }) => {
+    this.unsubscribe = manager.on('stateChanged', ({ state }) => {
+      if (this.disposed) return
+      if (!manager.isConnectionDesired()) {
+        this.reset()
+        return
+      }
       if (state === 'running') {
         this.onRecovered()
       } else if (state === 'error' || state === 'crashed') {
@@ -72,6 +80,7 @@ export class RecoveryCoordinator {
   }
 
   private scheduleRecovery(): void {
+    if (this.disposed || !this.manager.isConnectionDesired()) return
     if (this.recovering) return  // already in a recovery cycle
     if (!this.connectFn) return  // no connect function registered
 
@@ -80,6 +89,7 @@ export class RecoveryCoordinator {
   }
 
   private doRecoveryAttempt(): void {
+    if (this.disposed || !this.manager.isConnectionDesired()) { this.reset(); return }
     if (this.attempts >= this.policy.maxAttempts) {
       this.onExhausted()
       return
@@ -94,16 +104,22 @@ export class RecoveryCoordinator {
         `Попытка переподключения ${this.attempts}/${this.policy.maxAttempts}`,
         { attempt: this.attempts, maxAttempts: this.policy.maxAttempts, delayMs: delay }))
 
+    const generation = this.generation
     this.recoverTimer = setTimeout(() => {
+      this.recoverTimer = null
+      if (generation !== this.generation || this.disposed || !this.manager.isConnectionDesired()) {
+        this.reset()
+        return
+      }
       const state = this.manager.getState()
       // Only attempt if still in a failed state
-      if (state !== 'error' && state !== 'crashed' && state !== 'idle') {
+      if (state !== 'error' && state !== 'crashed') {
         this.reset()
         return
       }
       this.connectFn?.().catch((err: unknown) => {
         getLogger().warn({ err, attempt: this.attempts }, 'RecoveryCoordinator: reconnect attempt failed')
-        if (this.recovering) {
+        if (generation === this.generation && this.recovering && !this.disposed && this.manager.isConnectionDesired()) {
           this.doRecoveryAttempt()
         }
       })
@@ -120,6 +136,7 @@ export class RecoveryCoordinator {
   }
 
   private reset(): void {
+    ++this.generation
     if (this.recoverTimer !== null) {
       clearTimeout(this.recoverTimer)
       this.recoverTimer = null
@@ -129,6 +146,8 @@ export class RecoveryCoordinator {
   }
 
   dispose(): void {
+    this.disposed = true
+    this.unsubscribe()
     this.reset()
   }
 }

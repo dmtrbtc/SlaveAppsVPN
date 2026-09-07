@@ -220,7 +220,7 @@ async function resolveServerListEntries(): Promise<ServerListEntry[]> {
     // resulting reloads. Only fetch once if no snapshot exists yet.
     try {
       let snap = agg.getLastSnapshot()
-      if (!snap) snap = await agg.fetchAggregatedYaml()
+      if (!snap) snap = await agg.getSnapshotOrFetch()
       const entries = extractProxiesFromYaml(snap.yaml)
       if (entries.length > 0) return entries
     } catch (err) {

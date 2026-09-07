@@ -1,4 +1,9 @@
 export { RuntimeManager } from './RuntimeManager'
+export {
+  connectionProfilesEqual,
+  diffConnectionProfiles,
+  fingerprintConnectionProfile,
+} from './profile/ConnectionProfileFingerprint'
 
 export { createEngine } from './engine/EngineFactory'
 export type {

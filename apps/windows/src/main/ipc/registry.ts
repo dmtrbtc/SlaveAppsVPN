@@ -34,7 +34,7 @@ export function handleIpc<TInput, TOutput>(
   schema: ZodSchema<TInput>,
   handler: (data: TInput, event: IpcMainInvokeEvent) => Promise<IpcResult<TOutput>>
 ): void {
-  const wrappedHandler = validated(schema, handler)
+  const wrappedHandler = validated(schema, handler, channel)
 
   ipcMain.handle(channel, (event, rawData: unknown) => {
     getLogger().debug({ channel }, 'IPC invoke')
