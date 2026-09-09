@@ -20,7 +20,7 @@ export function registerRoutingHandlers(): void {
 
   handleIpc(IpcChannel.ROUTING_SET_ENABLED_SCENARIOS, SetEnabledSchema, async (payload) => {
     try {
-      const updated = getRoutingScenarioService().setEnabled(payload.scenarioIds)
+      const updated = await getRoutingScenarioService().setEnabled(payload.scenarioIds)
       return okResult(updated)
     } catch (err) {
       return errResult('ROUTING_ERROR', err instanceof Error ? err.message : String(err))

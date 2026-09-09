@@ -2,6 +2,7 @@ import { app, BrowserWindow, session, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { getLogger } from './logger'
+import { isolatedSettingsSmoke } from './isolatedSettingsSmoke'
 
 const WINDOW_MIN_WIDTH = 380
 const WINDOW_MIN_HEIGHT = 600
@@ -44,6 +45,7 @@ export function createMainWindow(): BrowserWindow {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       navigateOnDragDrop: false,
+      backgroundThrottling: !isolatedSettingsSmoke,
     },
   })
 
@@ -72,7 +74,7 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.webContents.on('did-fail-load', (_event, errCode, errDesc, validatedURL) => {
     log.error({ errCode, errDesc, url: validatedURL }, 'Renderer did-fail-load')
     // Force show so the user sees something instead of an invisible hung process
-    if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
+    if (!isolatedSettingsSmoke && mainWindow && !mainWindow.isVisible()) mainWindow.show()
   })
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
@@ -95,7 +97,7 @@ export function createMainWindow(): BrowserWindow {
     } else {
       log.error({ renderCrashCount }, 'Renderer crashed too many times — not reloading')
       // Show window anyway so the user sees *something* rather than a ghost process
-      if (mainWindow && !mainWindow.isVisible()) mainWindow.show()
+      if (!isolatedSettingsSmoke && mainWindow && !mainWindow.isVisible()) mainWindow.show()
     }
   })
 
@@ -110,7 +112,7 @@ export function createMainWindow(): BrowserWindow {
   // Fallback: if ready-to-show hasn't fired after READY_TO_SHOW_TIMEOUT_MS, force-show.
   // Covers renderer crash-before-paint, preload failure, or any other invisible-window scenario.
   showTimer = setTimeout(() => {
-    if (mainWindow && !mainWindow.isVisible()) {
+    if (!isolatedSettingsSmoke && mainWindow && !mainWindow.isVisible()) {
       log.error({ phase: 'force_show', timeoutMs: READY_TO_SHOW_TIMEOUT_MS },
         'ready-to-show timeout — force-showing window for diagnostics')
       mainWindow.show()
@@ -120,7 +122,7 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.once('ready-to-show', () => {
     if (showTimer) { clearTimeout(showTimer); showTimer = null }
     log.info({ phase: 'ready_to_show' }, 'Window ready-to-show')
-    mainWindow?.show()
+    if (!isolatedSettingsSmoke) mainWindow?.show()
   })
 
   mainWindow.on('closed', () => {
@@ -203,6 +205,7 @@ export function sendToRenderer(channel: string, ...args: unknown[]): void {
 }
 
 export function openExternalUrl(url: string): void {
+  if (isolatedSettingsSmoke) return
   const allowedProtocols = ['https:', 'tg:']
   try {
     const parsed = new URL(url)

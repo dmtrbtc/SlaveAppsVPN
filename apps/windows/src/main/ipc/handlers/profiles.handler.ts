@@ -31,14 +31,14 @@ function snapshotCurrent(): AppProfileSnapshot {
 
 // Apply a snapshot to settings. Returns true if any field changed.
 // Patch-building delegates to core.applySnapshot; persistence + change
-// detection stay here (Windows sync settings store).
-function applySnapshot(snapshot: AppProfileSnapshot): boolean {
+// detection stay here (Windows StorageAdapter).
+async function applySnapshot(snapshot: AppProfileSnapshot): Promise<boolean> {
   const store = getSettingsStore()
   const before = store.getAll()
   const patch = coreApplySnapshot(snapshot)
 
   if (Object.keys(patch).length === 0) return false
-  store.patch(patch)
+  await store.patch(patch)
 
   // Detect if anything actually changed (cheap deep check via JSON)
   const after = store.getAll()
@@ -93,14 +93,15 @@ export function registerProfilesHandlers(): void {
       const profile = store.getById(id)
       if (!profile) return errResult('PROFILE_NOT_FOUND', `Profile not found: ${id}`)
 
-      const changed = applySnapshot(profile.snapshot)
-      const updated = store.markApplied(id) ?? profile
+      const changed = await applySnapshot(profile.snapshot)
 
       // Trigger hot reload if connected and the user opted in
       if (changed && hotReload && services.has('runtime')) {
         const runtime = services.resolve<RuntimeService>('runtime')
         await runtime.notifySubscriptionsChanged('profile-apply')
       }
+
+      const updated = store.markApplied(id) ?? profile
 
       sendToRenderer(IpcChannel.EVENT_PROFILES_CHANGED, {
         profiles: store.list(),

@@ -25,7 +25,7 @@ export function registerBalancerHandlers(): void {
     try {
       const svc = getNodeBalancerService(apiPort, apiSecret)
       await svc.setEnabled(payload.enabled)
-      settings.patch({ balancerEnabled: payload.enabled })
+      await settings.patch({ balancerEnabled: payload.enabled })
       return okResult(undefined)
     } catch (err) {
       return errResult('BALANCER_ERROR', err instanceof Error ? err.message : String(err))
@@ -36,7 +36,7 @@ export function registerBalancerHandlers(): void {
     try {
       const svc = getNodeBalancerService(apiPort, apiSecret)
       await svc.setMode(payload.mode as any)
-      settings.patch({ balancerMode: payload.mode as any })
+      await settings.patch({ balancerMode: payload.mode as any })
       return okResult(undefined)
     } catch (err) {
       return errResult('BALANCER_ERROR', err instanceof Error ? err.message : String(err))

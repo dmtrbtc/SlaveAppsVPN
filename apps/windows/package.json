@@ -1,6 +1,6 @@
 {
   "name": "@slave-vpn/windows",
-  "version": "0.2.41-dev.11",
+  "version": "0.2.41-dev.12",
   "description": "SLAVE VPN — Windows desktop client",
   "author": {
     "name": "SLAVE VPN",
@@ -14,7 +14,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts",
+    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts test/windowsSettingsStorage.test.ts test/isolatedSettingsSmoke.test.cjs",
     "test:queries": "pnpm test:renderer",
     "test:lifecycle": "node --test test/windowsLifecycle.test.cjs",
     "pack": "pnpm build && electron-builder --dir",

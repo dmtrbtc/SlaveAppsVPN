@@ -204,7 +204,8 @@ export interface RuntimeServiceConfig {
   apiSecret?: string
   binaryPath?: string
   workingDir?: string
-  setSettings?: (patch: Partial<AppSettings>) => void
+  setSettings?: (patch: Partial<AppSettings>) => void | Promise<void>
+  waitForSettings?: () => Promise<AppSettings>
 }
 
 // ─── Implementation ───────────────────────────────────────────────────────────
@@ -217,7 +218,8 @@ export class RuntimeServiceImpl implements RuntimeService {
   private readonly apiSecret: string
   private readonly binaryPath: string
   private readonly workingDir: string
-  private readonly setSettings: (patch: Partial<AppSettings>) => void
+  private readonly setSettings: (patch: Partial<AppSettings>) => void | Promise<void>
+  private readonly waitForSettings: () => Promise<AppSettings>
 
   private currentMode: VPNMode = 'blocked'
   private connectedAt: number | null = null
@@ -228,6 +230,7 @@ export class RuntimeServiceImpl implements RuntimeService {
   private profileResolutionTail: Promise<void> = Promise.resolve()
   private connectionEpoch = 0
   private selectionRevision = 0
+  private modeRevision = 0
   private discoveryRevision = 0
 
   // Throttle error classification — don't spam the same error every log line
@@ -251,6 +254,7 @@ export class RuntimeServiceImpl implements RuntimeService {
     this.binaryPath = config.binaryPath ?? ''
     this.workingDir = config.workingDir ?? ''
     this.setSettings = config.setSettings ?? (() => undefined)
+    this.waitForSettings = config.waitForSettings ?? (() => Promise.resolve(this.getSettings()))
 
     this.manager.on('stateChanged', ({ state }) => {
       if (state === 'running') {
@@ -413,8 +417,7 @@ export class RuntimeServiceImpl implements RuntimeService {
   // later via RoutingScenarioService (A.3); for now returns undefined and
   // the engine falls back to legacy vpnMode-based rules.
 
-  private buildDnsProfileForEngine(): DnsProfile {
-    const settings = this.getSettings()
+  private buildDnsProfileForEngine(settings: AppSettings): DnsProfile {
     // Unified DoH provider (shared with Android): override the preset's primary
     // DoH endpoint with the user's chosen provider. undefined → preset default.
     const dohOverrideUrl = settings.dohProvider
@@ -478,10 +481,10 @@ export class RuntimeServiceImpl implements RuntimeService {
     throw new Error('No subscription configured — add one in Подписки tab or complete onboarding')
   }
 
-  private buildDesiredProfile(subscriptionYaml: string, mode = this.currentMode): ConnectionProfile {
-    const settings = this.getSettings()
+  private buildDesiredProfile(subscriptionYaml: string, settings: AppSettings): ConnectionProfile {
+    const mode = settings.vpnMode
     const desiredSelectedProxy = settings.selectedProxy ?? undefined
-    const routingPolicy = getRoutingScenarioService().composePolicyForMode(mode) ?? undefined
+    const routingPolicy = getRoutingScenarioService().composePolicyForMode(mode, settings) ?? undefined
     return {
       subscriptionYaml,
       vpnMode: mode,
@@ -490,7 +493,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         ...DEFAULT_GENERATOR_SETTINGS,
         ...(mode === 'split' ? { splitTunnelProcesses: settings.splitProcessList ?? [] } : {}),
       },
-      dnsProfile: this.buildDnsProfileForEngine(),
+      dnsProfile: this.buildDnsProfileForEngine(settings),
       ...(routingPolicy ? { routingPolicy } : {}),
       utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
     }
@@ -499,6 +502,7 @@ export class RuntimeServiceImpl implements RuntimeService {
   private async applyDesiredProfile(reason: ConfigUpdateReason): Promise<void> {
     const epoch = this.connectionEpoch
     const operation = this.profileResolutionTail.then(async () => {
+      await this.waitForSettings()
       if (epoch !== this.connectionEpoch || this.manager.getState() !== 'running') return
       await this.resolveAndApplyProfile(reason, epoch)
     })
@@ -509,14 +513,16 @@ export class RuntimeServiceImpl implements RuntimeService {
   private async resolveAndApplyProfile(reason: ConfigUpdateReason, epoch: number): Promise<void> {
     const operationId = ++this.configOperationId
     const resolved = await this.fetchSubscriptionYaml()
+    const settings = await this.waitForSettings()
     if (epoch !== this.connectionEpoch || this.manager.getState() !== 'running') return
+    this.currentMode = settings.vpnMode
     if (resolved.proxyCount === 0) {
       getLogger().warn({ operationId, reason, source: resolved.source }, 'config-update skipped: empty proxy list')
       return
     }
 
     const previous = this.manager.getCurrentProfile()
-    const next = this.buildDesiredProfile(resolved.yaml)
+    const next = this.buildDesiredProfile(resolved.yaml, settings)
     const previousHash = previous ? fingerprintConnectionProfile(previous) : null
     const nextHash = fingerprintConnectionProfile(next)
     const common = {
@@ -529,7 +535,7 @@ export class RuntimeServiceImpl implements RuntimeService {
       nextProfileHash: nextHash.slice(0, 12),
       profileDiff: diffConnectionProfiles(previous, next),
       vpnMode: this.currentMode,
-      desiredSelectedProxy: this.getSettings().selectedProxy ?? null,
+      desiredSelectedProxy: settings.selectedProxy ?? null,
       observedActiveProxy: this.activeProxy,
     }
     getLogger().info(common, 'config-update requested')
@@ -596,12 +602,12 @@ export class RuntimeServiceImpl implements RuntimeService {
     const log = getLogger()
     try {
       await this.runPreflight()
-
-      const settings = this.getSettings()
-      this.currentMode = settings.vpnMode
+      await this.waitForSettings()
 
       const { yaml: subscriptionYaml, proxyCount, source, snapshotRevision, snapshotHash } = await this.fetchSubscriptionYaml(true)
+      const settings = await this.waitForSettings()
       if (epoch !== this.connectionEpoch) return
+      this.currentMode = settings.vpnMode
 
       if (proxyCount === 0) {
         const msg = 'Subscription has no usable proxies. Check your config source in settings.'
@@ -612,7 +618,7 @@ export class RuntimeServiceImpl implements RuntimeService {
 
       log.info({ proxyCount, source }, 'Subscription resolved before connect')
 
-      const profile = this.buildDesiredProfile(subscriptionYaml)
+      const profile = this.buildDesiredProfile(subscriptionYaml, settings)
       const operationId = ++this.configOperationId
       log.info({
         operationId,
@@ -658,8 +664,12 @@ export class RuntimeServiceImpl implements RuntimeService {
   }
 
   async setMode(mode: VPNMode): Promise<void> {
-    this.currentMode = mode
-    this.setSettings({ vpnMode: mode })
+    const revision = ++this.modeRevision
+    const epoch = this.connectionEpoch
+    await this.setSettings({ vpnMode: mode })
+    const settings = await this.waitForSettings()
+    if (revision !== this.modeRevision || epoch !== this.connectionEpoch) return
+    this.currentMode = settings.vpnMode
 
     if (this.manager.getState() === 'running') {
       await this.applyDesiredProfile('mode-change')
@@ -763,9 +773,12 @@ export class RuntimeServiceImpl implements RuntimeService {
 
     // Persist intent before queueing the engine mutation so a concurrent refresh
     // cannot rebuild from a stale observed leaf. AUTO remains the desired group.
-    this.setSettings({ selectedProxy: proxyName })
     const selection = ++this.selectionRevision
     const epoch = this.connectionEpoch
+    await this.setSettings({ selectedProxy: proxyName })
+    await this.waitForSettings()
+    if (selection !== this.selectionRevision || epoch !== this.connectionEpoch ||
+      this.manager.getState() !== 'running') return
     await this.applyDesiredProfile('proxy-change')
     if (selection !== this.selectionRevision || epoch !== this.connectionEpoch ||
       this.manager.getState() !== 'running' || this.getSettings().selectedProxy !== proxyName) return
@@ -785,14 +798,14 @@ export class RuntimeServiceImpl implements RuntimeService {
   // Triggers a hot-reload through manager.updateProfile so the engine picks up the
   // newly aggregated YAML. No-op when disconnected.
   async notifySubscriptionsChanged(reason: ConfigUpdateReason = 'manual-subscription-refresh'): Promise<void> {
-    if (reason === 'profile-apply') ++this.selectionRevision
+    if (reason === 'profile-apply') { ++this.selectionRevision; ++this.modeRevision }
     if (this.manager.getState() !== 'running') return
-    if (reason === 'profile-apply') this.currentMode = this.getSettings().vpnMode
     const log = getLogger()
     try {
       await this.applyDesiredProfile(reason)
     } catch (err) {
       log.warn({ err, reason }, 'Subscription hot-reload failed')
+      if (reason === 'profile-apply') throw err
     }
   }
 

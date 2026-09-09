@@ -143,6 +143,11 @@ export function resolveDnsProfile(
     case 'custom':
       base = custom ? customToProfile(custom) : DnsProfilePresets.secure()
       break
+    default:
+      // Persisted settings and bridge payloads can predate or bypass TS types.
+      // Unknown preset names must not abort VPN compilation.
+      base = DnsProfilePresets.secure()
+      break
   }
 
   base = withDohOverride(base, dohOverrideUrl)

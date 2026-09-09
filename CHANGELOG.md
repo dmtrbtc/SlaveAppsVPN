@@ -6,6 +6,10 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Changed
 
+- Windows settings now use the shared `@slave-vpn/core` `SettingsStore` through
+  a platform `StorageAdapter`, while preserving the existing flat
+  `userData/settings.json` format. All settings mutations are awaited and
+  concurrent writes are serialised to prevent stale snapshots from winning.
 - Android now compiles the selected shared DNS preset, IPv4/IPv6 strategy and
   advanced resolver/rule/prefetch settings instead of always using one fixed
   mobile DNS profile. Built-in profiles retain Android node anti-loop, RU-direct
@@ -24,6 +28,14 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- Settings persistence is now resilient to older supported Android WebViews
+  without `structuredClone`; unknown persisted DNS presets safely use the
+  `secure` profile rather than aborting VPN compilation.
+- Runtime profile/DNS/routing composition now uses an immutable acknowledged
+  settings snapshot, preventing a later optimistic edit from reaching the
+  engine before it is persisted.
+- Android settings smoke checks refuse configured or active test targets, so
+  diagnostics cannot overwrite an existing subscription or VPN settings.
 - Windows lifecycle fixes packaged locally as `0.2.41-dev.11`: serialize engine
   mutations, skip semantically identical profiles, retain manual/AUTO intent,
   and restore the previous configuration after failed updates.

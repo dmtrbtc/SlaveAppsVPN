@@ -11,7 +11,7 @@ export function registerSettingsHandlers(): void {
   })
 
   handleIpc(IpcChannel.SETTINGS_SET, SettingsSetSchema, async (data) => {
-    getSettingsStore().patch(data)
+    await getSettingsStore().patch(data)
     return okResult(undefined)
   })
 }

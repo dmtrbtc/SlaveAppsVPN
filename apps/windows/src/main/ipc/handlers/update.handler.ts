@@ -17,7 +17,7 @@ export function registerUpdateHandlers(): void {
   })
 
   handleIpc(IpcChannel.UPDATE_SET_CHANNEL, UpdateChannelSchema, async ({ channel }) => {
-    getUpdateService().setChannel(channel)
+    await getUpdateService().setChannel(channel)
     return okResult(undefined as void)
   })
 

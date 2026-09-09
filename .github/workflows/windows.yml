@@ -7,10 +7,6 @@ on:
         description: 'Release tag to attach installers to (e.g. v0.2.0-rc1)'
         required: false
         default: ''
-  push:
-    tags:
-      - 'v*'
-
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -65,8 +61,14 @@ jobs:
           mkdir artifacts
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe artifacts/
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Portable-*.exe artifacts/
+          Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe.blockmap artifacts/
           # electron-updater metadata (generated even with --publish never).
           Copy-Item apps/windows/release/*/latest.yml artifacts/ -ErrorAction SilentlyContinue
+          $hashes = Get-ChildItem artifacts -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          Set-Content artifacts/SHA256SUMS.txt $hashes
         shell: pwsh
 
       - uses: actions/upload-artifact@v7

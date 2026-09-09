@@ -142,7 +142,7 @@ test('failed refresh preserves last-known-good source nodes', async () => {
   assert.equal(snapshot.totalProxies, 1)
   assert.equal(snapshot.warnings.length, 1)
 })
-function runtimeFixture(desired) {
+function runtimeFixture(desired, persistedStore) {
   const { RuntimeManager } = require('@slave-vpn/runtime')
   const settings = { selectedProxy: desired, vpnMode: 'blocked', notificationsEnabled: false }
   const { RuntimeServiceImpl } = loadService('services/impl/RuntimeServiceImpl.ts', {
@@ -151,7 +151,7 @@ function runtimeFixture(desired) {
     '../NodeHealthManager': { getNodeHealthManager: () => ({ getQuarantinedNodes: () => [] }) },
     './ConfigSourceService': { getConfigSourceService: () => ({ getServerList: async () => [] }) },
     '../../logger': { getLogger: () => logger },
-    '../DnsProfileService': { buildEngineDnsProfile: () => ({ fakeIp: { enabled: false } }) },
+    '../DnsProfileService': { buildEngineDnsProfile: () => ({ fakeIp: { enabled: false } }), resolveDohUrl: () => 'https://example.test/dns-query' },
     '../RoutingScenarioService': { getRoutingScenarioService: () => ({ composePolicyForMode: () => null }) },
     '../SubscriptionStore': { getSubscriptionStore: () => ({ list: () => [{ enabled: true }] }) }, '../SubscriptionAggregatorService': {},
     './sources/WindowsSystemProxy': {},
@@ -166,10 +166,11 @@ function runtimeFixture(desired) {
   const manager = new RuntimeManager(() => engine)
   return (async () => {
     await manager.initialize('mihomo', {})
-    const service = new RuntimeServiceImpl({ manager, getSettings: () => settings,
-      setSettings: patch => Object.assign(settings, patch) })
+    const service = new RuntimeServiceImpl({ manager, getSettings: () => persistedStore ? persistedStore.getAll() : settings,
+      setSettings: persistedStore ? async patch => { await persistedStore.patch(patch) } : patch => Object.assign(settings, patch),
+      waitForSettings: persistedStore ? () => persistedStore.waitForPersistence() : undefined })
     service.fetchSubscriptionYaml = async () => ({ yaml: 'proxies: []', proxyCount: 1, source: 'aggregator' })
-    const initial = service.buildDesiredProfile('proxies: []')
+    const initial = service.buildDesiredProfile('proxies: []', persistedStore ? persistedStore.getAll() : settings)
     await manager.connect(initial)
     return { service, manager, applied, settings, engine }
   })()
@@ -295,11 +296,13 @@ test('removal during source fetch does not resurrect cached nodes', async () => 
 
 test('older selection completion cannot overwrite newer user intent', async () => {
   const f = await runtimeFixture('Manual')
-  let release
+  let release, entered
+  const started = new Promise(r => { entered = r })
   const gate = new Promise(r => { release = r })
   let count = 0
-  f.service.applyDesiredProfile = async () => { if (++count === 1) await gate }
+  f.service.applyDesiredProfile = async () => { if (++count === 1) { entered(); await gate } }
   const older = f.service.setSelectedProxy('Older')
+  await started
   await f.service.setSelectedProxy('Newer')
   release(); await older
   assert.equal(f.settings.selectedProxy, 'Newer')
@@ -417,4 +420,152 @@ test('cabinet replacement during fetch discards old cabinet nodes and instance',
   const result = await pending
   assert.ok(result.yaml.includes('new.test')); assert.ok(!result.yaml.includes('old.test'))
   assert.equal(creations, 2)
+})
+
+async function persistedRuntimeFixture(t) {
+  const { SettingsStore, createDefaultSettings, SETTINGS_STORAGE_KEY } = require('@slave-vpn/core')
+  const os = require('node:os')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'slave-p31-runtime-'))
+  t.after(() => {
+    const resolved = path.resolve(directory)
+    assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep))
+    assert.ok(path.basename(resolved).startsWith('slave-p31-runtime-'))
+    fs.rmSync(resolved, {recursive:true,force:true})
+  })
+  const { JsonFileStorageAdapter } = loadService('services/JsonFileStorageAdapter.ts', {})
+  const adapter = new JsonFileStorageAdapter(path.join(directory, 'settings.json'), SETTINGS_STORAGE_KEY)
+  const save = adapter.set.bind(adapter)
+  let release, fail = false, gate = null
+  adapter.set = async (...args) => {
+    if (gate) await gate
+    if (fail) throw new Error('synthetic disk failure')
+    return save(...args)
+  }
+  const store = new SettingsStore(adapter, createDefaultSettings({ selectedProxy:'Manual',notificationsEnabled:false }))
+  await store.load()
+  const f = await runtimeFixture('Manual', store)
+  return {...f,store,hold() {gate=new Promise(r=>{release=r})},release() {gate=null;release()},fail(value) {fail=value}}
+}
+
+test('async settings gate blocks mode apply and refresh until disk completes', async t => {
+  const f = await persistedRuntimeFixture(t); f.hold()
+  const mode = f.service.setMode('full')
+  const refresh = f.service.notifySubscriptionsChanged()
+  await flush(); assert.equal(f.applied.length, 1)
+  f.release(); await Promise.all([mode,refresh])
+  assert.equal(f.applied.at(-1).vpnMode, 'full')
+})
+
+test('failed settings write rejects command and blocks refresh until successful retry', async t => {
+  const f = await persistedRuntimeFixture(t); f.fail(true)
+  await assert.rejects(f.service.setSelectedProxy('SLAVE-AUTO'), /synthetic disk failure/)
+  await f.service.notifySubscriptionsChanged()
+  assert.equal(f.applied.length, 1)
+  await assert.rejects(f.service.notifySubscriptionsChanged('profile-apply'), /synthetic disk failure/)
+  f.fail(false); await f.service.setSelectedProxy('Manual-2')
+  assert.equal(f.applied.at(-1).selectedProxy, 'Manual-2')
+})
+
+test('disconnect during selection persistence prevents engine mutation after write', async t => {
+  const f = await persistedRuntimeFixture(t); f.hold()
+  const selection = f.service.setSelectedProxy('SLAVE-AUTO')
+  await flush(); await f.service.disconnect(); f.release(); await selection
+  assert.equal(f.applied.length, 1)
+  assert.equal(f.manager.getState(), 'idle')
+})
+
+test('concurrent mode selection and refresh converge on last persisted intent', async t => {
+  const f = await persistedRuntimeFixture(t); f.hold()
+  const work = [f.service.setMode('full'), f.service.setSelectedProxy('Old'),
+    f.service.setMode('split'), f.service.setSelectedProxy('SLAVE-AUTO'), f.service.notifySubscriptionsChanged()]
+  await flush(); assert.equal(f.applied.length, 1)
+  f.release(); await Promise.all(work)
+  assert.equal(f.applied.at(-1).vpnMode, 'split')
+  assert.equal(f.applied.at(-1).selectedProxy, 'SLAVE-AUTO')
+  assert.ok(f.applied.slice(1).every(p=>p.vpnMode==='split' && p.selectedProxy==='SLAVE-AUTO'))
+})
+
+test('a write begun during subscription resolution is awaited before profile composition', async t => {
+  const f = await persistedRuntimeFixture(t)
+  let resume, entered
+  const fetched = new Promise(r=>{entered=r})
+  f.service.fetchSubscriptionYaml = async () => {entered(); await new Promise(r=>{resume=r}); return {yaml:'proxies: []',proxyCount:1,source:'aggregator'}}
+  const refresh = f.service.notifySubscriptionsChanged()
+  await fetched; f.hold()
+  const patch = f.store.patch({selectedProxy:'SLAVE-AUTO'})
+  resume(); await flush(); assert.equal(f.applied.length,1)
+  f.release(); await Promise.all([refresh,patch])
+  assert.equal(f.applied.at(-1).selectedProxy,'SLAVE-AUTO')
+})
+
+test('connect waits for settings and rechecks disconnect after persistence', async t => {
+  const f = await persistedRuntimeFixture(t); await f.service.disconnect()
+  f.service.runPreflight=async()=>{}
+  f.hold(); const patch=f.store.patch({vpnMode:'full'})
+  const connect=f.service.connect(); await flush()
+  await f.service.disconnect(); f.release(); await Promise.all([patch,connect])
+  assert.equal(f.applied.length,1)
+  assert.equal(f.manager.getState(),'idle')
+})
+
+test('profile handler does not publish or mark applied after runtime failure', async t => {
+  const f = await persistedRuntimeFixture(t)
+  const handlers = new Map(); let marked = 0; let published = 0
+  const profile = { id:'synthetic',name:'Synthetic',snapshot:{vpnMode:'full'} }
+  f.service.resolveAndApplyProfile = async () => { throw new Error('synthetic apply failure') }
+  const { registerProfilesHandlers } = loadService('ipc/handlers/profiles.handler.ts', {
+    '../../../shared/ipc/channels': {IpcChannel:{PROFILES_APPLY:'apply'}},
+    '../../../shared/ipc/types': {okResult:data=>({ok:true,data}),errResult:(code,message)=>({ok:false,code,message})},
+    '../../../shared/ipc/schemas': {EmptySchema:require('zod').z.object({})},
+    '../registry':{handleIpc:(channel,_schema,fn)=>handlers.set(channel,fn),services:{has:()=>true,resolve:()=>f.service}},
+    '../../services/ProfileStore':{getProfileStore:()=>({getById:()=>profile,markApplied:()=>{marked++;return profile},list:()=>[profile],getActiveId:()=>null})},
+    '../../services/SettingsStore':{getSettingsStore:()=>f.store},
+    '../../window':{sendToRenderer:()=>{published++}},'../../logger':{getLogger:()=>logger},
+  })
+  registerProfilesHandlers()
+  const result=await handlers.get('apply')({id:'synthetic',hotReload:true})
+  assert.equal(result.ok,false); assert.equal(marked,0); assert.equal(published,0)
+  assert.equal(f.store.get('vpnMode'),'full') // Persistence is not rolled back by an apply failure.
+})
+
+for (const action of ['refresh','connect','mode','selection']) {
+  test(`settlement-window patch cannot leak optimistic settings into ${action}`, async t => {
+    const f = await persistedRuntimeFixture(t)
+    if(action==='connect'){await f.service.disconnect();f.service.runPreflight=async()=>{}}
+    const original=f.service.waitForSettings
+    let calls=0,write
+    // refresh/connect read twice; mode/selection also read after their own write.
+    const boundary=(action==='mode'||action==='selection')?3:2
+    f.service.waitForSettings=async()=>{
+      const snapshot=await original()
+      if(++calls===boundary) queueMicrotask(()=>{
+        f.hold()
+        write=f.store.patch({selectedProxy:'UNSAVED',vpnMode:'split',utlsFingerprint:'firefox',splitProcessList:['unsaved.exe']})
+      })
+      return snapshot
+    }
+    try {
+      if(action==='connect')await f.service.connect()
+      else if(action==='mode')await f.service.setMode('full')
+      else if(action==='selection')await f.service.setSelectedProxy('SLAVE-AUTO')
+      else await f.service.notifySubscriptionsChanged()
+      assert.ok(write,'fixture reached exact promise-settlement boundary')
+      assert.notEqual(f.applied.at(-1).selectedProxy,'UNSAVED')
+      assert.notEqual(f.applied.at(-1).utlsFingerprint,'firefox')
+      assert.notEqual(f.applied.at(-1).vpnMode,'split')
+      assert.equal(f.store.get('selectedProxy'),'UNSAVED')
+    } finally {if(write){f.release();await write}}
+  })
+}
+
+test('routing composition uses explicit snapshot without reading optimistic singleton', () => {
+  const {createDefaultSettings}=require('@slave-vpn/core')
+  const {RoutingScenarioService}=loadService('services/RoutingScenarioService.ts',{
+    './SettingsStore':{getSettingsStore:()=>{throw new Error('unexpected live store read')}},
+    '../logger':{getLogger:()=>logger},
+  })
+  const service=new RoutingScenarioService()
+  const saved=createDefaultSettings({enabledScenarios:['ai-services'],customRoutingRules:[]})
+  const policy=service.composePolicyForMode('custom',saved)
+  assert.ok(policy)
 })

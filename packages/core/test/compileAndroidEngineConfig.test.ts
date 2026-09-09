@@ -37,6 +37,14 @@ const base = {
   apiSecret: 'test-secret',
 }
 
+test('Android compiler falls back to secure DNS for invalid persisted presets', async () => {
+  const expected = await compileAndroidEngineConfig(base)
+  for (const dnsPreset of ['google', '', 'unknown-preset', 42, {}]) {
+    const actual = await compileAndroidEngineConfig({ ...base, dnsPreset })
+    assert.equal(actual.config, expected.config)
+  }
+})
+
 test('Android compiler owns config, DNS and node anti-loop assembly in core', async () => {
   const result = await compileAndroidEngineConfig(base)
 

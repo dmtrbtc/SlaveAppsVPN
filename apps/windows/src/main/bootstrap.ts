@@ -150,7 +150,8 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
     apiSecret,
     binaryPath: engineConfig.binaryPath,
     workingDir: engineConfig.workingDir,
-    setSettings: (patch) => settings.patch(patch),
+    setSettings: async (patch) => { await settings.patch(patch) },
+    waitForSettings: () => settings.waitForPersistence(),
   })
 
   recoveryCoordinator = new RecoveryCoordinator(runtimeManager)
@@ -202,14 +203,17 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
     connect: () => runtime.connect(),
     disconnect: () => runtime.disconnect(),
     setMode: (mode) => runtime.setMode(mode),
-    setProxy: (proxyName) => runtime.setSelectedProxy(proxyName).catch(async () => {
-      // If VPN is not running, persist the selection so the next connect uses it.
-      await import('./services/SettingsStore').then(({ getSettingsStore: getS }) =>
-        getS().patch({ selectedProxy: proxyName }))
-    }),
+    setProxy: async (proxyName) => {
+      if (runtime.getState() !== 'running') {
+        await settings.patch({ selectedProxy: proxyName })
+      } else {
+        // A running selection failure must not be mistaken for an offline save.
+        await runtime.setSelectedProxy(proxyName)
+      }
+    },
     setBalancerEnabled: async (enabled) => {
       await balancer.setEnabled(enabled)
-      settings.patch({ balancerEnabled: enabled })
+      await settings.patch({ balancerEnabled: enabled })
       updateTrayBalancer(enabled)
     },
     applyProfile: async (id) => {
@@ -224,12 +228,12 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
       if (snap.selectedProxy !== undefined)    patch.selectedProxy = snap.selectedProxy
       if (snap.vpnMode !== undefined)          patch.vpnMode = snap.vpnMode
       if (snap.balancerEnabled !== undefined)  patch.balancerEnabled = snap.balancerEnabled
-      if (Object.keys(patch).length > 0) settings.patch(patch)
-      profileStore.markApplied(id)
-      updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
+      if (Object.keys(patch).length > 0) await settings.patch(patch)
       if (runtime.getState() === 'running') {
         await runtime.notifySubscriptionsChanged('profile-apply')
       }
+      profileStore.markApplied(id)
+      updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
     },
   })
 

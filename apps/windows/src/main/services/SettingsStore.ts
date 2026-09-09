@@ -1,73 +1,43 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { app } from 'electron'
-import { createDefaultSettings } from '@slave-vpn/core'
-import type { AppSettings } from '../../shared/ipc/types'
+import { SettingsStore, SETTINGS_STORAGE_KEY, createDefaultSettings } from '@slave-vpn/core'
+import { JsonFileStorageAdapter } from './JsonFileStorageAdapter'
 
-// Default settings model + enabled-scenario defaults now come from
-// @slave-vpn/core (createDefaultSettings); only the env-driven fields are
-// injected here (core must not read process.env). The store mechanism stays
-// the existing sync electron userData file.
-const DEFAULT_SETTINGS: AppSettings = createDefaultSettings({
+// Core owns the settings model and store lifecycle. Windows only injects
+// environment defaults and binds the shared StorageAdapter contract to the
+// existing userData/settings.json file.
+const DEFAULT_SETTINGS = createDefaultSettings({
   ...(process.env.VITE_API_URL ? { apiBaseUrl: process.env.VITE_API_URL } : {}),
   ...(process.env.VITE_TELEGRAM_BOT_USERNAME
     ? { telegramBotUsername: process.env.VITE_TELEGRAM_BOT_USERNAME }
     : {}),
 })
 
-class SettingsStore {
-  private settings: AppSettings
-  private readonly filePath: string
+let instance: SettingsStore | null = null
+let initializing: Promise<SettingsStore> | null = null
 
-  constructor() {
-    const userDataPath = app.getPath('userData')
-    mkdirSync(userDataPath, { recursive: true })
-    this.filePath = join(userDataPath, 'settings.json')
-    this.settings = this.load()
+/** Load once during app.whenReady(), before IPC handlers or updater consumers. */
+export async function initSettingsStore(): Promise<SettingsStore> {
+  if (instance) return instance
+  if (!initializing) {
+    const filePath = join(app.getPath('userData'), 'settings.json')
+    const next = new SettingsStore(
+      new JsonFileStorageAdapter(filePath, SETTINGS_STORAGE_KEY),
+      DEFAULT_SETTINGS
+    )
+    initializing = next.load().then(() => {
+      instance = next
+      return next
+    })
   }
-
-  private load(): AppSettings {
-    if (!existsSync(this.filePath)) return { ...DEFAULT_SETTINGS }
-    try {
-      const raw = readFileSync(this.filePath, 'utf-8')
-      const parsed = JSON.parse(raw) as Partial<AppSettings>
-      return { ...DEFAULT_SETTINGS, ...parsed }
-    } catch {
-      return { ...DEFAULT_SETTINGS }
-    }
-  }
-
-  private persist(): void {
-    writeFileSync(this.filePath, JSON.stringify(this.settings, null, 2), 'utf-8')
-  }
-
-  getAll(): AppSettings {
-    return { ...this.settings }
-  }
-
-  get<K extends keyof AppSettings>(key: K): AppSettings[K] {
-    return this.settings[key]
-  }
-
-  patch(partial: { [K in keyof AppSettings]?: AppSettings[K] | undefined }): void {
-    const clean = Object.fromEntries(
-      Object.entries(partial).filter(([, v]) => v !== undefined)
-    ) as Partial<AppSettings>
-    this.settings = { ...this.settings, ...clean }
-    this.persist()
-  }
-
-  reset(): void {
-    this.settings = { ...DEFAULT_SETTINGS }
-    this.persist()
-  }
+  return initializing
 }
 
-let _instance: SettingsStore | null = null
-
 export function getSettingsStore(): SettingsStore {
-  if (!_instance) {
-    _instance = new SettingsStore()
+  if (!instance) {
+    throw new Error(
+      'SettingsStore is not initialized — call initSettingsStore() after app.whenReady()'
+    )
   }
-  return _instance
+  return instance
 }

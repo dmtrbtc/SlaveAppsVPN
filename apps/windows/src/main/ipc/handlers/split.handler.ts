@@ -46,7 +46,7 @@ export function registerSplitHandlers(): void {
 
   handleIpc(IpcChannel.SPLIT_SET_PROCESS_LIST, SetProcessListSchema, async ({ processList }) => {
     const settings = getSettingsStore()
-    settings.patch({ splitProcessList: processList })
+    await settings.patch({ splitProcessList: processList })
     return okResult(undefined)
   })
 }
