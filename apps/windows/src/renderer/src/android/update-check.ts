@@ -89,26 +89,18 @@ export function getCurrentVersion(): string {
 /**
  * Release notes for the CURRENTLY INSTALLED version — powers the post-update
  * «Что нового» card. Finds the GitHub release whose tag matches this build's
- * version exactly (x.y.z, ignoring the `v` prefix; a -dev/-rc prerelease of the
- * same x.y.z does NOT match, so a stable build shows the stable notes). Returns
- * null when offline, no match, or the release has an empty body. Never throws.
+ * version exactly (ignoring only the optional `v` prefix). A dev/rc build must
+ * never show notes from another prerelease of the same x.y.z. Returns null when
+ * offline, unpublished, unmatched, or the release has an empty body. Never throws.
  */
 export async function getInstalledVersionNotes(): Promise<{ version: string; notes: string; releaseUrl: string } | null> {
   try {
-    const inst = parseVer(getCurrentVersion())
+    const currentVersion = getCurrentVersion()
+    const inst = parseVer(currentVersion)
     if (!inst) return null
-    // Match by x.y.z (ignore any -dev/-rc suffix): __APP_VERSION__ is the bare
-    // package version (e.g. "0.2.29"), while the release tag may be a prerelease
-    // ("v0.2.29-dev.1") when no stable is cut yet. Among same-x.y.z releases prefer
-    // the stable one; else the newest prerelease (API returns newest-first) — so a
-    // -dev test build still finds its own notes.
-    const sameXyz = (await fetchReleases())
+    const match = (await fetchReleases())
       .filter(r => !r.draft)
-      .filter(r => {
-        const pv = parseVer(r.tag_name)
-        return pv !== null && pv.rel[0] === inst.rel[0] && pv.rel[1] === inst.rel[1] && pv.rel[2] === inst.rel[2]
-      })
-    const match = sameXyz.find(r => parseVer(r.tag_name)?.pre.length === 0) ?? sameXyz[0]
+      .find(r => parseVer(r.tag_name) !== null && cmpVer(r.tag_name, currentVersion) === 0)
     if (!match || !match.body || !match.body.trim()) return null
     return { version: match.tag_name || getCurrentVersion(), notes: match.body, releaseUrl: match.html_url }
   } catch {

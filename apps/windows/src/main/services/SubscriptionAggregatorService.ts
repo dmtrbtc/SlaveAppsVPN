@@ -9,7 +9,7 @@ import { SingleProxySource } from './impl/sources/SingleProxySource'
 import { RemnawaveKeySource } from './impl/sources/RemnawaveKeySource'
 import { getLogger } from '../logger'
 import type { SubscriptionEntry, ConfigSourceType } from '../../shared/ipc/types'
-import { aggregateProxies } from '@slave-vpn/core'
+import { aggregateProxies, canonicalSubscriptionSource } from '@slave-vpn/core'
 import { createHash } from 'crypto'
 
 // ─── Source factory ──────────────────────────────────────────────────────────
@@ -53,6 +53,49 @@ interface SourceResult {
   entry: { id: string; name: string }
   proxies: ProxyEntry[]
   error: string | null
+}
+
+function logicalNodeKey(proxy: ProxyEntry): string {
+  const baseName = proxy.name.replace(/ #\d+$/, '').trim()
+  return [baseName, proxy.type, proxy.server, proxy.port, proxy.transport ?? 'tcp'].join('|')
+}
+
+function logicalNodeLabelKey(proxy: ProxyEntry): string {
+  const baseName = proxy.name.replace(/ #\d+$/, '').trim()
+  return [baseName, proxy.type].join('|')
+}
+
+function removeSourcesSupersededByConfigSource(
+  configSource: SourceResult | null,
+  storeResults: SourceResult[],
+): { results: SourceResult[]; removedSources: number; removedNodes: number } {
+  if (!configSource || configSource.proxies.length === 0) {
+    return { results: storeResults, removedSources: 0, removedNodes: 0 }
+  }
+  const currentNodes = new Set(configSource.proxies.map(logicalNodeKey))
+  const currentLabels = new Set(configSource.proxies.map(logicalNodeLabelKey))
+  let removedSources = 0
+  let removedNodes = 0
+  const results = storeResults.filter(result => {
+    const exactTopologyMatch = result.proxies.length > 0
+      && result.proxies.every(proxy => currentNodes.has(logicalNodeKey(proxy)))
+    const storedLabels = new Set(result.proxies.map(logicalNodeLabelKey))
+    const rotatedTopologyMatch = result.proxies.length > 1
+      && storedLabels.size === result.proxies.length
+      && result.proxies.every(proxy => currentLabels.has(logicalNodeLabelKey(proxy)))
+    if (!exactTopologyMatch && !rotatedTopologyMatch) {
+      return true
+    }
+    // Cabinet imports can rotate their URL/key and credentials. The old source
+    // can also rotate endpoints while keeping the complete multi-node name/type
+    // set. Retaining that stale copy creates #2 nodes and can keep obsolete
+    // endpoints active. A loose match never suppresses a one-node subscription,
+    // and partial overlaps remain independent. Prefer the current ConfigSource.
+    removedSources++
+    removedNodes += result.proxies.length
+    return false
+  })
+  return { results, removedSources, removedNodes }
 }
 
 export class SubscriptionAggregatorService {
@@ -236,7 +279,31 @@ export class SubscriptionAggregatorService {
       return sourceResult
     }))
 
-    if (!this.configSourceCacheInitialized || (checkFreshness && Date.now() - this.cabinetFetchedAt >= this.freshnessMs)) {
+    const configSourceService = getConfigSourceService()
+    const configSourceIdentity = configSourceService.getCanonicalSourceIdentity?.() ?? null
+    const configSourceMeta = configSourceService.getMeta()
+    const configSourceDomain = configSourceMeta?.type === 'subscription-url'
+      ? configSourceMeta.urlDomain?.trim().toLowerCase()
+      : undefined
+    const configSourceDuplicatedByDomain = Boolean(configSourceDomain) && entries.some(entry =>
+      entry.type === 'subscription-url'
+      && entry.urlDomain?.trim().toLowerCase() === configSourceDomain)
+    const configSourceDuplicatedExactly = configSourceIdentity !== null && entries.some(entry => {
+      const input = getSubscriptionStore().getInput(entry.id)
+      return input !== null && canonicalSubscriptionSource(entry.type, input) === configSourceIdentity
+    })
+    const configSourceDuplicated = configSourceDuplicatedExactly || configSourceDuplicatedByDomain
+
+    if (configSourceDuplicated) {
+      // A legacy/cabinet subscription may be copied into SubscriptionStore and
+      // later receive a rotated URL. An enabled explicit subscription from the
+      // same exact host is the visible source of truth; do not merge the hidden
+      // compatibility copy. Different-provider subscriptions still combine.
+      this.cachedConfigSource = null
+      this.configSourceCacheInitialized = true
+      this.cabinetFetchedAt = Date.now()
+    } else if (!this.configSourceCacheInitialized || (this.cachedConfigSource === null && configSourceIdentity !== null)
+      || (checkFreshness && Date.now() - this.cabinetFetchedAt >= this.freshnessMs)) {
       const cabinet = await this.fetchConfigSourceResult()
       if (revision === this.invalidationRevision) {
         this.cachedConfigSource = cabinet
@@ -244,7 +311,12 @@ export class SubscriptionAggregatorService {
         this.cabinetFetchedAt = Date.now()
       }
     }
-    const results = this.cachedConfigSource ? [this.cachedConfigSource, ...storeResults] : storeResults
+    const filtered = removeSourcesSupersededByConfigSource(this.cachedConfigSource, storeResults)
+    if (filtered.removedSources > 0) {
+      getLogger().info({ removedSources: filtered.removedSources, removedNodes: filtered.removedNodes },
+        'Aggregator: superseded migrated sources ignored')
+    }
+    const results = this.cachedConfigSource ? [this.cachedConfigSource, ...filtered.results] : filtered.results
     if (revision !== this.invalidationRevision) return this.rebuildFromCachedSources(checkFreshness)
     if (results.length === 0) throw new Error('No enabled subscriptions')
     return this.buildSnapshot(results)

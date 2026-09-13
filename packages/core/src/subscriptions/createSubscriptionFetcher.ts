@@ -1,4 +1,5 @@
 import {
+  buildClashYaml,
   normalizeSubscriptionContent,
   parseProxiesFromYaml,
   parseXrayConfigArray,
@@ -17,6 +18,8 @@ export interface SubscriptionSourceAdapter {
   fetchText(input: string): Promise<string>
   /** One explicit UA; null for unavailable/placeholder responses. */
   fetchTextWithUserAgent(input: string, userAgent: string): Promise<string | null>
+  getCachedText?(id: string): Promise<string | null>
+  setCachedText?(id: string, yaml: string): Promise<void>
 }
 
 const UDP_PROTOCOLS = new Set(['hysteria2', 'hysteria', 'tuic'])
@@ -77,6 +80,9 @@ export function createSubscriptionFetcher(source: SubscriptionSourceAdapter): Su
             proxies.push(...await recoverUdpProtocolNodes(source, input, proxies))
           } catch { /* best-effort: the primary list stands */ }
         }
+        if (entry.type === 'subscription-url' && proxies.length > 0 && source.setCachedText) {
+          try { await source.setCachedText(entry.id, buildClashYaml(proxies)) } catch { /* best-effort LKG */ }
+        }
         await source.updateMeta(entry.id, {
           lastFetchedAt: Date.now(),
           lastError: null,
@@ -86,6 +92,15 @@ export function createSubscriptionFetcher(source: SubscriptionSourceAdapter): Su
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         await source.updateMeta(entry.id, { lastError: message })
+        if (entry.type === 'subscription-url' && source.getCachedText) {
+          try {
+            const cached = await source.getCachedText(entry.id)
+            if (cached) {
+              const proxies = parseProxiesFromYaml(cached)
+              if (proxies.length > 0) return { proxies, error: message }
+            }
+          } catch { /* invalid/missing cache keeps the original failure */ }
+        }
         return { proxies: [], error: message }
       }
     },

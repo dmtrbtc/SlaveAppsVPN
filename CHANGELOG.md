@@ -4,8 +4,18 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.13] — 2026-09-13
+
 ### Changed
 
+- Connection quality now shows staged progress while the first VPN/DNS checks
+  settle instead of displaying a premature no-internet result.
+- Android subscription data uses local WebView storage as the durable primary
+  copy and Capacitor Preferences as a recoverable native mirror.
+- A manually dispatched Android release build now checks out the requested tag
+  and derives both application versions from it before producing an APK.
+- The Android “What’s new” dialog now requires an exact release version match,
+  so an unpublished dev build cannot display notes from an older prerelease.
 - Windows settings now use the shared `@slave-vpn/core` `SettingsStore` through
   a platform `StorageAdapter`, while preserving the existing flat
   `userData/settings.json` format. All settings mutations are awaited and
@@ -28,6 +38,15 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- Android repairs a corrupt or temporarily unavailable subscription index from
+  its native mirror and preserves last-known-good nodes during transient fetch,
+  TLS, DNS, or parser failures.
+- Subscription mutations wait for ordered mirror writes, closing the restart
+  window in which a newly added source could appear to disappear.
+- Equivalent subscription sources and compatibility sources no longer produce
+  duplicate server rows; source priority remains deterministic.
+- Windows recovery, DNS startup checks, IPC diagnostics, saved-node fallback,
+  and TUN restart handling are stabilised for the dev channel.
 - Settings persistence is now resilient to older supported Android WebViews
   without `structuredClone`; unknown persisted DNS presets safely use the
   `secure` profile rather than aborting VPN compilation.

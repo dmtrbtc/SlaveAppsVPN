@@ -8,6 +8,7 @@ import { SingleProxySource, parseProxyLink } from './sources/SingleProxySource'
 import { RemnawaveKeySource } from './sources/RemnawaveKeySource'
 import { normalizeSubscriptionContent } from './sources/subscriptionNormalizer'
 import { buildSubscriptionHeaders, getEngineUserAgents } from './sources/subscriptionHeaders'
+import { canonicalSubscriptionSource } from '@slave-vpn/core'
 
 const STORAGE_KEY = 'config-source'
 
@@ -116,6 +117,19 @@ class ConfigSourceService {
       if (stored.urlDomain) meta.urlDomain = stored.urlDomain
       if (stored.proxyProtocol) meta.proxyProtocol = stored.proxyProtocol
       return meta
+    } catch {
+      return null
+    }
+  }
+
+  /** Stable comparison key for migration/aggregation. Never log or expose it. */
+  getCanonicalSourceIdentity(): string | null {
+    const raw = getSecureStorage().read(STORAGE_KEY)
+    if (!raw) return null
+    try {
+      const stored = JSON.parse(raw) as StoredConfigSource
+      if (!stored.type || !stored.input) return null
+      return canonicalSubscriptionSource(stored.type, stored.input)
     } catch {
       return null
     }

@@ -53,6 +53,15 @@ async function recoveryFixture(t) {
     counts: () => ({ starts, restarts }) }
 }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+test('Windows TUN health requires an active adapter rather than only wintun.dll', () => {
+  const load = interfaces => loadService('runtime/WindowsMihomoEngine.ts', {
+    os: { networkInterfaces: () => interfaces },
+    '../services/GeoUpdaterService': { getGeoUpdaterService: () => { throw new Error('unused') } },
+  }).checkNetworkAdapterAvailable('Mihomo')
+  assert.equal(load({ Mihomo: [{ internal: false }] }), true)
+  assert.equal(load({ Mihomo: [] }), false)
+  assert.equal(load({}), false)
+})
 test('explicit disconnect cancels coordinator recovery from error', async t => {
   const f = await recoveryFixture(t)
   f.emitState('error')
@@ -88,6 +97,52 @@ test('late rejected recovery cannot rearm after dispose', async t => {
   f.emitState('error'); t.mock.timers.tick(1000); await flush()
   f.coordinator.dispose(); reject(new Error('synthetic failure')); await flush()
   t.mock.timers.tick(30000); await flush(); assert.equal(attempts, 1)
+})
+
+test('exhausted recovery cannot be restarted by duplicate error events', async t => {
+  const f = await recoveryFixture(t); let attempts = 0
+  f.coordinator.setConnectFn(async () => { attempts++; throw new Error('synthetic failure') })
+  f.emitState('error')
+  for (const delay of [1000, 2000, 4000, 8000, 16000]) {
+    t.mock.timers.tick(delay); await flush()
+  }
+  assert.equal(attempts, 5)
+  f.emitState('error'); t.mock.timers.tick(32000); await flush()
+  assert.equal(attempts, 5)
+})
+
+test('failed start releases the manager queue and recovery reaches running', async t => {
+  const f = await recoveryFixture(t)
+  await f.manager.disconnect()
+  const start = f.engine.start; let fail = true
+  f.engine.start = async p => {
+    if (fail) { fail = false; f.emitState('error'); throw new Error('synthetic startup failure') }
+    await start(p)
+  }
+  const p = { subscriptionYaml: 'proxies: []', vpnMode: 'blocked', generatorSettings: {} }
+  await assert.rejects(f.manager.connect(p), /startup failure/)
+  assert.equal(f.manager.isConnectionDesired(), true)
+  t.mock.timers.tick(1000); await flush()
+  assert.equal(f.manager.getState(), 'running')
+  assert.deepEqual(f.counts(), { starts: 2, restarts: 0 })
+})
+
+test('duplicate failed-state events during recovery do not start another cycle', async t => {
+  const f = await recoveryFixture(t); let release; let attempts = 0
+  f.coordinator.setConnectFn(() => { attempts++; return new Promise(resolve => { release = resolve }) })
+  f.emitState('crashed'); t.mock.timers.tick(1000); await flush()
+  f.emitState('error'); f.emitState('crashed'); t.mock.timers.tick(32000); await flush()
+  assert.equal(attempts, 1)
+  f.emitState('running'); release(); await flush()
+})
+
+test('late crash after explicit disconnect does not re-enable connection desire', async t => {
+  const f = await recoveryFixture(t)
+  await f.manager.disconnect()
+  f.events.emit('stopped', { reason: 'crashed' }); f.emitState('crashed')
+  t.mock.timers.tick(32000); await flush()
+  assert.equal(f.manager.isConnectionDesired(), false)
+  assert.deepEqual(f.counts(), { starts: 1, restarts: 0 })
 })
 function aggregatorFixture(options = {}) {
   let fetches = 0
@@ -145,15 +200,21 @@ test('failed refresh preserves last-known-good source nodes', async () => {
 function runtimeFixture(desired, persistedStore) {
   const { RuntimeManager } = require('@slave-vpn/runtime')
   const settings = { selectedProxy: desired, vpnMode: 'blocked', notificationsEnabled: false }
+  let dashboardYaml = 'proxies: []'
+  let legacyEntries = []
+  let legacyReads = 0
   const { RuntimeServiceImpl } = loadService('services/impl/RuntimeServiceImpl.ts', {
     electron: { Notification: {} }, '../../../shared/ipc/channels': { IpcChannel: {} },
     '../../window': { sendToRenderer() {} }, './RuntimeEnvironmentValidator': {},
     '../NodeHealthManager': { getNodeHealthManager: () => ({ getQuarantinedNodes: () => [] }) },
-    './ConfigSourceService': { getConfigSourceService: () => ({ getServerList: async () => [] }) },
+    './ConfigSourceService': { getConfigSourceService: () => ({ getServerList: async () => { legacyReads++; return legacyEntries } }) },
     '../../logger': { getLogger: () => logger },
     '../DnsProfileService': { buildEngineDnsProfile: () => ({ fakeIp: { enabled: false } }), resolveDohUrl: () => 'https://example.test/dns-query' },
     '../RoutingScenarioService': { getRoutingScenarioService: () => ({ composePolicyForMode: () => null }) },
-    '../SubscriptionStore': { getSubscriptionStore: () => ({ list: () => [{ enabled: true }] }) }, '../SubscriptionAggregatorService': {},
+    '../SubscriptionStore': { getSubscriptionStore: () => ({ list: () => [{ enabled: true }] }) },
+    '../SubscriptionAggregatorService': { getSubscriptionAggregator: () => ({
+      getSnapshotOrFetch: async () => ({ yaml: dashboardYaml, totalProxies: 1, warnings: [], revision: 1, hash: 'synthetic' }),
+    }) },
     './sources/WindowsSystemProxy': {},
   })
   const applied = []
@@ -172,9 +233,25 @@ function runtimeFixture(desired, persistedStore) {
     service.fetchSubscriptionYaml = async () => ({ yaml: 'proxies: []', proxyCount: 1, source: 'aggregator' })
     const initial = service.buildDesiredProfile('proxies: []', persistedStore ? persistedStore.getAll() : settings)
     await manager.connect(initial)
-    return { service, manager, applied, settings, engine }
+    return { service, manager, applied, settings, engine,
+      setDashboardYaml: value => { dashboardYaml = value },
+      setLegacyEntries: value => { legacyEntries = value },
+      legacyReads: () => legacyReads }
   })()
 }
+
+test('dashboard proxy list uses the same aggregated projection as Mihomo', async () => {
+  const f = await runtimeFixture('Manual')
+  f.setDashboardYaml('proxies:\n  - {name: One, type: ss, server: aggregate.test, port: 443, cipher: aes-128-gcm, password: synthetic}')
+  f.setLegacyEntries([
+    { id: '1', name: 'One', server: 'legacy.test', port: 443, proxyProtocol: 'ss' },
+    { id: '2', name: 'One', server: 'legacy.test', port: 443, proxyProtocol: 'ss' },
+  ])
+  const list = await f.service.getProxyList()
+  assert.equal(list.length, 1)
+  assert.equal(list[0].server, 'aggregate.test')
+  assert.equal(f.legacyReads(), 0)
+})
 
 test('actual service connect uses freshness and preserves latest mode and selection during resolution', async () => {
   const f = await runtimeFixture('Manual')
@@ -194,6 +271,39 @@ test('actual service connect uses freshness and preserves latest mode and select
   release(); await pending
   assert.equal(f.manager.getCurrentProfile().vpnMode, 'full')
   assert.equal(f.manager.getCurrentProfile().selectedProxy, 'Latest')
+})
+
+test('Disconnect during the production resume handler cancels its pending reconnect', async () => {
+  const f = await runtimeFixture('Manual')
+  f.service.runPreflight = async () => {}
+  let release; let entered
+  const gate = new Promise(resolve => { release = resolve })
+  const stopped = new Promise(resolve => { entered = resolve })
+  const stop = f.engine.stop
+  f.engine.stop = async () => { entered(); await gate; await stop() }
+  const source = fs.readFileSync(path.resolve(__dirname, '../src/main/bootstrap.ts'), 'utf8')
+  const handler = source.slice(source.indexOf('export async function triggerReconnect'))
+  const compiled = ts.transpileModule(handler, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const exports = {}
+  new Function('runtimeService', 'runtimeManager', 'getLogger', 'exports', compiled)(f.service, f.manager, () => logger, exports)
+  const resume = exports.triggerReconnect()
+  await stopped
+  const disconnect = f.service.disconnect()
+  release(); await Promise.all([resume, disconnect])
+  assert.equal(f.manager.isConnectionDesired(), false)
+  assert.equal(f.manager.getState(), 'idle')
+  assert.equal(f.applied.length, 1)
+})
+
+test('duplicate resume events reconnect only once when no user cancels', async () => {
+  const f = await runtimeFixture('Manual')
+  f.service.runPreflight = async () => {}
+  await Promise.all([f.service.reconnectAfterResume(), f.service.reconnectAfterResume()])
+  assert.equal(f.manager.isConnectionDesired(), true)
+  assert.equal(f.manager.getState(), 'running')
+  assert.equal(f.applied.length, 2)
 })
 
 for (const action of ['stop', 'interval']) test(`scheduler ${action} during fetch does not publish or re-arm old job`, async t => {
@@ -240,6 +350,24 @@ test('IPC validation logging includes correlation but excludes user payload and 
   assert.ok(output.includes('requestId'))
   assert.ok(!output.includes('synthetic-sensitive'))
 })
+test('IPC handler exception logging identifies channel with a privacy-safe cause', async () => {
+  const logs = []
+  const { z } = require('zod')
+  const { validated } = loadService('security/IpcValidator.ts', {
+    '../../shared/ipc/types': { errResult: (code, message) => ({ code, message }) },
+    '../logger': { getLogger: () => ({ error: (...args) => logs.push(args) }) },
+  })
+  const handler = validated(z.string(), async () => {
+    throw new TypeError('synthetic-secret-host.example/sub/synthetic-token')
+  }, 'subscriptions-add')
+  await handler({ senderFrame: { url: 'file:///synthetic.html' } }, 'valid')
+  const output = JSON.stringify(logs)
+  assert.ok(output.includes('subscriptions-add'))
+  assert.ok(output.includes('TypeError'))
+  assert.ok(output.includes('Unexpected handler data or state'))
+  assert.ok(output.includes('requestId'))
+  assert.ok(!output.includes('synthetic-secret'))
+})
 test('manual target survives immediate refresh with activeProxy null', async () => {
   const { service, manager, applied } = await runtimeFixture('Manual')
   await service.notifySubscriptionsChanged()
@@ -270,6 +398,152 @@ test('cabinet source instance survives TTL and is fetched once per fresh snapsho
   await f.aggregator.getSnapshotOrFetch(true)
   assert.equal(fetches, 2)
   assert.equal(creations, 1)
+})
+
+test('legacy config source migrated into subscription store is fetched and aggregated once', async () => {
+  let cabinetFetches = 0
+  const identity = require('@slave-vpn/core').canonicalSubscriptionSource('subscription-url', 'https://example.test/sub')
+  const f = aggregatorFixture({ cabinet: {
+    getMeta: () => ({ displayName: 'Legacy' }),
+    getCanonicalSourceIdentity: () => identity,
+    createConfigSource: () => ({ fetchYaml: async () => { cabinetFetches++; return 'proxies: []' } }),
+  } })
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 1)
+  assert.equal(f.fetches(), 1)
+  assert.equal(cabinetFetches, 0)
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['one'])
+})
+
+test('legacy config source becomes active when its migrated store copy is disabled', async () => {
+  let cabinetFetches = 0
+  const identity = require('@slave-vpn/core').canonicalSubscriptionSource('subscription-url', 'https://example.test/sub')
+  const cabinetYaml = 'proxies:\n  - {name: Cabinet, type: ss, server: cabinet.test, port: 443, cipher: aes-128-gcm, password: synthetic}'
+  const f = aggregatorFixture({ cabinet: {
+    getMeta: () => ({ displayName: 'Legacy' }), getCanonicalSourceIdentity: () => identity,
+    createConfigSource: () => ({ fetchYaml: async () => { cabinetFetches++; return cabinetYaml } }),
+  } })
+  await f.aggregator.getSnapshotOrFetch()
+  f.entries[0].enabled = false
+  f.aggregator.invalidateSnapshot()
+  const snapshot = await f.aggregator.getSnapshotOrFetch()
+  assert.equal(snapshot.totalProxies, 1)
+  assert.equal(cabinetFetches, 1)
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__'])
+})
+
+test('rotated cabinet URL is ignored when an enabled explicit source uses the same host', async () => {
+  let cabinetFetches = 0
+  const f = aggregatorFixture({ cabinet: {
+    getMeta: () => ({ type: 'subscription-url', displayName: 'Cabinet', urlDomain: 'sub.example.test' }),
+    getCanonicalSourceIdentity: () => require('@slave-vpn/core').canonicalSubscriptionSource('subscription-url', 'https://sub.example.test/old'),
+    createConfigSource: () => ({ fetchYaml: async () => { cabinetFetches++; return 'proxies: []' } }),
+  } })
+  f.entries[0].urlDomain = 'SUB.EXAMPLE.TEST'
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 1)
+  assert.equal(cabinetFetches, 0)
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['one'])
+})
+
+test('explicit source from another host remains combined with cabinet nodes', async () => {
+  let cabinetFetches = 0
+  const cabinetYaml = 'proxies:\n  - {name: Cabinet, type: ss, server: cabinet.test, port: 443, cipher: aes-128-gcm, password: synthetic}'
+  const f = aggregatorFixture({ cabinet: {
+    getMeta: () => ({ type: 'subscription-url', displayName: 'Cabinet', urlDomain: 'sub.example.test' }),
+    getCanonicalSourceIdentity: () => require('@slave-vpn/core').canonicalSubscriptionSource('subscription-url', 'https://sub.example.test/current'),
+    createConfigSource: () => ({ fetchYaml: async () => { cabinetFetches++; return cabinetYaml } }),
+  } })
+  f.entries[0].urlDomain = 'external.example'
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 2)
+  assert.equal(cabinetFetches, 1)
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__', 'one'])
+})
+
+test('rotated cabinet source supersedes a fully overlapping migrated source', async () => {
+  let cabinetFetches = 0
+  const currentYaml = [
+    'proxies:',
+    '  - {name: Shared, type: vless, server: shared.test, port: 443, uuid: 00000000-0000-4000-8000-000000000002, tls: true}',
+    '  - {name: CurrentOnly, type: ss, server: current.test, port: 443, cipher: aes-128-gcm, password: current}',
+  ].join('\n')
+  const f = aggregatorFixture({
+    sourceYaml: () => 'proxies:\n  - {name: Shared, type: vless, server: shared.test, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true}',
+    cabinet: {
+      getMeta: () => ({ displayName: 'Current cabinet' }),
+      getCanonicalSourceIdentity: () => 'subscription-url:https://current.example/sub',
+      createConfigSource: () => ({ fetchYaml: async () => { cabinetFetches++; return currentYaml } }),
+    },
+  })
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(cabinetFetches, 1)
+  assert.equal(snapshot.totalProxies, 2)
+  assert.ok(!snapshot.yaml.includes('Shared #2'))
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__'])
+})
+
+test('rotated cabinet source keeps a subscription with an independent node', async () => {
+  const currentYaml = 'proxies:\n  - {name: Shared, type: vless, server: shared.test, port: 443, uuid: 00000000-0000-4000-8000-000000000002, tls: true}'
+  const storedYaml = [
+    'proxies:',
+    '  - {name: Shared, type: vless, server: shared.test, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true}',
+    '  - {name: Independent, type: ss, server: independent.test, port: 443, cipher: aes-128-gcm, password: independent}',
+  ].join('\n')
+  const f = aggregatorFixture({
+    sourceYaml: () => storedYaml,
+    cabinet: {
+      getMeta: () => ({ displayName: 'Current cabinet' }),
+      getCanonicalSourceIdentity: () => 'subscription-url:https://current.example/sub',
+      createConfigSource: () => ({ fetchYaml: async () => currentYaml }),
+    },
+  })
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 3)
+  assert.ok(snapshot.yaml.includes('Shared #2'))
+  assert.ok(snapshot.yaml.includes('Independent'))
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__', 'one'])
+})
+
+test('cabinet endpoint rotation supersedes a complete multi-node name set', async () => {
+  const currentYaml = [
+    'proxies:',
+    '  - {name: Slave-EE, type: vless, server: current-ee.test, port: 8443, uuid: 00000000-0000-4000-8000-000000000003, tls: true}',
+    '  - {name: Slave-NL2, type: vless, server: current-nl.test, port: 8443, uuid: 00000000-0000-4000-8000-000000000004, tls: true}',
+  ].join('\n')
+  const storedYaml = [
+    'proxies:',
+    '  - {name: Slave-EE, type: vless, server: old-ee.test, port: 443, uuid: 00000000-0000-4000-8000-000000000001, tls: true}',
+    '  - {name: Slave-NL2, type: vless, server: old-nl.test, port: 443, uuid: 00000000-0000-4000-8000-000000000002, tls: true}',
+  ].join('\n')
+  const f = aggregatorFixture({
+    sourceYaml: () => storedYaml,
+    cabinet: {
+      getMeta: () => ({ displayName: 'Current cabinet' }),
+      getCanonicalSourceIdentity: () => 'subscription-url:https://current.example/sub',
+      createConfigSource: () => ({ fetchYaml: async () => currentYaml }),
+    },
+  })
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 2)
+  assert.ok(!snapshot.yaml.includes('#2'))
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__'])
+})
+
+test('cabinet name overlap does not suppress a single independent node', async () => {
+  const currentYaml = 'proxies:\n  - {name: Shared, type: vless, server: current.test, port: 443, uuid: 00000000-0000-4000-8000-000000000002, tls: true}'
+  const f = aggregatorFixture({
+    sourceYaml: () => 'proxies:\n  - {name: Shared, type: vless, server: independent.test, port: 8443, uuid: 00000000-0000-4000-8000-000000000001, tls: true}',
+    cabinet: {
+      getMeta: () => ({ displayName: 'Current cabinet' }),
+      getCanonicalSourceIdentity: () => 'subscription-url:https://current.example/sub',
+      createConfigSource: () => ({ fetchYaml: async () => currentYaml }),
+    },
+  })
+  const snapshot = await f.aggregator.getSnapshotOrFetch(true)
+  assert.equal(snapshot.totalProxies, 2)
+  assert.ok(snapshot.yaml.includes('Shared #2'))
+  assert.deepEqual(Object.keys(snapshot.perSubscription), ['__config-source__', 'one'])
 })
 
 test('disabled sources are skipped by manual refresh all and refresh one', async () => {

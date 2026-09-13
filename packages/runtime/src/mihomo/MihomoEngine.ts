@@ -49,7 +49,7 @@ export class MihomoEngine implements VPNEngine {
     this.trafficMonitor = new TrafficMonitor(this.api, this.events)
   }
 
-  async start(profile: ConnectionProfile): Promise<void> {
+  async start(profile: ConnectionProfile, allowUnavailableSelection = true): Promise<void> {
     this.requireInitialized()
     const state = this.fsm.state
     if (state !== 'idle' && state !== 'error' && state !== 'reconnecting') {
@@ -95,7 +95,24 @@ export class MihomoEngine implements VPNEngine {
       } catch { /* non-critical */ }
 
       if (profile.selectedProxy) {
-        await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+        try {
+          await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+        } catch (error) {
+          if (!allowUnavailableSelection) throw error
+          // A persisted manual target can disappear after a subscription refresh.
+          // Fall back only with positive API evidence, never on a transport error
+          // or a failed selection of a target which still exists.
+          const group = await this.api!.getProxyGroup(getSelectGroupName()).catch(() => null)
+          if (!group || !Array.isArray(group.all) || group.all.includes(profile.selectedProxy) ||
+              !group.all.includes('SLAVE-AUTO')) throw error
+          await this.api!.selectProxy(getSelectGroupName(), 'SLAVE-AUTO')
+          // start() owns this RuntimeManager snapshot. Record what Mihomo
+          // actually accepted so later refresh/rollback decisions use the
+          // applied profile rather than the unavailable persisted target.
+          profile.selectedProxy = 'SLAVE-AUTO'
+          this.events.emit('logLine', { level: 'warn',
+            message: 'runtime.saved_proxy_unavailable: saved server is absent; connected using AUTO' })
+        }
       }
 
       this.healthMonitor!.configure({
@@ -126,7 +143,13 @@ export class MihomoEngine implements VPNEngine {
     this.fsm.tryTransition('stopping', reason)
     this.events.emit('stateChanged', { state: this.fsm.state })
     this.processManager.setNextStopReason(reason)
-    await this.processManager.kill(reason)
+    try {
+      await this.processManager.kill(reason)
+    } catch (error) {
+      this.fsm.tryTransition('error', 'termination_unconfirmed')
+      this.events.emit('stateChanged', { state: this.fsm.state, reason: 'termination_unconfirmed' })
+      throw error
+    }
 
     this.fsm.tryTransition('idle')
     this.events.emit('stateChanged', { state: 'idle' })
@@ -152,7 +175,7 @@ export class MihomoEngine implements VPNEngine {
       await this.stop(reason)
     }
 
-    await this.start(profile)
+    await this.start(profile, reason !== 'config_reload')
   }
 
   async probeLatency(tag: string, testUrl: string, timeoutMs: number): Promise<number | null> {
@@ -226,7 +249,7 @@ export class MihomoEngine implements VPNEngine {
           } catch (error) {
             try {
               await this.stop('config_reload')
-              await this.start(previousProfile)
+              await this.start(previousProfile, false)
             } catch {
               await this.failRecovery()
               throw new Error('Profile update and restart recovery failed')

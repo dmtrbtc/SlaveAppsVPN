@@ -12,8 +12,9 @@ export interface AsyncStringMirror {
 
 export interface MirroredStringStore {
   get(key: string): Promise<string | null>
+  getValidated(key: string, validate: (value: string) => boolean): Promise<string | null>
   set(key: string, value: string): Promise<void>
-  remove(key: string): void
+  remove(key: string): Promise<void>
 }
 
 export interface MirroredStringStoreOptions {
@@ -78,6 +79,33 @@ export function createMirroredStringStore(
     return generation(key) === startedAt ? null : local.get(key)
   }
 
+  async function recoverValidMirror(
+    key: string,
+    validate: (value: string) => boolean,
+  ): Promise<string | null> {
+    const startedAt = generation(key)
+    const pendingMutation = mutations.get(key)
+    if (pendingMutation) await pendingMutation.catch(() => undefined)
+    for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+      try {
+        const value = await mirror.get(key)
+        if (value !== null && validate(value)) {
+          if (generation(key) !== startedAt) {
+            const current = local.get(key)
+            return current !== null && validate(current) ? current : null
+          }
+          local.set(key, value)
+          return value
+        }
+      } catch {
+        // The native mirror can be briefly unavailable while Capacitor starts.
+      }
+      if (attempt < retryDelaysMs.length) await delay(retryDelaysMs[attempt]!)
+    }
+    const current = local.get(key)
+    return current !== null && validate(current) ? current : null
+  }
+
   return {
     async get(key) {
       const localValue = local.get(key)
@@ -96,10 +124,18 @@ export function createMirroredStringStore(
       }
     },
 
+    async getValidated(key, validate) {
+      const localValue = local.get(key)
+      if (localValue !== null && validate(localValue)) return localValue
+      return recoverValidMirror(key, validate)
+    },
+
     async set(key, value) {
       advance(key)
       if (local.set(key, value)) {
-        void enqueueMirrorMutation(key, () => mirror.set(key, value)).catch(() => undefined)
+        // Wait for the mirror attempt so related input/index writes remain
+        // ordered if the app closes immediately after a subscription mutation.
+        await enqueueMirrorMutation(key, () => mirror.set(key, value)).catch(() => undefined)
         return
       }
       // localStorage is unavailable: the native mirror is now required.
@@ -111,10 +147,10 @@ export function createMirroredStringStore(
       }
     },
 
-    remove(key) {
+    async remove(key) {
       advance(key)
       local.remove(key)
-      void enqueueMirrorMutation(key, () => mirror.remove(key)).catch(() => undefined)
+      await enqueueMirrorMutation(key, () => mirror.remove(key)).catch(() => undefined)
     },
   }
 }

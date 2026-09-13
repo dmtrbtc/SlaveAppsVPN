@@ -37,7 +37,9 @@ export function validated<TInput, TOutput>(
       const formatted = formatZodError(parseResult.error)
       // Codes identify the failed constraint without serializing user input or
       // custom schema messages, which can embed credentials.
-      getLogger().warn({ ...metadata, reasons: parseResult.error.issues.map(issue => issue.code) }, 'IPC payload validation failed')
+      const reasons = parseResult.error.issues.map(issue => issue.code)
+      getLogger().warn({ ...metadata, reasons },
+        `IPC payload validation failed: channel=${channel}, payloadType=${metadata.payloadType}, reasons=${reasons.join(',')}, requestId=${metadata.requestId}`)
       return errResult('VALIDATION_ERROR', `Invalid payload: ${formatted}`)
     }
 
@@ -45,10 +47,27 @@ export function validated<TInput, TOutput>(
       return await handler(parseResult.data, event)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
-      getLogger().error({ error }, 'IPC handler threw an exception')
+      const safeError = classifyIpcHandlerError(error)
+      getLogger().error({ ...metadata, ...safeError },
+        `IPC handler threw an exception: channel=${channel}, errorType=${safeError.errorType}, errorMessage=${safeError.errorMessage}, requestId=${metadata.requestId}`)
       return errResult('HANDLER_ERROR', message)
     }
   }
+}
+
+function classifyIpcHandlerError(error: unknown): { errorType: string; errorMessage: string; errorCode?: string } {
+  const errorType = error instanceof Error && error.name ? error.name : 'Unknown'
+  const candidateCode = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : ''
+  const errorCode = /^[A-Z][A-Z0-9_]{1,40}$/.test(candidateCode) ? candidateCode : undefined
+  const rawMessage = error instanceof Error ? error.message : ''
+  let errorMessage = 'Handler operation failed (details omitted for privacy)'
+  if (errorType === 'TypeError') errorMessage = 'Unexpected handler data or state'
+  else if (errorType === 'AbortError' || /\b(?:aborted|cancell?ed)\b/i.test(rawMessage)) errorMessage = 'Operation canceled'
+  else if (/^No enabled subscriptions$/.test(rawMessage)) errorMessage = rawMessage
+  else if (/^Subscription not found$/.test(rawMessage)) errorMessage = rawMessage
+  return { errorType, errorMessage, ...(errorCode ? { errorCode } : {}) }
 }
 
 function isValidIpcOrigin(event: IpcMainInvokeEvent): boolean {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import type { RuntimeManager } from '@slave-vpn/runtime'
+import { safeLifecycleError } from '@slave-vpn/runtime'
 import { IpcChannel } from '../../shared/ipc/channels'
 import { sendToRenderer } from '../window'
 import { getLogger } from '../logger'
@@ -44,6 +45,7 @@ export class RecoveryCoordinator {
   private connectFn: (() => Promise<void>) | null = null
   private generation = 0
   private disposed = false
+  private exhausted = false
   private readonly unsubscribe: () => void
 
   constructor(manager: RuntimeManager, policy: RecoveryPolicy = DEFAULT_POLICY) {
@@ -53,6 +55,7 @@ export class RecoveryCoordinator {
     this.unsubscribe = manager.on('stateChanged', ({ state }) => {
       if (this.disposed) return
       if (!manager.isConnectionDesired()) {
+        this.exhausted = false
         this.reset()
         return
       }
@@ -69,6 +72,7 @@ export class RecoveryCoordinator {
   }
 
   private onRecovered(): void {
+    this.exhausted = false
     if (this.recovering) {
       const log = getLogger()
       log.info({ attempts: this.attempts }, 'RecoveryCoordinator: VPN recovered')
@@ -80,7 +84,7 @@ export class RecoveryCoordinator {
   }
 
   private scheduleRecovery(): void {
-    if (this.disposed || !this.manager.isConnectionDesired()) return
+    if (this.disposed || this.exhausted || !this.manager.isConnectionDesired()) return
     if (this.recovering) return  // already in a recovery cycle
     if (!this.connectFn) return  // no connect function registered
 
@@ -118,7 +122,11 @@ export class RecoveryCoordinator {
         return
       }
       this.connectFn?.().catch((err: unknown) => {
-        getLogger().warn({ err, attempt: this.attempts }, 'RecoveryCoordinator: reconnect attempt failed')
+        const failure = { ...safeLifecycleError(err), attempt: this.attempts, generation,
+          state: this.manager.getState(), connectionDesired: this.manager.isConnectionDesired() }
+        getLogger().warn(failure, `RecoveryCoordinator: reconnect attempt failed: ${failure.errorMessage}`)
+        sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
+          makeRuntimeEvent('vpn.error', 'error', failure.errorMessage, failure))
         if (generation === this.generation && this.recovering && !this.disposed && this.manager.isConnectionDesired()) {
           this.doRecoveryAttempt()
         }
@@ -127,6 +135,7 @@ export class RecoveryCoordinator {
   }
 
   private onExhausted(): void {
+    this.exhausted = true
     getLogger().error({ attempts: this.attempts }, 'RecoveryCoordinator: recovery exhausted')
     sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
       makeRuntimeEvent('reconnect.exhausted', 'critical',

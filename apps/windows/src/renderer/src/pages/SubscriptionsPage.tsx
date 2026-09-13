@@ -14,6 +14,7 @@ import { useCabinetAuthState } from '../hooks/useCabinet'
 import { cn } from '../lib/utils'
 import { useSubscriptionsStore } from '../stores/subscriptions.store'
 import { useUIStore } from '../stores/ui.store'
+import { IS_MOBILE } from '../lib/platform'
 import type {
   SubscriptionEntry,
   SubscriptionAutoUpdate,
@@ -367,7 +368,7 @@ function AddSubscriptionModal({ open, onClose }: { open: boolean; onClose: () =>
                 { id: 'url' as const, label: 'URL', Icon: LinkIcon },
                 { id: 'single-proxy' as const, label: 'Нода', Icon: ScanLine },
                 { id: 'remnawave' as const, label: 'Remnawave key', Icon: KeyRound },
-              ]).map(t => (
+              ].filter(t => !IS_MOBILE || t.id !== 'remnawave')).map(t => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}

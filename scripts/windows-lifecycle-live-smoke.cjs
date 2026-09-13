@@ -73,6 +73,20 @@ async function main() {
     assert.equal(engine.getState(), 'crashed')
     await engine.restart('crashed'); await selected('Manual'); record('real-process-crash-restart')
     await engine.stop(); assert.equal(engine.getState(), 'idle'); assert.equal(engine.processManager.getPid(), null)
+    const warnings = []
+    const unsubscribe = engine.on('logLine', event => {
+      if (event.message.includes('runtime.saved_proxy_unavailable')) warnings.push(event.message)
+    })
+    await engine.start({ ...profile, selectedProxy: 'removed-synthetic-node' })
+    assert.equal(engine.getState(), 'running'); await selected('SLAVE-AUTO')
+    assert.equal(warnings.length, 1); unsubscribe()
+    record('removed-saved-proxy-starts-auto-with-warning')
+    await engine.stop()
+    for (let cycle = 0; cycle < 5; cycle++) {
+      await engine.start(profile); await selected('Manual')
+      await engine.stop(); assert.equal(engine.processManager.getPid(), null)
+    }
+    record('five-process-api-connect-disconnect-cycles')
     record('stop-confirms-exit'); record('result', { passed: true })
   } catch (error) {
     record('result', { passed: false, error: error.message }); throw error

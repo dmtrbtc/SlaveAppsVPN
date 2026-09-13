@@ -1,0 +1,54 @@
+[
+  {
+    "revision": "v0.2.41-dev.10",
+    "state": "running",
+    "spawns": 1,
+    "stops": 0,
+    "states": [
+      "starting",
+      "running"
+    ]
+  },
+  {
+    "revision": "2ce419d",
+    "state": "error",
+    "spawns": 3,
+    "stops": 3,
+    "states": [
+      "starting",
+      "error",
+      "idle",
+      "starting",
+      "error",
+      "idle",
+      "starting",
+      "error"
+    ]
+  },
+  {
+    "revision": "ada0aba",
+    "state": "error",
+    "spawns": 3,
+    "stops": 3,
+    "states": [
+      "starting",
+      "error",
+      "idle",
+      "starting",
+      "error",
+      "idle",
+      "starting",
+      "error"
+    ]
+  },
+  {
+    "revision": "candidate",
+    "state": "running",
+    "spawns": 1,
+    "stops": 0,
+    "states": [
+      "starting",
+      "running"
+    ]
+  }
+]

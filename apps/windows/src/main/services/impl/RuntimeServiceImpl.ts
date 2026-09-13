@@ -6,6 +6,7 @@ import { RuntimeManager } from '@slave-vpn/runtime'
 import {
   diffConnectionProfiles,
   fingerprintConnectionProfile,
+  safeLifecycleError,
 } from '@slave-vpn/runtime'
 import type { RuntimeState, HealthStatus, ConnectionProfile } from '@slave-vpn/runtime'
 import type { ConfigSource } from '@slave-vpn/provider'
@@ -25,7 +26,7 @@ import { validateRuntimeEnvironment } from './RuntimeEnvironmentValidator'
 import { getNodeHealthManager } from '../NodeHealthManager'
 import { getConfigSourceService } from './ConfigSourceService'
 import { getLogger } from '../../logger'
-import { normalizeSubscriptionContent } from '@slave-vpn/config'
+import { normalizeSubscriptionContent, parseProxiesFromYaml } from '@slave-vpn/config'
 import { buildEngineDnsProfile, resolveDohUrl } from '../DnsProfileService'
 import { getRoutingScenarioService } from '../RoutingScenarioService'
 import { getSubscriptionStore } from '../SubscriptionStore'
@@ -257,6 +258,8 @@ export class RuntimeServiceImpl implements RuntimeService {
     this.waitForSettings = config.waitForSettings ?? (() => Promise.resolve(this.getSettings()))
 
     this.manager.on('stateChanged', ({ state }) => {
+      getLogger().info({ state, connectionDesired: this.manager.isConnectionDesired(),
+        generation: this.connectionEpoch }, 'runtime.state.changed')
       if (state === 'running') {
         this.connectedAt = Date.now()
         this.lastError = null
@@ -601,6 +604,7 @@ export class RuntimeServiceImpl implements RuntimeService {
     const epoch = ++this.connectionEpoch
     const log = getLogger()
     try {
+      log.info({ generation: epoch, state, connectionDesired: this.manager.isConnectionDesired() }, 'runtime.connect.begin')
       await this.runPreflight()
       await this.waitForSettings()
 
@@ -633,6 +637,12 @@ export class RuntimeServiceImpl implements RuntimeService {
       }, 'config-update requested')
       await this.manager.connect(profile)
       log.info({ operationId, reason: 'connect', decision: 'engine-start' }, 'config-update completed')
+    } catch (error) {
+      const failure = safeLifecycleError(error)
+      this.lastError = failure.errorMessage
+      log.warn({ ...failure, generation: epoch, state: this.manager.getState(),
+        connectionDesired: this.manager.isConnectionDesired() }, `runtime.connect.failed: ${failure.errorMessage}`)
+      throw error
     } finally {
       this.connectLock = false
     }
@@ -647,6 +657,16 @@ export class RuntimeServiceImpl implements RuntimeService {
     } finally {
       this.disconnectLock = false
     }
+  }
+
+  async reconnectAfterResume(): Promise<void> {
+    if (this.manager.getState() !== 'running' || !this.manager.isConnectionDesired() ||
+        this.connectLock || this.disconnectLock) return
+    const epoch = this.connectionEpoch + 1
+    await this.disconnect()
+    // A user command during shutdown supersedes the resume request.
+    if (epoch !== this.connectionEpoch) return
+    await this.connect()
   }
 
   getStatus(): VPNStatus {
@@ -851,7 +871,25 @@ export class RuntimeServiceImpl implements RuntimeService {
   }
 
   async getProxyList(): Promise<import('../../../shared/ipc/types').ProxyEntry[]> {
-    if (!this.configSource) return []
+    const enabled = getSubscriptionStore().list().some(entry => entry.enabled)
+    if (enabled) {
+      try {
+        // Keep the dashboard projection identical to the configuration applied
+        // to Mihomo. The legacy ConfigSource can be retained after migration and
+        // is not a valid UI source of truth once SubscriptionStore is active.
+        const snapshot = await getSubscriptionAggregator().getSnapshotOrFetch()
+        return parseProxiesFromYaml(snapshot.yaml).map(entry => ({
+          name: entry.name,
+          type: entry.type,
+          server: entry.server,
+          port: entry.port,
+          ...(entry.transport ? { transport: entry.transport } : {}),
+          ...(entry.securityType ? { security: entry.securityType } : {}),
+        }))
+      } catch (error) {
+        getLogger().warn({ error }, 'Aggregated dashboard proxy list failed; using legacy source')
+      }
+    }
     try {
       const entries = await getConfigSourceService().getServerList()
       return entries.map(e => ({

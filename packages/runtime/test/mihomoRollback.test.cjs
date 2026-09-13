@@ -9,6 +9,15 @@ const profile = () => ({ subscriptionYaml: 'proxies: []', selectedProxy: 'Manual
   generatorSettings: { tunEnabled: true, tunStack: 'mixed', mixedPort: 7890,
     fallbackDns: [], dnsOverHttps: 'https://example.test/dns-query', fakeIpEnabled: true } })
 
+test('lifecycle diagnostics expose fixed errors without arbitrary secrets or API bodies', () => {
+  const { safeLifecycleError } = require('../dist/state/safeLifecycleError')
+  assert.equal(safeLifecycleError(new Error('Cannot start engine in state: stopping')).errorMessage,
+    'Cannot start engine in state: stopping')
+  for (const message of ['token=synthetic-secret', 'Mihomo API error 400: synthetic-secret']) {
+    assert.ok(!JSON.stringify(safeLifecycleError(new Error(message))).includes('synthetic-secret'))
+  }
+})
+
 async function integratedFixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mihomo-integrated-'))
   t.after(() => fs.rm(dir, { recursive: true, force: true }))
@@ -22,6 +31,7 @@ async function integratedFixture(t) {
     if (alive) { alive = false; exit(reason, 0) }
   }
   engine.api = { isAlive: async () => alive, getVersion: async () => ({ version: 'synthetic' }),
+    getProxyGroup: async () => ({ all: ['SLAVE-AUTO', 'Manual'] }),
     selectProxy: async () => { if (failSelection) { failSelection = false; throw new Error('selection failed') } } }
   engine.healthMonitor = { configure() {}, start() {}, stop() {} }
   engine.trafficMonitor = { start() {}, stop() {} }
@@ -48,6 +58,70 @@ test('initial selection failure leaves real start path in error without running 
   f.failSelection(); await assert.rejects(f.engine.start(profile()), /selection failed/)
   assert.equal(f.engine.getState(), 'error'); assert.ok(!states.includes('running'))
   assert.equal(f.engine.processManager.getPid(), null)
+})
+
+test('removed saved proxy does not turn a healthy startup into a recovery loop', async t => {
+  const f = await integratedFixture(t)
+  const selected = []; const warnings = []
+  f.engine.api.getProxyGroup = async () => ({ all: ['SLAVE-AUTO', 'Manual'] })
+  f.engine.api.selectProxy = async (_, name) => {
+    selected.push(name)
+    if (name === 'removed-node') throw new Error('Mihomo API error 400: proxy not exist')
+  }
+  f.engine.on('logLine', event => warnings.push(event))
+  await f.engine.start({ ...profile(), selectedProxy: 'removed-node' })
+  assert.equal(f.engine.getState(), 'running')
+  assert.equal(f.engine.currentProfile.selectedProxy, 'SLAVE-AUTO')
+  assert.equal(f.spawns(), 1)
+  assert.equal(selected.at(-1), 'SLAVE-AUTO')
+  assert.ok(warnings.some(event => event.message.includes('saved_proxy_unavailable')))
+  await f.engine.stop()
+})
+
+test('RuntimeManager records AUTO as last-good after removed saved proxy fallback', async t => {
+  const f = await integratedFixture(t)
+  f.engine.initialize = async () => {}
+  f.engine.api.getProxyGroup = async () => ({ all: ['SLAVE-AUTO', 'Manual'] })
+  f.engine.api.selectProxy = async (_, name) => {
+    if (name === 'removed-node') throw new Error('Mihomo API error 400: proxy not exist')
+  }
+  const { RuntimeManager } = require('../dist/RuntimeManager')
+  const manager = new RuntimeManager(() => f.engine, { autoReconnect: false })
+  await manager.initialize('mihomo', {})
+  await manager.connect({ ...profile(), selectedProxy: 'removed-node' })
+  assert.equal(manager.getCurrentProfile().selectedProxy, 'SLAVE-AUTO')
+  await manager.disconnect()
+})
+
+test('available saved proxy selection failure remains fatal', async t => {
+  const f = await integratedFixture(t)
+  f.engine.api.getProxyGroup = async () => ({ all: ['SLAVE-AUTO', 'Manual'] })
+  f.engine.api.selectProxy = async () => { throw new Error('selection transport failed') }
+  await assert.rejects(f.engine.start(profile()), /selection transport failed/)
+  assert.equal(f.engine.getState(), 'error')
+  assert.equal(f.engine.processManager.getPid(), null)
+})
+
+test('stop timeout leaves a failed state which recovery can retry', async t => {
+  const f = await integratedFixture(t)
+  await f.engine.start(profile()); f.failKill()
+  await assert.rejects(f.engine.stop(), /termination unconfirmed/)
+  assert.equal(f.engine.getState(), 'error')
+  assert.equal(f.spawns(), 1)
+})
+
+test('explicit profile restart cannot silently replace an invalid target with AUTO', async t => {
+  const f = await integratedFixture(t)
+  await f.engine.start(profile())
+  f.engine.api.selectProxy = async (_, name) => {
+    if (name === 'removed-node') throw new Error('selection failed')
+  }
+  const next = { ...profile(), selectedProxy: 'removed-node',
+    generatorSettings: { ...profile().generatorSettings, mixedPort: 7891 } }
+  await assert.rejects(f.engine.updateProfile(next), /selection failed/)
+  assert.equal(f.engine.getState(), 'running')
+  assert.deepEqual(f.engine.currentProfile, profile())
+  await f.engine.stop()
 })
 test('process exit after forced kill resolves and removes termination listener', async t => {
   const { ProcessManager } = require('../dist/mihomo/ProcessManager')

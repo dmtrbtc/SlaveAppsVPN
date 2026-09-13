@@ -8,7 +8,7 @@ import { createMirroredStringStore } from './mirrored-string-store'
  *
  * Durability model mirrors android/subscription-store.ts: localStorage is the
  * synchronous DURABLE PRIMARY (always present in a WebView, survives launches),
- * with Capacitor Preferences as a best-effort encrypted mirror. Reads prefer
+ * with Capacitor Preferences as a best-effort native mirror. Reads prefer
  * localStorage and fall back to the mirror only when localStorage is empty (e.g.
  * first launch after an OS WebView wipe). Values are JSON-serialised.
  */
@@ -60,7 +60,7 @@ export function createAndroidStorageAdapter(): StorageAdapter {
       await storage.set(key, JSON.stringify(value))
     },
     async remove(key: string): Promise<void> {
-      storage.remove(key)
+      await storage.remove(key)
     },
     async keys(prefix?: string): Promise<string[]> {
       const out: string[] = []

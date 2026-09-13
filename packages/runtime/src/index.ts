@@ -58,3 +58,4 @@ export type {
   MihomoConnectionMetadata,
   MihomoConnectionsInfo,
 } from './mihomo/MihomoApiClient'
+export { safeLifecycleError } from './state/safeLifecycleError'

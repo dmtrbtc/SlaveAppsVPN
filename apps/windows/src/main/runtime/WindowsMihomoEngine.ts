@@ -1,6 +1,6 @@
 import path from 'path'
 import { existsSync, statSync, readFileSync } from 'fs'
-import { execSync } from 'child_process'
+import { networkInterfaces } from 'os'
 import { createHash } from 'crypto'
 import { VPN } from '@slave-vpn/shared'
 import type { EngineInitConfig, TunHooks, EngineType } from '@slave-vpn/runtime'
@@ -8,26 +8,16 @@ import { getGeoUpdaterService } from '../services/GeoUpdaterService'
 
 // Mihomo names its WinTUN adapter 'Mihomo' (from tun.device in config).
 // We check netsh interface list for a live adapter with that name.
-function checkNetworkAdapterExists(name: string): boolean {
-  try {
-    const out = execSync('netsh interface show interface', {
-      encoding: 'utf8',
-      timeout: 3000,
-    })
-    return new RegExp(name, 'i').test(out)
-  } catch {
-    return false
-  }
+export function checkNetworkAdapterAvailable(name: string): boolean {
+  const adapters = networkInterfaces()
+  const key = Object.keys(adapters).find(candidate => candidate.toLowerCase() === name.toLowerCase())
+  return key !== undefined && (adapters[key] ?? []).some(address => !address.internal)
 }
 
 class WindowsTunHooks implements TunHooks {
   async checkTunAvailability(): Promise<boolean> {
     // Primary: verify the WinTUN adapter named 'Mihomo' actually exists in Windows
-    if (checkNetworkAdapterExists('Mihomo')) return true
-
-    // Fallback: at least wintun.dll must be present for TUN to ever work
-    const binDir = path.join(process.resourcesPath ?? path.dirname(process.execPath), 'bin')
-    return existsSync(path.join(binDir, 'wintun.dll'))
+    return checkNetworkAdapterAvailable('Mihomo')
   }
 
   async ensureTunDriver(): Promise<void> {

@@ -1,99 +1,227 @@
 [
   {
-    "time": "2026-09-07T19:32:17.112Z",
+    "time": "2026-09-12T14:04:57.859Z",
     "step": "state",
     "state": "starting"
   },
   {
-    "time": "2026-09-07T19:32:17.704Z",
+    "time": "2026-09-12T14:04:58.502Z",
     "step": "state",
     "state": "running"
   },
   {
-    "time": "2026-09-07T19:32:17.763Z",
+    "time": "2026-09-12T14:04:58.551Z",
     "step": "clean-start",
     "version": "v1.19.30"
   },
   {
-    "time": "2026-09-07T19:32:18.080Z",
+    "time": "2026-09-12T14:04:58.866Z",
     "step": "delayed-identical-refresh-none"
   },
   {
-    "time": "2026-09-07T19:32:18.117Z",
+    "time": "2026-09-12T14:04:58.905Z",
     "step": "manual-auto-manual-hot"
   },
   {
-    "time": "2026-09-07T19:32:18.165Z",
+    "time": "2026-09-12T14:04:58.955Z",
     "step": "mode-reload-preserves-process-selection"
   },
   {
-    "time": "2026-09-07T19:32:18.214Z",
+    "time": "2026-09-12T14:04:59.012Z",
     "step": "real-http-selection-failure-restores-config-selection"
   },
   {
-    "time": "2026-09-07T19:32:18.214Z",
+    "time": "2026-09-12T14:04:59.013Z",
     "step": "state",
     "state": "stopping"
   },
   {
-    "time": "2026-09-07T19:32:18.220Z",
+    "time": "2026-09-12T14:04:59.018Z",
     "step": "state",
     "state": "idle"
   },
   {
-    "time": "2026-09-07T19:32:18.220Z",
+    "time": "2026-09-12T14:04:59.018Z",
     "step": "state",
     "state": "starting"
   },
   {
-    "time": "2026-09-07T19:32:18.764Z",
+    "time": "2026-09-12T14:04:59.568Z",
     "step": "state",
     "state": "running"
   },
   {
-    "time": "2026-09-07T19:32:18.768Z",
+    "time": "2026-09-12T14:04:59.571Z",
     "step": "full-restart-confirmed"
   },
   {
-    "time": "2026-09-07T19:32:18.772Z",
+    "time": "2026-09-12T14:04:59.576Z",
     "step": "state",
     "state": "crashed"
   },
   {
-    "time": "2026-09-07T19:32:18.822Z",
+    "time": "2026-09-12T14:04:59.623Z",
     "step": "state",
     "state": "reconnecting"
   },
   {
-    "time": "2026-09-07T19:32:18.822Z",
+    "time": "2026-09-12T14:04:59.623Z",
     "step": "state",
     "state": "starting"
   },
   {
-    "time": "2026-09-07T19:32:19.370Z",
+    "time": "2026-09-12T14:05:00.176Z",
     "step": "state",
     "state": "running"
   },
   {
-    "time": "2026-09-07T19:32:19.373Z",
+    "time": "2026-09-12T14:05:00.179Z",
     "step": "real-process-crash-restart"
   },
   {
-    "time": "2026-09-07T19:32:19.373Z",
+    "time": "2026-09-12T14:05:00.179Z",
     "step": "state",
     "state": "stopping"
   },
   {
-    "time": "2026-09-07T19:32:19.378Z",
+    "time": "2026-09-12T14:05:00.184Z",
     "step": "state",
     "state": "idle"
   },
   {
-    "time": "2026-09-07T19:32:19.379Z",
+    "time": "2026-09-12T14:05:00.184Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:00.740Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:00.743Z",
+    "step": "removed-saved-proxy-starts-auto-with-warning"
+  },
+  {
+    "time": "2026-09-12T14:05:00.743Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:00.747Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:00.747Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:01.297Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:01.302Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:01.306Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:01.306Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:01.853Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:01.857Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:01.862Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:01.862Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:02.414Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:02.418Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:02.422Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:02.422Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:02.975Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:02.978Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:02.982Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:02.982Z",
+    "step": "state",
+    "state": "starting"
+  },
+  {
+    "time": "2026-09-12T14:05:03.523Z",
+    "step": "state",
+    "state": "running"
+  },
+  {
+    "time": "2026-09-12T14:05:03.526Z",
+    "step": "state",
+    "state": "stopping"
+  },
+  {
+    "time": "2026-09-12T14:05:03.530Z",
+    "step": "state",
+    "state": "idle"
+  },
+  {
+    "time": "2026-09-12T14:05:03.530Z",
+    "step": "five-process-api-connect-disconnect-cycles"
+  },
+  {
+    "time": "2026-09-12T14:05:03.530Z",
     "step": "stop-confirms-exit"
   },
   {
-    "time": "2026-09-07T19:32:19.379Z",
+    "time": "2026-09-12T14:05:03.530Z",
     "step": "result",
     "passed": true
   }

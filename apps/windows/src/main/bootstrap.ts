@@ -328,6 +328,5 @@ export async function triggerReconnect(): Promise<void> {
   if (state !== 'running') return
   const log = getLogger()
   log.info('triggerReconnect: forcing reconnect after sleep/wake')
-  await runtimeService.disconnect()
-  await runtimeService.connect()
+  await runtimeService.reconnectAfterResume()
 }

@@ -1,4 +1,3 @@
-import { registerPlugin } from '@capacitor/core'
 import type { VPNMode, VPNStatus, TrafficStats, Server } from '@slave-vpn/shared'
 import type { VpnSetProxyPayload, RuntimeEvent } from '@shared/ipc/types'
 import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
@@ -41,6 +40,7 @@ import {
 } from './rule-providers'
 import { createAndroidDataAdapters, type AndroidDataAdapters } from './adapters'
 import { getCachedGeoSiteCategories, prefetchAndroidGeoSiteCategories } from './geosite-categories'
+import { getSlaveVpnPlugin } from './slave-vpn-plugin'
 
 // Build the RoutingScenarioInfo[] the renderer expects from core scenario
 // metadata + the currently enabled set (persisted in AppSettings.enabledScenarios).
@@ -96,7 +96,7 @@ interface NativeSlaveVpn {
   removeAllListeners(): Promise<void>
 }
 
-const SlaveVpn = registerPlugin<NativeSlaveVpn>('SlaveVpn')
+const SlaveVpn = getSlaveVpnPlugin<NativeSlaveVpn>()
 
 // ─── IPC envelope helpers ─────────────────────────────────────────────────────
 

@@ -1,10 +1,11 @@
 # Android Port — Architecture & Roadmap
 
-> **Status (2026-08):** the Capacitor project, Kotlin VPN service and Mihomo
+> **Status (2026-09):** the Capacitor project, Kotlin VPN service and Mihomo
 > `v1.19.30` AAR are integrated. Debug and test-signed release APKs build with
 > SDK 35/JVM 21 and pass Android Lint. Sections describing phases are retained
 > as architectural history; physical-device TUN/DNS/lifecycle smoke tests now
-> pass on Android 16.
+> pass on Android 16. Subscription persistence additionally survives a cold
+> restart and recovery of a deliberately removed local index from Preferences.
 
 ---
 
@@ -210,7 +211,7 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 | Notifications | Electron Notification | Android NotificationChannel |
 | Auto-start | Login items | BOOT_COMPLETED receiver |
 | Subscription URL | Direct HTTPS | Same, via OkHttp |
-| Storage | SecureStorage (safeStorage) | EncryptedSharedPreferences |
+| Storage | SecureStorage (safeStorage) | localStorage + Capacitor Preferences mirror |
 | Tray | Electron Tray | Persistent notification + tile (Android 7+) |
 
 ---
@@ -225,7 +226,7 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 - **Result:** APK installs, opens, shows React UI, every IPC call is a no-op
 
 ### I-B: Subscription + scenarios (3 days)
-- Port SubscriptionStore to Kotlin (EncryptedSharedPreferences)
+- Persist SubscriptionStore in the renderer with a Capacitor Preferences mirror
 - Port ConfigGenerator/SingboxConfigCompiler — can run in JS thread
   (Capacitor exposes Node-like APIs via `@capacitor/filesystem`)
 - Settings persistence
