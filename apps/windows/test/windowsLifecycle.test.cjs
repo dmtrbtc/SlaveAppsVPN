@@ -230,7 +230,7 @@ function runtimeFixture(desired, persistedStore) {
     const service = new RuntimeServiceImpl({ manager, getSettings: () => persistedStore ? persistedStore.getAll() : settings,
       setSettings: persistedStore ? async patch => { await persistedStore.patch(patch) } : patch => Object.assign(settings, patch),
       waitForSettings: persistedStore ? () => persistedStore.waitForPersistence() : undefined })
-    service.fetchSubscriptionYaml = async () => ({ yaml: 'proxies: []', proxyCount: 1, source: 'aggregator' })
+    service.fetchSubscriptionYaml = async () => ({ yaml: dashboardYaml, proxyCount: 1, source: 'aggregator' })
     const initial = service.buildDesiredProfile('proxies: []', persistedStore ? persistedStore.getAll() : settings)
     await manager.connect(initial)
     return { service, manager, applied, settings, engine,
@@ -609,6 +609,30 @@ test('AUTO desired target is never replaced by observed leaf', async () => {
   assert.equal(manager.getCurrentProfile().selectedProxy, 'SLAVE-AUTO')
   assert.equal(applied.length, 1)
 })
+test('mode change replaces a removed saved proxy with AUTO and persists the fallback', async () => {
+  const f = await runtimeFixture('Removed node')
+  f.setDashboardYaml('proxies:\n  - {name: Available node, type: ss, server: available.test, port: 443, cipher: aes-128-gcm, password: synthetic}')
+  await f.service.setMode('full')
+  assert.equal(f.settings.selectedProxy, 'SLAVE-AUTO')
+  assert.equal(f.manager.getCurrentProfile().selectedProxy, 'SLAVE-AUTO')
+  assert.equal(f.manager.getCurrentProfile().vpnMode, 'full')
+})
+test('mode change preserves a saved proxy still present in the aggregate', async () => {
+  const f = await runtimeFixture('Available node')
+  f.setDashboardYaml('proxies:\n  - {name: Available node, type: ss, server: available.test, port: 443, cipher: aes-128-gcm, password: synthetic}')
+  await f.service.setMode('full')
+  assert.equal(f.settings.selectedProxy, 'Available node')
+  assert.equal(f.manager.getCurrentProfile().selectedProxy, 'Available node')
+})
+test('connect persists AUTO when the saved proxy disappeared while disconnected', async () => {
+  const f = await runtimeFixture('Removed node')
+  await f.service.disconnect()
+  f.service.runPreflight = async () => {}
+  f.setDashboardYaml('proxies:\n  - {name: Available node, type: ss, server: available.test, port: 443, cipher: aes-128-gcm, password: synthetic}')
+  await f.service.connect()
+  assert.equal(f.settings.selectedProxy, 'SLAVE-AUTO')
+  assert.equal(f.manager.getCurrentProfile().selectedProxy, 'SLAVE-AUTO')
+})
 for (const change of ['disconnect', 'selection']) test(`connectivity snapshot is discarded after ${change} during HTTP`, async t => {
   const f = await runtimeFixture('Manual'); f.service.apiSecret = 'synthetic'
   f.engine.getHealth = () => ({ checkedAt: 1, apiResponding: true, connectivityOk: true })
@@ -800,6 +824,73 @@ test('profile handler does not publish or mark applied after runtime failure', a
   const result=await handlers.get('apply')({id:'synthetic',hotReload:true})
   assert.equal(result.ok,false); assert.equal(marked,0); assert.equal(published,0)
   assert.equal(f.store.get('vpnMode'),'full') // Persistence is not rolled back by an apply failure.
+})
+
+test('escaped proxy URI pasted as subscription URL is stored as a canonical single proxy', async () => {
+  const handlers = new Map()
+  const added = []
+  const validated = []
+  const channels = {
+    SUBSCRIPTIONS_LIST: 'subscriptions:list',
+    SUBSCRIPTIONS_ADD: 'subscriptions:add',
+    SUBSCRIPTIONS_REMOVE: 'subscriptions:remove',
+    SUBSCRIPTIONS_REORDER: 'subscriptions:reorder',
+    SUBSCRIPTIONS_UPDATE: 'subscriptions:update',
+    SUBSCRIPTIONS_REFRESH: 'subscriptions:refresh',
+    SUBSCRIPTIONS_REFRESH_ALL: 'subscriptions:refresh-all',
+    SUBSCRIPTIONS_DETECT_CLIPBOARD: 'subscriptions:detect-clipboard',
+    EVENT_SUBSCRIPTIONS_CHANGED: 'subscriptions:changed',
+  }
+  const store = {
+    list: () => [],
+    add: entry => { added.push(entry); return { created: true, entry: { id: 'synthetic', ...entry } } },
+  }
+  const aggregator = { invalidateSnapshot() {} }
+  const scheduler = { reconcile() {} }
+  const config = require('@slave-vpn/config')
+  const escaped = String.raw`vless\://00000000-0000-4000-8000-000000000000\@node.example:11821?type=tcp&encryption=none&security=reality&pbk=Synthetic\_Key&fp=chrome&sni=www\.example.com&sid=a19c&spx=%2F&pqv=Synthetic\_Verify#EscapedNode`
+  const { registerSubscriptionsHandlers } = loadService('ipc/handlers/subscriptions.handler.ts', {
+    electron: { clipboard: { readText: () => escaped } },
+    '../../../shared/ipc/channels': { IpcChannel: channels },
+    '../../../shared/ipc/types': {
+      okResult: data => ({ ok: true, data }),
+      errResult: (code, message) => ({ ok: false, code, message }),
+    },
+    '../../../shared/ipc/schemas': { EmptySchema: require('zod').z.object({}) },
+    '../registry': {
+      handleIpc: (channel, _schema, handler) => handlers.set(channel, handler),
+      services: { has: () => false, resolve: () => { throw new Error('unused') } },
+    },
+    '../../services/SubscriptionStore': { getSubscriptionStore: () => store },
+    '../../services/impl/ConfigSourceService': {
+      getConfigSourceService: () => ({
+        validate: async (type, input) => {
+          validated.push({ type, input })
+          return { valid: true, displayName: 'Synthetic Reality', nodeCount: 1 }
+        },
+      }),
+    },
+    '../../services/SubscriptionAggregatorService': { getSubscriptionAggregator: () => aggregator },
+    '../../services/SubscriptionScheduler': { getSubscriptionScheduler: () => scheduler },
+    '../../services/impl/sources/SingleProxySource': { parseProxyLink: config.parseProxyUri },
+    '../../logger': { getLogger: () => logger },
+    '../../window': { sendToRenderer() {} },
+  })
+
+  registerSubscriptionsHandlers()
+  const detected = await handlers.get(channels.SUBSCRIPTIONS_DETECT_CLIPBOARD)({})
+  assert.equal(detected.ok, true)
+  assert.equal(detected.data.found, true)
+  assert.equal(detected.data.input.includes('\\'), false)
+
+  const result = await handlers.get(channels.SUBSCRIPTIONS_ADD)({
+    type: 'subscription-url',
+    input: escaped,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(validated[0].type, 'single-proxy')
+  assert.equal(added[0].type, 'single-proxy')
+  assert.equal(added[0].rawInput.includes('\\'), false)
 })
 
 for (const action of ['refresh','connect','mode','selection']) {

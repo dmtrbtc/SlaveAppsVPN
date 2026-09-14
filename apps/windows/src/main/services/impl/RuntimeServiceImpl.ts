@@ -502,6 +502,57 @@ export class RuntimeServiceImpl implements RuntimeService {
     }
   }
 
+  private resolveAvailableSelection(subscriptionYaml: string, settings: AppSettings): {
+    settings: AppSettings
+    unavailableSelection: string | null
+  } {
+    const selectedProxy = settings.selectedProxy?.trim()
+    if (!selectedProxy || selectedProxy === AUTO_GROUP) {
+      return { settings, unavailableSelection: null }
+    }
+
+    try {
+      const proxies = parseProxiesFromYaml(subscriptionYaml)
+      // Stay conservative if the source cannot provide positive node evidence.
+      // The generated SLAVE-AUTO group is not part of the subscription YAML and
+      // is handled above as an always-valid selection.
+      if (proxies.length === 0 || proxies.some(proxy => proxy.name === selectedProxy)) {
+        return { settings, unavailableSelection: null }
+      }
+    } catch {
+      return { settings, unavailableSelection: null }
+    }
+
+    return {
+      settings: { ...settings, selectedProxy: AUTO_GROUP },
+      unavailableSelection: selectedProxy,
+    }
+  }
+
+  private async persistUnavailableSelectionFallback(
+    unavailableSelection: string | null,
+    selection: number,
+    epoch: number,
+  ): Promise<void> {
+    if (!unavailableSelection || selection !== this.selectionRevision ||
+      epoch !== this.connectionEpoch || this.manager.getState() !== 'running' ||
+      this.getSettings().selectedProxy !== unavailableSelection) return
+
+    await this.setSettings({ selectedProxy: AUTO_GROUP })
+    const settings = await this.waitForSettings()
+    if (selection !== this.selectionRevision || epoch !== this.connectionEpoch ||
+      this.manager.getState() !== 'running' || settings.selectedProxy !== AUTO_GROUP) return
+
+    ++this.selectionRevision
+    this.activeProxy = null
+    getLogger().warn('runtime.saved_proxy_unavailable: saved server is absent; selection reset to AUTO')
+    sendToRenderer(IpcChannel.EVENT_VPN_STATUS, this.getStatus())
+    sendToRenderer(IpcChannel.EVENT_PROXY_CHANGED, AUTO_GROUP)
+    sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
+      makeEvent('proxy.selected', 'warning', 'Saved server is unavailable; switched to AUTO'))
+    void this.refreshActiveProxy().catch(() => undefined)
+  }
+
   private async applyDesiredProfile(reason: ConfigUpdateReason): Promise<void> {
     const epoch = this.connectionEpoch
     const operation = this.profileResolutionTail.then(async () => {
@@ -525,7 +576,9 @@ export class RuntimeServiceImpl implements RuntimeService {
     }
 
     const previous = this.manager.getCurrentProfile()
-    const next = this.buildDesiredProfile(resolved.yaml, settings)
+    const selection = this.selectionRevision
+    const available = this.resolveAvailableSelection(resolved.yaml, settings)
+    const next = this.buildDesiredProfile(resolved.yaml, available.settings)
     const previousHash = previous ? fingerprintConnectionProfile(previous) : null
     const nextHash = fingerprintConnectionProfile(next)
     const common = {
@@ -543,6 +596,7 @@ export class RuntimeServiceImpl implements RuntimeService {
     }
     getLogger().info(common, 'config-update requested')
     const reloadType = await this.manager.updateProfile(next)
+    await this.persistUnavailableSelectionFallback(available.unavailableSelection, selection, epoch)
     getLogger().info({
       ...common,
       reloadType,
@@ -622,7 +676,9 @@ export class RuntimeServiceImpl implements RuntimeService {
 
       log.info({ proxyCount, source }, 'Subscription resolved before connect')
 
-      const profile = this.buildDesiredProfile(subscriptionYaml, settings)
+      const selection = this.selectionRevision
+      const available = this.resolveAvailableSelection(subscriptionYaml, settings)
+      const profile = this.buildDesiredProfile(subscriptionYaml, available.settings)
       const operationId = ++this.configOperationId
       log.info({
         operationId,
@@ -636,6 +692,7 @@ export class RuntimeServiceImpl implements RuntimeService {
         observedActiveProxy: this.activeProxy,
       }, 'config-update requested')
       await this.manager.connect(profile)
+      await this.persistUnavailableSelectionFallback(available.unavailableSelection, selection, epoch)
       log.info({ operationId, reason: 'connect', decision: 'engine-start' }, 'config-update completed')
     } catch (error) {
       const failure = safeLifecycleError(error)

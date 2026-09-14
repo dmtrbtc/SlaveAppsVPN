@@ -80,7 +80,9 @@ publish:
   provider: github
   owner: dmtrbtc
   repo: SlaveAppsVPN
-  releaseType: prerelease
+  # Release/prerelease classification is derived from the immutable tag by
+  # .github/workflows/release.yml. Direct electron-builder publication remains
+  # a draft by default and cannot accidentally promote a dev build to stable.
   # Code signing will be added when EV certificate is obtained:
   # CSC_LINK and CSC_KEY_PASSWORD via CI environment variables
 

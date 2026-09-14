@@ -243,7 +243,7 @@ test('duplicate subscription migration keeps the highest-priority source', () =>
 
 test('aggregation uses explicit subscription priority for duplicate-node winner', async () => {
   const fetcher: SubscriptionFetcher = {
-    fetchEntry: async e => ({ proxies: [node('duplicate')], error: null }),
+    fetchEntry: async _e => ({ proxies: [node('duplicate')], error: null }),
   }
   const result = await aggregateSubscriptionProxies([
     entry('low', { priority: 20 }), entry('high', { priority: 10 }),

@@ -16,6 +16,7 @@ import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
 import { getSubscriptionAggregator } from '../../services/SubscriptionAggregatorService'
 import { getSubscriptionScheduler } from '../../services/SubscriptionScheduler'
 import { parseProxyLink } from '../../services/impl/sources/SingleProxySource'
+import { isProxyUri, normalizeProxyUriInput } from '@slave-vpn/config'
 import { getLogger } from '../../logger'
 import { sendToRenderer } from '../../window'
 
@@ -42,13 +43,13 @@ const UpdateSchema = z.object({
 const RefreshSchema = z.object({ id: z.string().min(1) })
 
 // VPN URI schemes the clipboard detector recognises.
-const VPN_URI_PATTERN = /\b(vless|vmess|trojan|ss|hysteria2?|tuic|wireguard|wg):\/\/[^\s]+/i
+const VPN_URI_PATTERN = /\b(vless|vmess|trojan|ss|hysteria2?|tuic|wireguard|wg)(?:\\)?:\/\/[^\s]+/i
 
 function detectClipboardLink(text: string): ClipboardDetectResult {
   const match = text.match(VPN_URI_PATTERN)
   if (!match) return { found: false }
 
-  const uri = match[0]
+  const uri = normalizeProxyUriInput(match[0])
   const scheme = (match[1] ?? '').toLowerCase()
 
   try {
@@ -95,18 +96,23 @@ export function registerSubscriptionsHandlers(): void {
 
   handleIpc(IpcChannel.SUBSCRIPTIONS_ADD, AddSchema, async (payload) => {
     try {
-      const type = payload.type as ConfigSourceType
+      const input = normalizeProxyUriInput(payload.input)
+      const requestedType = payload.type as ConfigSourceType
+      const type: ConfigSourceType =
+        (requestedType === 'subscription-url' || requestedType === 'single-proxy') && isProxyUri(input)
+          ? 'single-proxy'
+          : requestedType
       if (type === 'provider') {
         return errResult('SUBSCRIPTIONS_ERROR', 'Provider type cannot be added manually')
       }
-      const validation = await configSourceService.validate(type, payload.input)
+      const validation = await configSourceService.validate(type, input)
       if (!validation.valid) {
         return errResult('SUBSCRIPTIONS_INVALID', validation.error ?? 'Validation failed')
       }
 
       const outcome = store.add({
         type,
-        rawInput: payload.input.trim(),
+        rawInput: input,
         ...(payload.name ? { name: payload.name } : {}),
         ...(validation.displayName ? { displayName: validation.displayName } : {}),
         ...(validation.nodeCount !== undefined ? { nodeCount: validation.nodeCount } : {}),

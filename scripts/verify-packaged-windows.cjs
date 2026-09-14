@@ -34,6 +34,9 @@ assert.ok(main.includes('autoReconnect: false'))
 assert.equal(main, fs.readFileSync(path.join(root, 'apps/windows/out/main/index.js'), 'utf8'))
 const result = { version: pkg.version, electron: process.versions.electron, dependenciesResolved: Object.keys(pkg.dependencies).length,
   lifecycleIncluded: true, compiledFilesMatch: true, nativeSqlite: 'passed', resources: 'passed' }
-fs.writeFileSync(path.join(root, process.argv[2] ? 'docs/WINDOWS_REGRESSION_PACKAGE.json'
-  : 'docs/WINDOWS_LIFECYCLE_PACKAGE_VERIFICATION.json'), JSON.stringify(result, null, 2) + '\n')
+const output = process.argv[4]
+  ? path.resolve(root, process.argv[4])
+  : path.join(root, process.argv[2] ? 'docs/WINDOWS_REGRESSION_PACKAGE.json'
+    : 'docs/WINDOWS_LIFECYCLE_PACKAGE_VERIFICATION.json')
+fs.writeFileSync(output, JSON.stringify(result, null, 2) + '\n')
 console.log(JSON.stringify(result))

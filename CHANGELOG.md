@@ -4,6 +4,30 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.14] — 2026-09-14
+
+### Added
+
+- Dev validation build for Windows and Android, including unified routing/DNS
+  configuration, durable Android subscriptions, native Android node latency,
+  deterministic source priority, and hardened update handling.
+- Markdown-escaped VLESS Reality links can be pasted directly or through the
+  subscription-URL flow. Reality `spx` is preserved and `pqv` enables Mihomo's
+  hybrid X25519/ML-KEM handshake support.
+- Release workflows validate immutable tag checkout, production Android
+  signing, Windows Authenticode signatures, prepared notes, and version
+  consistency before publication.
+
+### Fixed
+
+- A removed saved Windows node now falls back to AUTO and persists that recovery
+  only after Mihomo accepts the profile, preventing repeated
+  `Selector update error: proxy not exist` failures during mode changes.
+- Release builds can no longer attach Windows artifacts from an unrelated branch
+  or silently attach an unsigned debug Android APK to a requested release tag.
+- Repository lint now performs real JavaScript/TypeScript analysis and fails on
+  warnings instead of reporting an empty Turbo task as successful.
+
 ## [0.2.41-dev.13] — 2026-09-13
 
 ### Changed

@@ -270,6 +270,7 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 | Blocker | How to unblock |
 |---|---|
 | Production signing | Configure the existing CI secrets and verify install-over-update with the real release key |
+| GPL-3.0 distribution terms | Resolve the conflict between the proprietary root license and the linked Mihomo AAR before publishing an Android stable APK |
 | Mutable geo download fallback | Pin geo database releases and checksums before bundling them into release APKs |
 | Broader device matrix | Repeat smoke tests on API 24, 29, 33 and at least one non-HyperOS device |
 | State-sync uses better-sqlite3 native | Replace with sql.js (WASM) or use Capacitor's native SQLite plugin |
@@ -278,14 +279,17 @@ CI: GitHub Actions matrix builds Windows + Android in parallel.
 
 ## 9. License considerations
 
-- **mihomo:** GPL-3.0 — bundling its .so as a library means SLAVE VPN
-  Android source must also be GPL-3.0 OR offered under a separate license
-  with proper attribution. Karing handles this; we should too.
+- **mihomo:** GPL-3.0 — the Android APK links Mihomo native libraries. The
+  repository currently uses a proprietary root license, so the distribution
+  terms and corresponding-source offer must be resolved before publishing a
+  stable Android APK.
 - **sing-box:** GPL-3.0, but it is not linked into the current Android APK.
 - **Capacitor:** MIT — no issue.
 - **wintun:** GPLv2 — Windows-only, not relevant for Android.
 
-The Android build will likely need to be public-source. Plan accordingly.
+This is a release decision, not a build-system check. Obtain a compatible
+licensing arrangement or publish the covered Android source under terms that
+satisfy GPL-3.0 before distribution.
 
 ---
 

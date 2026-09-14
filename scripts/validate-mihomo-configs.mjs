@@ -87,6 +87,8 @@ proxies:
     reality-opts:
       public-key: ${realityPublicKey}
       short-id: 0123456789abcdef
+      spider-x: /
+      support-x25519mlkem768: true
   - name: Hysteria2
     type: hysteria2
     server: hysteria.example.test

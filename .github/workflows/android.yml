@@ -86,11 +86,12 @@ jobs:
         working-directory: apps/android/android/app
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
             echo "signed=true" >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_REPOSITORY" = "dmtrbtc/SlaveAppsVPN" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          elif [ "$GITHUB_REPOSITORY" = "dmtrbtc/SlaveAppsVPN" ] && { [[ "$GITHUB_REF" == refs/tags/* ]] || [ -n "$REQUESTED_TAG" ]; }; then
             echo "::error::Release signing secret ANDROID_KEYSTORE_BASE64 is missing"
             exit 1
           else
@@ -174,7 +175,7 @@ jobs:
           if-no-files-found: error
 
       - name: Attach APK to tag release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && github.event.inputs.release_tag == ''
         uses: softprops/action-gh-release@v3
         with:
           files: artifacts/SlaveAppsVPN-Android.apk

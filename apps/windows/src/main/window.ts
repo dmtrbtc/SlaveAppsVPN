@@ -1,6 +1,5 @@
 import { app, BrowserWindow, session, shell } from 'electron'
 import { join } from 'path'
-import { is } from '@electron-toolkit/utils'
 import { getLogger } from './logger'
 import { isolatedSettingsSmoke } from './isolatedSettingsSmoke'
 
@@ -20,6 +19,7 @@ export function getMainWindow(): BrowserWindow | null {
 
 export function createMainWindow(): BrowserWindow {
   const log = getLogger()
+  const isDev = !app.isPackaged
 
   mainWindow = new BrowserWindow({
     width: WINDOW_DEFAULT_WIDTH,
@@ -55,7 +55,7 @@ export function createMainWindow(): BrowserWindow {
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const parsedUrl = new URL(url)
-    const isLocalDev = is.dev && parsedUrl.hostname === 'localhost'
+    const isLocalDev = isDev && parsedUrl.hostname === 'localhost'
     if (!isLocalDev) {
       event.preventDefault()
       log.warn({ url }, 'Blocked navigation attempt')
@@ -89,7 +89,7 @@ export function createMainWindow(): BrowserWindow {
     renderCrashCount++
     if (renderCrashCount <= 3 && mainWindow && !mainWindow.webContents.isDestroyed()) {
       log.info({ attempt: renderCrashCount }, 'Reloading renderer after crash')
-      if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+      if (isDev && process.env.ELECTRON_RENDERER_URL) {
         void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
       } else {
         void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
@@ -129,7 +129,7 @@ export function createMainWindow(): BrowserWindow {
     mainWindow = null
   })
 
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
+  if (isDev && process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
@@ -141,7 +141,7 @@ export function createMainWindow(): BrowserWindow {
 }
 
 function applyContentSecurityPolicy(): void {
-  const isDev = is.dev
+  const isDev = !app.isPackaged
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const csp = isDev

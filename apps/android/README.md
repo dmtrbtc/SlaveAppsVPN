@@ -51,8 +51,9 @@ pnpm --filter @slave-vpn/android build:android
 
 Release signing is configured when `ANDROID_KEYSTORE_PATH`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` are
-present. CI decodes the keystore secret, verifies the resulting certificate,
-and falls back to a debug artifact when signing secrets are unavailable.
+present. CI decodes the keystore secret and verifies the resulting certificate.
+A workflow run that requests a release tag fails when any signing secret is
+missing; it cannot attach a debug or unsigned APK to a release.
 
 ## Day-to-day workflow
 

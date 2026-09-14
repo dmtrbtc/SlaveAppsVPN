@@ -1,6 +1,6 @@
 {
   "name": "@slave-vpn/windows",
-  "version": "0.2.41-dev.13",
+  "version": "0.2.41-dev.14",
   "description": "SLAVE VPN — Windows desktop client",
   "author": {
     "name": "SLAVE VPN",
@@ -36,7 +36,6 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/preferences": "^7.0.0",
     "electron-updater": "^6.8.9",
-    "@electron-toolkit/utils": "^3.0.0",
     "pino": "^9.6.0",
     "zod": "^3.24.1",
     "@radix-ui/react-dialog": "^1.1.6",
