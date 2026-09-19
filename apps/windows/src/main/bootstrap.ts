@@ -85,7 +85,12 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
 
   // ─── Runtime (VPN Engine) ─────────────────────────────────────────────────
   const apiSecret = crypto.randomBytes(16).toString('hex')
-  const selectedEngine = settings.get('selectedEngine') ?? 'mihomo'
+  const requestedEngine = settings.get('selectedEngine') ?? 'mihomo'
+  // Older builds exposed the unfinished Xray placeholder in Settings. It has no
+  // compiler/runtime and selecting it makes every connection fail immediately.
+  // Recover those persisted values to the supported Mihomo path at startup.
+  const selectedEngine = requestedEngine === 'xray' ? 'mihomo' : requestedEngine
+  if (requestedEngine === 'xray') await settings.patch({ selectedEngine: 'mihomo' })
   const engineConfig = createWindowsEngineConfig(userDataPath, apiSecret, selectedEngine)
 
   // Windows recovery is owned by RecoveryCoordinator through RuntimeService.

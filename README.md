@@ -28,7 +28,7 @@
 | 🪟 **Windows** (установщик) | `SlaveAppsVPN-Setup-v0.2.40.exe` | [Скачать Setup](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Setup-v0.2.40.exe) |
 | 🪟 **Windows** (portable) | `SlaveAppsVPN-Portable-v0.2.40.exe` | [Скачать Portable](https://github.com/dmtrbtc/SlaveAppsVPN/releases/download/v0.2.40/SlaveAppsVPN-Portable-v0.2.40.exe) |
 
-**Текущий Dev-кандидат:** [`v0.2.41-dev.14`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.14). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
+**Текущий Dev-кандидат:** [`v0.2.41-dev.15`](https://github.com/dmtrbtc/SlaveAppsVPN/releases/tag/v0.2.41-dev.15). В приложении выберите канал обновлений «Dev», чтобы получать prerelease-сборки.
 
 > Android APK подписан постоянным release-ключом и обновляется поверх предыдущих GitHub-сборок. Для sideload Android всё равно один раз запросит разрешение «Установка неизвестных приложений». Stable-сборка Windows публикуется только после успешной проверки Authenticode; Windows требует прав администратора для TUN-адаптера.
 

@@ -1,6 +1,61 @@
 # Codex state
 
-## CURRENT HANDOFF — 2026-09-14, v0.2.41-dev.14 release
+## CURRENT HANDOFF — 2026-09-19, dev.15 connection-hardening candidate
+
+The `v0.2.41-dev.15` source candidate is prepared locally in the isolated
+`codex/windows-regression` worktree. The dirty main checkout remains untouched.
+The reported `dev.14` screenshot proved two independent states: the selector UI
+had moved to the requested node while established `Slave-NL2` sessions remained,
+and new dials to the requested endpoint timed out.
+
+Implemented for both platforms:
+
+- Selector updates activate the new target before closing all tracked sessions.
+  Failures restore the previous engine profile and persisted selection, and the
+  renderer commits the visible choice only after platform acceptance.
+- Android resets a saved node missing from refreshed subscriptions to
+  `SLAVE-AUTO` before compiling/starting Mihomo. Native selector and
+  close-connections failures are no longer swallowed.
+- REALITY validation accepts canonical Xray 43-character base64url public keys
+  and limits short IDs to the official eight-byte maximum.
+- A REALITY node that requests X25519/ML-KEM forces `client-fingerprint: chrome`
+  even when global uTLS rotation requested another fingerprint. Current Mihomo
+  interop evidence says only that profile supplies the required key share in
+  the compatible order.
+- Windows and Android share privacy-safe classification for VLESS encryption,
+  selector, REALITY, flow, TLS, authentication, DNS, refused, unreachable,
+  reset, timeout, and TUN failures. Raw engine lines are not emitted to the UI.
+- The dashboard and Servers page now expose one consistent Auto action, allow a
+  node to be selected while disconnected, disable desktop autobalancing before
+  a manual choice, and label the saved choice separately from the node actually
+  carrying traffic. The unfinished Xray engine option is hidden; stale persisted
+  Xray selections recover to Mihomo.
+
+Local verification passes: strict lint; workspace typecheck 24/24; config
+43/43; core 79/79; runtime 43/43; Windows renderer 38/38; Windows lifecycle
+63/63; boundaries 299/299; generated Mihomo configs 8/8; Windows production
+build and local `dev.15` Setup/Portable packaging; packaged-runtime verification
+for 33 dependencies, native SQLite, engine resources, and compiled-file parity;
+and `git diff --check`. Local executables are unsigned. The build host has no
+Java runtime, so Kotlin/Gradle compilation remains a protected-CI gate.
+
+Independent endpoint preflight on this host resolved one IPv4 record but got
+zero successful TCP connections in three attempts to the configured port. This
+matches the reported timeout and means a successful live test requires a network
+where the endpoint is reachable; it is not evidence of another selector bug.
+
+Official Mihomo documentation still disclaims general Xray `v26.7.11+` REALITY
+compatibility. Full `pqv`/ML-DSA-65 verification remains unsupported by the
+bundled core. No user key material was copied into source, tests, docs, or logs.
+
+No commit, push, tag, CI build, release, installed-client replacement, or server
+change was performed. Next boundary: review this candidate, then commit/tag
+`v0.2.41-dev.15`, run protected Android and Windows release CI, install on the
+reporting device, and verify both stale-session removal and fresh traffic.
+
+Canonical status: `docs/DEV_RELEASE_READINESS_0.2.41-dev.15.md`.
+
+## PREVIOUS HANDOFF — 2026-09-14, v0.2.41-dev.14 release
 
 The next Windows and Android validation release is prepared in the isolated worktree
 `E:\SlaveApps\.worktrees\windows-regression` on branch

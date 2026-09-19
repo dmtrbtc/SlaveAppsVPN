@@ -13,9 +13,10 @@ import {
 } from './subscription-store'
 import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
 import { probeMihomoNodeLatency } from './node-latency'
+import { ANDROID_AUTO_GROUP, resolveAvailableAndroidSelection } from './selected-proxy'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { detectClipboardLink } from './clipboard-detect'
-import { buildDnsProfileConfig, createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError } from '@slave-vpn/core'
+import { buildDnsProfileConfig, createAndroidEngineConfigProvider, createCore, getDnsPresets, getDnsStrategies, DOH_PROVIDERS, GEO_SOURCES, captureSnapshot, applySnapshot, CabinetClient, CabinetError, classifyProxyFailure } from '@slave-vpn/core'
 import type {
   ActiveConnectionsSnapshot,
   AppSettings,
@@ -23,6 +24,7 @@ import type {
   CabinetUser,
   EngineAdapter,
   ProxyEntry,
+  ProxyFailureCode,
   UtlsFingerprintName,
 } from '@slave-vpn/core'
 import {
@@ -369,11 +371,34 @@ async function listNativeProxies(): Promise<ProxyEntry[]> {
 async function selectNativeProxy(name: string): Promise<void> {
   nativeLog(`[bridge] setProxy(${name}) reached the native bridge`)
   if (!name) throw new Error('setProxy: proxyName is empty')
-  currentSelectedProxy = name
-  try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
   // Native no-ops gracefully while disconnected. The selection is also sent
   // on the next connect and retained by mihomo's store-selected setting.
-  await SlaveVpn.selectProxy({ name }).catch(() => undefined)
+  // Do not hide a running-core selector error: the UI must not claim that a
+  // server is active when Mihomo rejected or failed to apply the selection.
+  await SlaveVpn.selectProxy({ name })
+  currentSelectedProxy = name
+  try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
+}
+
+async function loadAndroidProxiesForCompile(): ReturnType<typeof buildAggregatedProxies> {
+  const aggregation = await buildAggregatedProxies()
+  const resolved = resolveAvailableAndroidSelection(
+    currentSelectedProxy,
+    aggregation.proxies.map(proxy => proxy.name),
+  )
+  if (resolved.resetToAuto) {
+    currentSelectedProxy = resolved.selectedProxy
+    try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, ANDROID_AUTO_GROUP) } catch { /* best effort */ }
+    nativeLog('[selector] сохранённый узел отсутствует в подписках; выбран SLAVE-AUTO')
+    return {
+      ...aggregation,
+      warnings: [
+        ...(aggregation.warnings ?? []),
+        'сохранённый узел отсутствует; выбор сброшен на SLAVE-AUTO',
+      ],
+    }
+  }
+  return aggregation
 }
 
 async function readNativeConnections(): Promise<ActiveConnectionsSnapshot | null> {
@@ -458,6 +483,24 @@ let lastRuntimeState: string | null = null
 let lastRuntimeError: string | null = null
 let lastRuntimeActive: string | null = null
 let lastConnIds = new Set<string>()
+let lastNativeFailureCode: ProxyFailureCode | null = null
+let lastNativeFailureAt = 0
+let lastNativeFailureLine: string | null = null
+
+const ANDROID_FAILURE_EVENT_KIND: Record<ProxyFailureCode, RuntimeEvent['kind']> = {
+  encryption: 'proxy.encryption_error',
+  reality: 'proxy.reality_error',
+  flow: 'proxy.flow_error',
+  tls: 'proxy.tls_error',
+  dns: 'proxy.dns_error',
+  connection_refused: 'proxy.connection_refused',
+  network_unreachable: 'proxy.network_unreachable',
+  connection_reset: 'proxy.connection_reset',
+  timeout: 'proxy.timeout',
+  authentication: 'proxy.authentication_error',
+  selector: 'proxy.selector_error',
+  tun: 'vpn.preflight_failed',
+}
 
 function startRuntimePolling(): void {
   if (runtimePollTimer) return
@@ -489,6 +532,28 @@ function startRuntimePolling(): void {
         emitRuntimeEvent({ kind: 'proxy.selected', severity: 'info', message: `Активный узел: ${active}` })
       }
     } catch { /* ignore */ }
+    // Convert recent native engine failures into the same privacy-safe event
+    // taxonomy used on Windows. Never forward the raw line: it may contain a
+    // server address or subscription-derived identifiers.
+    try {
+      const { lines } = await SlaveVpn.getLogs({ tail: 24 })
+      const match = [...lines].reverse()
+        .map(line => ({ line, failure: classifyProxyFailure(line) }))
+        .find((entry): entry is { line: string; failure: NonNullable<typeof entry.failure> } => entry.failure !== null)
+      if (match && match.line !== lastNativeFailureLine) {
+        const now = Date.now()
+        lastNativeFailureLine = match.line
+        if (match.failure.code !== lastNativeFailureCode || now - lastNativeFailureAt >= 10_000) {
+          lastNativeFailureCode = match.failure.code
+          lastNativeFailureAt = now
+          emitRuntimeEvent({
+            kind: ANDROID_FAILURE_EVENT_KIND[match.failure.code],
+            severity: 'warning',
+            message: match.failure.userMessage,
+          })
+        }
+      }
+    } catch { /* diagnostics must not affect the tunnel */ }
     // Connections diff → open / close events. GUARDED: getConnections touches the
     // native core (loads gojni), so skip entirely unless actually connected. The
     // status diff above uses getStatus, which is core-safe.
@@ -528,6 +593,9 @@ function stopRuntimePolling(): void {
   lastRuntimeState = null
   lastRuntimeError = null
   lastRuntimeActive = null
+  lastNativeFailureCode = null
+  lastNativeFailureAt = 0
+  lastNativeFailureLine = null
 }
 
 /**
@@ -651,7 +719,7 @@ export function installAndroidBridge(): void {
     },
     {
       configProvider: createAndroidEngineConfigProvider({
-        loadProxies: buildAggregatedProxies,
+        loadProxies: loadAndroidProxiesForCompile,
         loadState: async () => {
           await settingsReady
           const settings = androidSettings()

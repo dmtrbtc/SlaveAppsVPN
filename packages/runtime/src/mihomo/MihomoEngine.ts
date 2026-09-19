@@ -218,6 +218,10 @@ export class MihomoEngine implements VPNEngine {
           if (profile.selectedProxy) {
             try {
               await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
+              // Selector changes affect only new sockets. Close the old node's
+              // long-lived HTTP/2, QUIC and push sessions after the new target
+              // is active so the visible selection and actual egress converge.
+              await this.api!.closeAllConnections()
             } catch (error) {
               await this.recoverProfile(previousProfile)
               throw error
@@ -231,10 +235,12 @@ export class MihomoEngine implements VPNEngine {
           try {
             await this.writeConfig(profile)
             await this.api!.reloadConfig(this.configPath())
-            await this.api!.closeAllConnections()
             if (profile.selectedProxy) {
               await this.api!.selectProxy(getSelectGroupName(), profile.selectedProxy)
             }
+            // Select first, close second. Closing before selection creates a
+            // race where applications reopen through the config's default.
+            await this.api!.closeAllConnections()
           } catch (error) {
             await this.recoverProfile(previousProfile, previousConfig)
             throw error
@@ -285,6 +291,9 @@ export class MihomoEngine implements VPNEngine {
       } else if (config === undefined) {
         await this.api!.reloadConfig(this.configPath())
       }
+      // Recovery is not complete while sockets opened through the rejected
+      // candidate remain alive. Reconnect them through the restored target.
+      await this.api!.closeAllConnections()
     } catch {
       await this.failRecovery()
       throw new Error('Profile update and rollback failed')

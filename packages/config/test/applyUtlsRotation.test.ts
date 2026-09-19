@@ -9,12 +9,16 @@ import type { ParsedProxy } from '../src/parser/ParsedProfile.ts'
 // That silently killed all Reality nodes. These tests lock in: rotation writes
 // ONLY `client-fingerprint`, never a bare `fingerprint`.
 
-function reality(name: string, fp?: string): ParsedProxy {
+function reality(name: string, fp?: string, mlkem = false): ParsedProxy {
   const p: Record<string, unknown> = {
     name, type: 'vless', server: `${name}.example`, port: 443,
     uuid: '00000000-0000-4000-8000-000000000000',
     tls: true, servername: `${name}.example`, flow: 'xtls-rprx-vision',
-    'reality-opts': { 'public-key': 'x'.repeat(43), 'short-id': '0123456789abcdef' },
+    'reality-opts': {
+      'public-key': 'x'.repeat(43),
+      'short-id': '0123456789abcdef',
+      ...(mlkem ? { 'support-x25519mlkem768': true } : {}),
+    },
   }
   if (fp) p['client-fingerprint'] = fp
   return p as unknown as ParsedProxy
@@ -54,6 +58,18 @@ test('REALITY honours an explicit deterministic user fingerprint (firefox kept)'
   const out = applyUtlsRotation([reality('nl')], { fingerprint: 'firefox', override: 'always' })
   const p = out[0] as unknown as Record<string, unknown>
   assert.equal(p['client-fingerprint'], 'firefox')
+})
+
+test('modern Xray REALITY with ML-KEM is forced to chrome even when settings request another fingerprint', () => {
+  const out = applyUtlsRotation([reality('orel', 'edge', true)], { fingerprint: 'firefox', override: 'always' })
+  const p = out[0] as unknown as Record<string, unknown>
+  assert.equal(p['client-fingerprint'], 'chrome')
+})
+
+test('modern Xray REALITY rewrites an incompatible provider fingerprint under the conservative override', () => {
+  const out = applyUtlsRotation([reality('orel', 'edge', true)], { fingerprint: 'randomized', override: 'when-missing-or-chrome' })
+  const p = out[0] as unknown as Record<string, unknown>
+  assert.equal(p['client-fingerprint'], 'chrome')
 })
 
 test('rotation strips a pre-existing bare fingerprint when it rewrites', () => {

@@ -20,6 +20,8 @@ export type {
   CoreConfigProvider,
 } from './runtime/EngineConfigProvider.js'
 export { CoreNotReadyError } from './errors.js'
+export { classifyProxyFailure } from './diagnostics/classifyProxyFailure.js'
+export type { ClassifiedProxyFailure, ProxyFailureCode } from './diagnostics/classifyProxyFailure.js'
 
 // Orchestration (P0.2) — platform-agnostic domain logic.
 export { composeRoutingPolicy, resolveRoutingPolicyForMode } from './routing/composeRoutingPolicy.js'

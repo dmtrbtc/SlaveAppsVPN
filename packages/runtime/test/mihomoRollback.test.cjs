@@ -221,7 +221,7 @@ for (const failure of ['write:1', 'put:1', 'close:1', 'select:1']) {
     assert.equal(await fs.readFile(f.config, 'utf8'), 'last-good')
     assert.equal(f.engine.getState(), 'running')
     assert.deepEqual(f.engine.currentProfile, profile())
-    assert.deepEqual(f.calls.slice(-3), ['put', 'select', 'Manual'])
+    assert.deepEqual(f.calls.slice(-4), ['put', 'select', 'Manual', 'close'])
     assert.equal(f.completed.length, 0)
     assert.equal(await f.engine.updateProfile(f.next), 'reconnect')
   })
@@ -246,8 +246,14 @@ test('unreadable recovery artifact prevents any mutation', async t => {
 test('ambiguous hot selection failure restores previous selection', async t => {
   const f = await fixture(t, ['select:1'])
   await assert.rejects(f.engine.updateProfile({ ...profile(), selectedProxy: 'Other' }))
-  assert.deepEqual(f.calls, ['select', 'select', 'Manual'])
+  assert.deepEqual(f.calls, ['select', 'select', 'Manual', 'close'])
   assert.equal(f.engine.getState(), 'running')
+})
+test('successful hot selection activates target before closing old sessions', async t => {
+  const f = await fixture(t)
+  assert.equal(await f.engine.updateProfile({ ...profile(), selectedProxy: 'Other' }), 'hot')
+  assert.deepEqual(f.calls, ['select', 'Other', 'close'])
+  assert.equal(f.engine.currentProfile.selectedProxy, 'Other')
 })
 for (const recoveryFails of [false, true]) {
   test(`full restart failure, recovery fails=${recoveryFails}`, async t => {

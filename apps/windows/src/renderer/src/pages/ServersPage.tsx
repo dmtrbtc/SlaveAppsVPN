@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Search, Star, RefreshCw, Check, Zap } from 'lucide-react'
+import { Activity, Bot, Search, Star, RefreshCw, Check, Zap } from 'lucide-react'
 import { Input } from '../components/ui/input'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
@@ -8,8 +8,16 @@ import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
 import { cn, countryFlagEmoji } from '../lib/utils'
 import { useServers } from '../hooks/useServers'
-import { useVpnStore, selectVpnStatus, selectSelectedProxy } from '../stores/vpn.store'
+import {
+  useVpnStore,
+  selectVpnStatus,
+  selectSelectedProxy,
+  selectActiveProxy,
+  selectAutoMode,
+  selectBalancerState,
+} from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
+import { IS_MOBILE } from '../lib/platform'
 import type { Server, ServerAvailability } from '@slave-vpn/shared'
 import type { ServerLatencyPayload } from '../../../shared/ipc/types'
 
@@ -96,13 +104,14 @@ interface ServerRowProps {
   liveLatency: number | null
   isProbing: boolean
   isSelected: boolean
+  isActive: boolean
   isFav: boolean
   isConnecting: boolean
   onSelect: () => void
   onFav: (e: React.MouseEvent) => void
 }
 
-function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
+function ServerRow({ server, liveLatency, isProbing, isSelected, isActive, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
   const flag = countryFlagEmoji(server.countryCode)
   const avail = AVAILABILITY_BADGE[server.availability]
   const isOffline = server.availability === 'offline'
@@ -128,9 +137,12 @@ function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnec
         <div className="flex items-center gap-1.5">
           <span className="text-[13px] font-medium text-text-primary truncate">{server.name}</span>
           {isSelected && <Check className="h-3 w-3 text-accent shrink-0" />}
+          {isActive && <Activity className="h-3 w-3 text-connected shrink-0" />}
         </div>
         <div className="flex items-center gap-1 mt-0.5 flex-wrap">
           <span className="text-[11px] text-text-muted">{server.countryName}</span>
+          {isSelected && <Badge tone="neutral" className="text-[9px] py-0 px-1 h-[14px] leading-none">Выбран</Badge>}
+          {isActive && <Badge tone="ok" className="text-[9px] py-0 px-1 h-[14px] leading-none">Активен</Badge>}
           {badges.map(b => (
             <Badge key={b.label} tone={b.tone} className="text-[9px] py-0 px-1 h-[14px] leading-none">
               {b.label}
@@ -250,7 +262,12 @@ export function ServersPage() {
 
   const connect = useVpnStore(s => s.connect)
   const setProxy = useVpnStore(s => s.setProxy)
+  const selectAuto = useVpnStore(s => s.selectAuto)
   const selectedProxy = useVpnStore(selectSelectedProxy)
+  const activeProxy = useVpnStore(selectActiveProxy)
+  const autoMode = useVpnStore(selectAutoMode)
+  const balancerState = useVpnStore(selectBalancerState)
+  const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
 
   const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
   const bestNode = useBestNode(servers, latencyMap)
@@ -305,6 +322,20 @@ export function ServersPage() {
     }
   }
 
+  const handleAuto = async (): Promise<void> => {
+    if (connectingId) return
+    setConnectingId('SLAVE-AUTO')
+    try {
+      await selectAuto()
+      notify({ type: 'success', title: 'Автовыбор включён', message: 'Будет использован лучший доступный узел' })
+      if (status.state !== 'connected') await connect()
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка автовыбора', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setConnectingId(null)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col bg-bg-base">
 
@@ -324,6 +355,15 @@ export function ServersPage() {
             )}
           </div>
           <div className="flex items-center gap-1.5">
+            <Button
+              variant={autoActive ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => void handleAuto()}
+              disabled={connectingId !== null}
+            >
+              <Bot className="h-3.5 w-3.5" />
+              {connectingId === 'SLAVE-AUTO' ? 'Включение...' : autoActive ? 'Автовыбор включён' : 'Автовыбор'}
+            </Button>
             {probing && (
               <span className="text-[11px] text-text-muted animate-pulse">Проверка пинга...</span>
             )}
@@ -395,7 +435,8 @@ export function ServersPage() {
                   server={server}
                   liveLatency={latencyMap.get(server.name) ?? null}
                   isProbing={probing && !latencyMap.has(server.name)}
-                  isSelected={selectedProxy === server.id || status.serverName === server.name}
+                  isSelected={!autoActive && selectedProxy === server.id}
+                  isActive={status.state === 'connected' && (activeProxy === server.id || status.serverName === server.name)}
                   isFav={serverFavorites.includes(server.id)}
                   isConnecting={connectingId === server.id}
                   onSelect={() => void handleSelect(server)}

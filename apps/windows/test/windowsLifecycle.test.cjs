@@ -583,6 +583,15 @@ test('older selection completion cannot overwrite newer user intent', async () =
   assert.equal(f.service.activeProxy, 'Newer')
 })
 
+test('failed Windows selector change restores the persisted and applied target', async () => {
+  const f = await runtimeFixture('Manual')
+  f.engine.updateProfile = async () => { throw new Error('synthetic selector rejection') }
+  await assert.rejects(f.service.setSelectedProxy('Rejected'), /selector rejection/)
+  assert.equal(f.settings.selectedProxy, 'Manual')
+  assert.equal(f.manager.getCurrentProfile().selectedProxy, 'Manual')
+  assert.equal(f.service.activeProxy, null)
+})
+
 for (const change of ['disconnect', 'selection']) {
   test(`active discovery ignores response after ${change}`, async t => {
     const f = await runtimeFixture('Manual')

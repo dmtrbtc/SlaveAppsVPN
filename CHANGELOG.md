@@ -4,6 +4,35 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.15] — 2026-09-19
+
+### Added
+
+- Windows and Android now classify common selector, REALITY, encryption, TLS,
+  DNS, authentication, reset, unreachable-network, timeout, and TUN failures
+  into privacy-safe diagnostics without exposing raw subscription data.
+- REALITY validation accepts canonical 43-character Xray base64url public keys
+  and enforces the official eight-byte short-id limit.
+
+### Fixed
+
+- Switching a server now activates the new selector before closing existing
+  sessions, so long-lived HTTP/2, QUIC, and push connections cannot continue
+  through the previously selected node.
+- Failed selector changes restore both the active profile and the saved choice;
+  Android no longer hides a native failure or presents a rejected node as
+  selected.
+- Android resets a saved node that disappeared from refreshed subscriptions to
+  `SLAVE-AUTO` before starting the native core.
+- REALITY links requesting X25519/ML-KEM force the compatible `chrome` uTLS
+  fingerprint even when a global rotation setting requested another profile.
+- Server selection now works before connection, disables desktop autobalancing
+  when a manual node is chosen, and distinguishes the saved choice from the node
+  currently carrying traffic. A single visible Auto action is available on the
+  dashboard and full server list.
+- The unfinished Xray placeholder is no longer offered as a selectable engine;
+  stale saved Xray choices recover to Mihomo instead of failing every startup.
+
 ## [0.2.41-dev.14] — 2026-09-14
 
 ### Added

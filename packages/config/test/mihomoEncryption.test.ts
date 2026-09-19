@@ -78,6 +78,7 @@ test('mihomo Reality node: client-fingerprint present, NO bare fingerprint (cert
     utlsFingerprint: 'randomized',
   })
   assert.ok(/client-fingerprint:/.test(out), 'must emit client-fingerprint')
+  assert.ok(/client-fingerprint: chrome/.test(out), 'modern Reality ML-KEM must force the compatible chrome fingerprint')
   // A line that is `fingerprint:` NOT preceded by `client-` would be the
   // cert-pinning field mihomo rejects. It must be absent.
   assert.ok(!/(^|\n)[ \t]*fingerprint:/.test(out), 'must NOT emit a bare `fingerprint` field')

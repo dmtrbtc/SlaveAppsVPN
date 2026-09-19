@@ -49,6 +49,12 @@ const FINGERPRINT_FIELDS = ['client-fingerprint', 'fingerprint'] as const
 const REALITY_SAFE_FINGERPRINT: UtlsFingerprint = 'chrome'
 const REALITY_UNSAFE = new Set<string>(['randomized', 'random'])
 
+function requiresMlkemKeyShare(proxy: ParsedProxy): boolean {
+  const ro = (proxy as unknown as Record<string, unknown>)['reality-opts']
+  return !!ro && typeof ro === 'object' &&
+    (ro as Record<string, unknown>)['support-x25519mlkem768'] === true
+}
+
 function readField(proxy: ParsedProxy, key: string): string | undefined {
   const v = (proxy as unknown as Record<string, unknown>)[key]
   return typeof v === 'string' && v.length > 0 ? v : undefined
@@ -96,15 +102,21 @@ export function applyUtlsRotation(
 
     // REALITY can never use a randomized/random fingerprint (see above) — coerce
     // to a deterministic X25519-bearing one regardless of the user's choice.
-    const target: UtlsFingerprint =
-      reality && REALITY_UNSAFE.has(fingerprint) ? REALITY_SAFE_FINGERPRINT : fingerprint
+    // Bundled Mihomo/uTLS currently guarantees the X25519MLKEM768 key share
+    // (in the ordering required by current Xray REALITY) only for `chrome`.
+    // A global user override such as edge/firefox must not silently break a
+    // node whose share link requested the hybrid key exchange.
+    const mlkem = reality && requiresMlkemKeyShare(proxy)
+    const target: UtlsFingerprint = reality && (mlkem || REALITY_UNSAFE.has(fingerprint))
+      ? REALITY_SAFE_FINGERPRINT
+      : fingerprint
 
     // A REALITY node whose effective fingerprint is currently absent OR a
     // randomized/random value is broken and MUST be rewritten, even under
     // 'when-missing-or-chrome' (which would otherwise preserve a stray
     // randomized value and leave the node dead).
     const current = readField(proxy, 'client-fingerprint') ?? readField(proxy, 'fingerprint')
-    const realityNeedsFix = reality && (!current || REALITY_UNSAFE.has(current))
+    const realityNeedsFix = reality && (!current || REALITY_UNSAFE.has(current) || mlkem && current !== REALITY_SAFE_FINGERPRINT)
 
     if (!shouldRewrite(proxy, override) && !realityNeedsFix) return proxy
 
