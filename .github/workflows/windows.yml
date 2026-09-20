@@ -27,6 +27,10 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
@@ -51,6 +55,12 @@ jobs:
 
       - name: Download engine binaries + geo databases
         run: pnpm download:binaries
+
+      - name: Build patched Mihomo core
+        shell: pwsh
+        run: |
+          git clone --branch v1.19.30 --depth 1 https://github.com/MetaCubeX/mihomo.git "$env:RUNNER_TEMP/mihomo-v1.19.30"
+          ./scripts/build-mihomo-windows.ps1 -MihomoSource "$env:RUNNER_TEMP/mihomo-v1.19.30"
 
       - name: Build shared packages first
         run: pnpm --filter "./packages/**" build

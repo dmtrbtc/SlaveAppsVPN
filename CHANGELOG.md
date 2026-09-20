@@ -4,6 +4,23 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.16] — 2026-09-20
+
+### Added
+
+- The bundled Windows and Android Mihomo cores now declare the modern REALITY
+  client version required by current Xray servers and verify optional ML-DSA-65
+  certificate signatures supplied through the standard `pqv` share-link field.
+- Native core patches are pinned to the exact Mihomo source tag, tested, and
+  rebuilt reproducibly for both platforms.
+
+### Fixed
+
+- VLESS REALITY subscriptions carrying `pqv` no longer discard the verification
+  key during import.
+- Connections to modern REALITY servers are no longer silently rejected because
+  the client advertised the legacy `1.8.2` compatibility version.
+
 ## [0.2.41-dev.15] — 2026-09-19
 
 ### Added

@@ -115,7 +115,7 @@ adb version
 
 Только для пересборки самого AAR нужны:
 - Android NDK: `sdkmanager "ndk;26.1.10909125"` (~1 GB)
-- Go `1.26.6`
+- Go `1.26.3`
 - JDK 21
 - зафиксированные `gomobile`/`gobind`
 

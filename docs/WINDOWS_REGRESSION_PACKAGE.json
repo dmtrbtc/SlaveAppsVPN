@@ -1,7 +1,7 @@
 {
-  "version": "0.2.41-dev.12",
+  "version": "0.2.41-dev.16",
   "electron": "39.8.10",
-  "dependenciesResolved": 34,
+  "dependenciesResolved": 33,
   "lifecycleIncluded": true,
   "compiledFilesMatch": true,
   "nativeSqlite": "passed",

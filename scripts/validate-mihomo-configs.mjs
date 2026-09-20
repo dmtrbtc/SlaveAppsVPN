@@ -62,6 +62,7 @@ function buildSubscription() {
   const realityOutput = runMihomo(['generate', 'reality-keypair'], 'generate reality-keypair')
   const encryption = `mlkem768x25519plus.native.0rtt.${extractGeneratedValue(mlkemOutput, 'Client')}`
   const realityPublicKey = extractGeneratedValue(realityOutput, 'PublicKey')
+  const mldsa65Verify = Buffer.alloc(1952).toString('base64url')
 
   return `
 proxies:
@@ -88,6 +89,7 @@ proxies:
       public-key: ${realityPublicKey}
       short-id: 0123456789abcdef
       spider-x: /
+      mldsa65-verify: ${mldsa65Verify}
       support-x25519mlkem768: true
   - name: Hysteria2
     type: hysteria2

@@ -146,6 +146,7 @@ test('uriParser: accepts Markdown-escaped Reality links with pqv', () => {
     'public-key': 'Synthetic-Public-Key-With_Underscore',
     'short-id': 'a19c',
     'spider-x': '/',
+    'mldsa65-verify': 'Synthetic-MLDSA65-Verify_Value',
     'support-x25519mlkem768': true,
   })
 })

@@ -1,6 +1,29 @@
 # Codex state
 
-## CURRENT HANDOFF — 2026-09-19, dev.15 connection-hardening candidate
+## CURRENT HANDOFF — 2026-09-20, dev.16 modern REALITY candidate
+
+The `v0.2.41-dev.16` candidate patches the pinned Mihomo v1.19.30 core for
+current Xray REALITY interoperability on Windows and Android. It advertises
+client version `26.3.27`, preserves imported `pqv` values as
+`mldsa65-verify`, validates the 1952-byte key, and verifies ML-DSA-65
+certificate signatures. X25519/ML-KEM and the Chrome fingerprint remain
+enabled for these links.
+
+The native changes are stored as reviewed patches against the exact upstream
+commit. Windows builds the patched core in CI; Android embeds a reproducibly
+built AAR whose two clean builds produced the same pinned SHA-256. No customer
+subscription, key, UUID, endpoint, or raw configuration was copied into the
+repository.
+
+Local verification passes: native Go tests; config 45/45; Windows renderer
+38/38 and lifecycle 63/63; typecheck 24/24; boundaries 299/299; strict lint;
+Mihomo config validation 8/8; Android Lint and debug APK assembly; Windows
+Setup/Portable packaging and packaged-runtime verification. Live end-to-end
+validation still requires the owner's subscription on an external device.
+
+Canonical status: `docs/DEV_RELEASE_READINESS_0.2.41-dev.16.md`.
+
+## PREVIOUS HANDOFF — 2026-09-19, dev.15 connection-hardening candidate
 
 The `v0.2.41-dev.15` source candidate is prepared locally in the isolated
 `codex/windows-regression` worktree. The dirty main checkout remains untouched.

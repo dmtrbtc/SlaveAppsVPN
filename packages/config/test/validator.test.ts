@@ -34,3 +34,25 @@ test('validator rejects REALITY shortId longer than the Xray 8-byte limit', () =
   assert.equal(report.compatible, false)
   assert.ok(report.issues.some(issue => issue.field === 'reality-opts.short-id'))
 })
+
+test('validator accepts a 1952-byte ML-DSA-65 verify key from pqv', () => {
+  const proxy = parseProxyUri(
+    'vless://00000000-0000-4000-8000-000000000000@node.example:443' +
+    '?type=tcp&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+    `&fp=chrome&sni=www.example.com&sid=0123&pqv=${'A'.repeat(2603)}#Node`,
+  )
+  const report = new ConnectionCompatibilityValidator().validate(proxy)
+  assert.equal(report.compatible, true)
+  assert.deepEqual(report.issues.filter(issue => issue.severity === 'error'), [])
+})
+
+test('validator rejects malformed ML-DSA-65 verify keys', () => {
+  const proxy = parseProxyUri(
+    'vless://00000000-0000-4000-8000-000000000000@node.example:443' +
+    '?type=tcp&security=reality&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+    '&fp=chrome&sni=www.example.com&sid=0123&pqv=too-short#Node',
+  )
+  const report = new ConnectionCompatibilityValidator().validate(proxy)
+  assert.equal(report.compatible, false)
+  assert.ok(report.issues.some(issue => issue.field === 'reality-opts.mldsa65-verify'))
+})

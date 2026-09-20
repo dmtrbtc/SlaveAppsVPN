@@ -52,12 +52,13 @@ function parseVless(url: URL): ProxyEntry {
     if (pbk) realityOpts['public-key'] = pbk
     if (sid !== null) realityOpts['short-id'] = sid
     if (spx) realityOpts['spider-x'] = spx
-    // Xray share links use pqv for ML-DSA-65 certificate verification. Mihomo
-    // cannot consume that verification key, but a link carrying it identifies
-    // a modern Reality deployment which also needs the hybrid ML-KEM key share.
-    // Enable Mihomo's supported handshake capability without leaking the pqv
-    // credential into an unknown config field.
-    if (pqv) realityOpts['support-x25519mlkem768'] = true
+    // Xray share links use pqv for the ML-DSA-65 verification key. The bundled
+    // core carries the corresponding mldsa65-verify extension and modern Xray
+    // deployments also require the hybrid ML-KEM key share.
+    if (pqv) {
+      realityOpts['mldsa65-verify'] = pqv
+      realityOpts['support-x25519mlkem768'] = true
+    }
     extra['reality-opts'] = realityOpts
   }
 

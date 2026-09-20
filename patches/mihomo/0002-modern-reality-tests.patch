@@ -1,0 +1,78 @@
+diff --git a/adapter/outbound/reality_test.go b/adapter/outbound/reality_test.go
+new file mode 100644
+index 0000000..5dded87
+--- /dev/null
++++ b/adapter/outbound/reality_test.go
+@@ -0,0 +1,31 @@
++package outbound
++
++import (
++	"encoding/base64"
++	"strings"
++	"testing"
++)
++
++func TestRealityOptionsParsesMldsa65Verify(t *testing.T) {
++	encoded := base64.RawURLEncoding.EncodeToString(make([]byte, 1952))
++	config, err := (RealityOptions{
++		PublicKey:     strings.Repeat("A", 43),
++		Mldsa65Verify: encoded,
++	}).Parse()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(config.Mldsa65Verify) != 1952 {
++		t.Fatalf("unexpected ML-DSA-65 key size: %d", len(config.Mldsa65Verify))
++	}
++}
++
++func TestRealityOptionsRejectsMalformedMldsa65Verify(t *testing.T) {
++	_, err := (RealityOptions{
++		PublicKey:     strings.Repeat("A", 43),
++		Mldsa65Verify: "too-short",
++	}).Parse()
++	if err == nil {
++		t.Fatal("malformed ML-DSA-65 key accepted")
++	}
++}
+diff --git a/component/tls/reality_test.go b/component/tls/reality_test.go
+new file mode 100644
+index 0000000..1310cca
+--- /dev/null
++++ b/component/tls/reality_test.go
+@@ -0,0 +1,35 @@
++package tls
++
++import (
++	"bytes"
++	"testing"
++
++	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
++)
++
++func TestApplyRealityClientVersion(t *testing.T) {
++	sessionID := make([]byte, 32)
++	applyRealityClientVersion(sessionID)
++	if !bytes.Equal(sessionID[:3], []byte{26, 3, 27}) {
++		t.Fatalf("unexpected REALITY client version: %v", sessionID[:3])
++	}
++}
++
++func TestVerifyMldsa65(t *testing.T) {
++	publicKey, privateKey, err := mldsa65.GenerateKey(nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	message := []byte("REALITY transcript")
++	signature := make([]byte, mldsa65.SignatureSize)
++	if err := mldsa65.SignTo(privateKey, message, nil, false, signature); err != nil {
++		t.Fatal(err)
++	}
++	if !verifyMldsa65(publicKey.Bytes(), message, signature) {
++		t.Fatal("valid ML-DSA-65 signature rejected")
++	}
++	signature[0] ^= 1
++	if verifyMldsa65(publicKey.Bytes(), message, signature) {
++		t.Fatal("invalid ML-DSA-65 signature accepted")
++	}
++}

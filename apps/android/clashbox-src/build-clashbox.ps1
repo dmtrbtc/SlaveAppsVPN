@@ -22,13 +22,14 @@ Set-StrictMode -Version 3.0
 $ExpectedTag = 'v1.19.30'
 $ExpectedCommit = 'ac017cdd246ce8bd547653d927e7bf77d7ee73d5'
 $MobileVersion = 'v0.0.0-20260529142300-ecb4cd65260a'
-$MobileGraphVersion = 'v0.0.0-20190312151609-d3739f865fa6'
-$GoToolchain = 'go1.26.6+auto'
+$MobileGraphVersion = $MobileVersion
+$GoToolchain = 'go1.26.3+auto'
 $BuildTime = '2026-08-16T10:11:00Z'
-$ExpectedAarSha256 = '2ec9ee3ad6632f7bf4d6f1d9644b18fbd75b0bfad19db20e10fd35ca7308a334'
+$ExpectedAarSha256 = '766c5f81839fa1c171fe0b454189e2b9b1ec1df11bc1f9c33ce39c8a38257786'
 
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $WrapperSource = Join-Path $PSScriptRoot 'clashbox.go'
+$PatchRoot = Join-Path $RepoRoot 'patches\mihomo'
 
 if (-not $OutputPath) { $OutputPath = Join-Path $RepoRoot 'apps\android\libs\clashbox.aar' }
 if (-not $GoRoot) { $GoRoot = if ($env:SLAVE_GO_ROOT) { $env:SLAVE_GO_ROOT } else { 'E:\dev\go' } }
@@ -49,6 +50,9 @@ $JavapExe = Join-Path $JavaHome 'bin\javap.exe'
 foreach ($RequiredPath in @(
   (Join-Path $InputSourcePath '.git'),
   $WrapperSource,
+  (Join-Path $PatchRoot '0001-modern-reality-client.patch'),
+  (Join-Path $PatchRoot '0002-modern-reality-tests.patch'),
+  (Join-Path $PatchRoot '0003-modern-reality-dependency.patch'),
   $GoExe,
   $GomobileExe,
   $GobindExe,
@@ -93,8 +97,8 @@ $env:SOURCE_DATE_EPOCH = '1786875060'
 $env:Path = "$(Join-Path $GoRoot 'bin');$GomobileBin;$(Join-Path $JavaHome 'bin');$env:Path"
 
 $SelectedGoVersion = (& $GoExe version) -join "`n"
-if ($SelectedGoVersion -notmatch '\bgo1\.26\.6\b') {
-  throw "Expected Go 1.26.6 toolchain, got '$SelectedGoVersion'"
+if ($SelectedGoVersion -notmatch '\bgo1\.26\.3\b') {
+  throw "Expected Go 1.26.3 toolchain, got '$SelectedGoVersion'"
 }
 
 function Invoke-NativeChecked {
@@ -111,6 +115,10 @@ function Invoke-NativeChecked {
   $StartInfo.FileName = $FilePath
   $StartInfo.UseShellExecute = $false
   $StartInfo.WorkingDirectory = $SourcePath
+  foreach ($Name in @('PATH', 'GOROOT', 'GOPATH', 'GOBIN', 'GOTOOLCHAIN', 'GOCACHE', 'GOMODCACHE', 'GOPROXY', 'GOSUMDB', 'JAVA_HOME', 'ANDROID_HOME', 'ANDROID_NDK_HOME', 'ANDROID_NDK_ROOT', 'SOURCE_DATE_EPOCH')) {
+    $Value = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    if ($null -ne $Value) { $StartInfo.Environment[$Name] = $Value }
+  }
   foreach ($Argument in $Arguments) { [void] $StartInfo.ArgumentList.Add($Argument) }
 
   $Process = [Diagnostics.Process]::Start($StartInfo)
@@ -139,19 +147,21 @@ try {
   & tar -xf $SourceArchive -C $SourcePath
   if ($LASTEXITCODE -ne 0) { throw "source extraction failed with exit code $LASTEXITCODE" }
 
+  foreach ($PatchName in @('0001-modern-reality-client.patch', '0002-modern-reality-tests.patch', '0003-modern-reality-dependency.patch')) {
+    & git -C $SourcePath apply '--whitespace=error-all' (Join-Path $PatchRoot $PatchName)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to apply owned Mihomo patch: $PatchName" }
+  }
+
   $WrapperDir = Join-Path $SourcePath 'clashbox'
   New-Item -ItemType Directory -Path $WrapperDir -Force | Out-Null
   Copy-Item -LiteralPath $WrapperSource -Destination (Join-Path $WrapperDir 'clashbox.go') -Force
 
   Push-Location $SourcePath
   try {
-    # Go 1.26 gomobile checks that x/mobile/bind is resolvable from the source
-    # module. A pre-module x/mobile revision satisfies that probe without
-    # raising Mihomo's x/crypto, x/net and x/sys runtime dependency versions.
-    & $GoExe mod edit "-require=golang.org/x/mobile@$MobileGraphVersion"
-    if ($LASTEXITCODE -ne 0) { throw "go mod edit failed with exit code $LASTEXITCODE" }
-    & $GoExe mod download "golang.org/x/mobile@$MobileGraphVersion"
-    if ($LASTEXITCODE -ne 0) { throw "go mod download x/mobile failed with exit code $LASTEXITCODE" }
+    # gomobile requires the matching x/mobile/bind package to be present in the
+    # source module. Pin it to the exact revision used to build gomobile/gobind.
+    & $GoExe get '-tool' "golang.org/x/mobile/cmd/gobind@$MobileGraphVersion"
+    if ($LASTEXITCODE -ne 0) { throw "go get x/mobile gobind tool failed with exit code $LASTEXITCODE" }
 
     $LdFlags = "-X github.com/metacubex/mihomo/constant.Version=$ExpectedTag -X github.com/metacubex/mihomo/constant.BuildTime=$BuildTime -s -w -buildid="
     Invoke-NativeChecked -FilePath $GomobileExe -Label 'gomobile bind' -Arguments @(
@@ -227,6 +237,7 @@ try {
   $Artifact = Get-Item -LiteralPath $OutputPath
   Write-Host 'clashbox AAR built and verified'
   Write-Host "  source:  $ExpectedTag ($ExpectedCommit)"
+  Write-Host "  patches: modern REALITY client version + ML-DSA-65 verification"
   Write-Host "  output:  $OutputPath"
   Write-Host "  size:    $([math]::Round($Artifact.Length / 1MB, 2)) MB"
   Write-Host "  sha256:  $Sha256"

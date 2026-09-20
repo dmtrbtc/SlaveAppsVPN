@@ -1,6 +1,6 @@
 {
   "name": "@slave-vpn/android",
-  "version": "0.2.41-dev.15",
+  "version": "0.2.41-dev.16",
   "private": true,
   "description": "SLAVE VPN — Android client (Capacitor wrapper)",
   "scripts": {
