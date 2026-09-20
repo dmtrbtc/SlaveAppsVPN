@@ -1,6 +1,27 @@
 # Codex state
 
-## CURRENT HANDOFF — 2026-09-20, dev.17 hybrid REALITY transport candidate
+## CURRENT HANDOFF — 2026-09-20, dev.18 REALITY minimum-version candidate
+
+The reporting device confirmed that `v0.2.41-dev.17` selected the requested
+node but still timed out. A deterministic local Xray 26.9.9 interoperability
+test then reproduced the silent rejection: the bundled client authenticated
+all cryptographic inputs but advertised REALITY version `26.3.27`, below the
+server's `minClientVer=26.9.9` policy.
+
+Both platform cores now advertise `26.9.9`. The same regression test passes
+with hybrid X25519/ML-KEM, ML-DSA-65 verification, ClientHello fragmentation,
+and the minimum-version policy enabled. Android AAR and Windows core were
+rebuilt from the exact pinned Mihomo source and owned patches. No customer
+subscription, key, UUID, endpoint, or raw configuration is stored in the repo.
+
+Local static checks, package and platform tests, Android Lint/debug APK,
+Windows Setup/Portable packaging, packaged-runtime verification, and release
+readiness validation pass. Protected CI publication and the owner's end-to-end
+device smoke remain the release gates.
+
+Canonical status: `docs/DEV_RELEASE_READINESS_0.2.41-dev.18.md`.
+
+## PREVIOUS HANDOFF — 2026-09-20, dev.17 hybrid REALITY transport candidate
 
 The `v0.2.41-dev.17` candidate addresses the remaining silent timeout seen on
 the reporting Android device after dev.16 correctly selected the requested

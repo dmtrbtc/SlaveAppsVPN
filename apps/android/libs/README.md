@@ -9,7 +9,7 @@ so ordinary application builds do not need Go, gomobile, or the Android NDK.
 | Property | Value |
 | --- | --- |
 | Source | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) tag `v1.19.30`, commit `ac017cdd246ce8bd547653d927e7bf77d7ee73d5`, plus owned patches in `patches/mihomo` |
-| SHA-256 | `a2e294f95a2d3792b8d134dcd98c6ba9839983f93b32c7312ca2e5a16a7a689a` |
+| SHA-256 | `66877689dc73edf5dbabf289f1bbd1240e73c00f4e95c61d10bc3f253f4e7424` |
 | Go | `1.26.3` (`GOTOOLCHAIN=go1.26.3+auto`) |
 | gomobile / gobind | `golang.org/x/mobile@v0.0.0-20260529142300-ecb4cd65260a` |
 | Android toolchain | JDK 21, NDK `26.1.10909125`, minimum API 21 |

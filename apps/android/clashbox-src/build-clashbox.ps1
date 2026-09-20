@@ -25,7 +25,7 @@ $MobileVersion = 'v0.0.0-20260529142300-ecb4cd65260a'
 $MobileGraphVersion = $MobileVersion
 $GoToolchain = 'go1.26.3+auto'
 $BuildTime = '2026-08-16T10:11:00Z'
-$ExpectedAarSha256 = 'a2e294f95a2d3792b8d134dcd98c6ba9839983f93b32c7312ca2e5a16a7a689a'
+$ExpectedAarSha256 = '66877689dc73edf5dbabf289f1bbd1240e73c00f4e95c61d10bc3f253f4e7424'
 
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $WrapperSource = Join-Path $PSScriptRoot 'clashbox.go'
@@ -238,7 +238,7 @@ try {
   $Artifact = Get-Item -LiteralPath $OutputPath
   Write-Host 'clashbox AAR built and verified'
   Write-Host "  source:  $ExpectedTag ($ExpectedCommit)"
-  Write-Host "  patches: modern REALITY client version + ML-DSA-65 verification + ClientHello fragmentation"
+  Write-Host "  patches: REALITY 26.9.9 client version + ML-DSA-65 verification + ClientHello fragmentation"
   Write-Host "  output:  $OutputPath"
   Write-Host "  size:    $([math]::Round($Artifact.Length / 1MB, 2)) MB"
   Write-Host "  sha256:  $Sha256"

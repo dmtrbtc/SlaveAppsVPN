@@ -53,7 +53,7 @@ index 0000000..1310cca
 +func TestApplyRealityClientVersion(t *testing.T) {
 +	sessionID := make([]byte, 32)
 +	applyRealityClientVersion(sessionID)
-+	if !bytes.Equal(sessionID[:3], []byte{26, 3, 27}) {
++	if !bytes.Equal(sessionID[:3], []byte{26, 9, 9}) {
 +		t.Fatalf("unexpected REALITY client version: %v", sessionID[:3])
 +	}
 +}

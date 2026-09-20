@@ -4,6 +4,21 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.18] — 2026-09-20
+
+### Added
+
+- A local interoperability harness now exercises the packaged Mihomo client
+  against Xray 26.9.9 with hybrid X25519/ML-KEM, ML-DSA-65 verification,
+  ClientHello fragmentation, and a server-enforced minimum client version.
+
+### Fixed
+
+- Modern REALITY sessions now advertise client version `26.9.9` instead of
+  `26.3.27`, so current Xray servers using `minClientVer` no longer silently
+  reject an otherwise valid VLESS connection and fall back to timeout/EOF.
+- Windows and Android ship the same corrected native handshake implementation.
+
 ## [0.2.41-dev.17] — 2026-09-20
 
 ### Added
