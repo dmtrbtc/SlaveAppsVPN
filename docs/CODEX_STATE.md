@@ -1,27 +1,32 @@
 # Codex state
 
-## CURRENT HANDOFF — 2026-09-20, dev.16 modern REALITY candidate
+## CURRENT HANDOFF — 2026-09-20, dev.17 hybrid REALITY transport candidate
 
-The `v0.2.41-dev.16` candidate patches the pinned Mihomo v1.19.30 core for
-current Xray REALITY interoperability on Windows and Android. It advertises
-client version `26.3.27`, preserves imported `pqv` values as
-`mldsa65-verify`, validates the 1952-byte key, and verifies ML-DSA-65
-certificate signatures. X25519/ML-KEM and the Chrome fingerprint remain
-enabled for these links.
+The `v0.2.41-dev.17` candidate addresses the remaining silent timeout seen on
+the reporting Android device after dev.16 correctly selected the requested
+node. TCP reachability was available, while the modern hybrid REALITY
+ClientHello is large enough to be discarded by some mobile-path middleboxes.
 
-The native changes are stored as reviewed patches against the exact upstream
-commit. Windows builds the patched core in CI; Android embeds a reproducibly
-built AAR whose two clean builds produced the same pinned SHA-256. No customer
-subscription, key, UUID, endpoint, or raw configuration was copied into the
-repository.
+For imported VLESS links containing `pqv`, both platform cores now split only
+the first ClientHello into 512-byte TLS records and briefly separate their
+writes. The handshake transcript and payload are unchanged; profiles without
+`pqv` keep the upstream network path. Native tests cover fragmentation,
+payload preservation, and the no-op case. The Android AAR and Windows core were
+rebuilt from the exact pinned Mihomo source plus four owned patches. No customer
+subscription, key, UUID, endpoint, or raw configuration is stored in the repo.
 
-Local verification passes: native Go tests; config 45/45; Windows renderer
-38/38 and lifecycle 63/63; typecheck 24/24; boundaries 299/299; strict lint;
-Mihomo config validation 8/8; Android Lint and debug APK assembly; Windows
-Setup/Portable packaging and packaged-runtime verification. Live end-to-end
-validation still requires the owner's subscription on an external device.
+Local native verification and reproducible Android/Windows core builds pass.
+Workspace, application packaging, protected CI publication, online feed checks,
+and the owner's end-to-end device smoke remain release gates.
 
-Canonical status: `docs/DEV_RELEASE_READINESS_0.2.41-dev.16.md`.
+Canonical status: `docs/DEV_RELEASE_READINESS_0.2.41-dev.17.md`.
+
+## PREVIOUS HANDOFF — 2026-09-20, dev.16 modern REALITY candidate
+
+The `v0.2.41-dev.16` candidate added the modern REALITY client version,
+ML-DSA-65 verification, X25519/ML-KEM support, and the Chrome fingerprint on
+Windows and Android. Publication passed, but the owner's device still timed out
+before REALITY authentication.
 
 ## PREVIOUS HANDOFF — 2026-09-19, dev.15 connection-hardening candidate
 

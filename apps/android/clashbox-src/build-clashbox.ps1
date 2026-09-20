@@ -25,7 +25,7 @@ $MobileVersion = 'v0.0.0-20260529142300-ecb4cd65260a'
 $MobileGraphVersion = $MobileVersion
 $GoToolchain = 'go1.26.3+auto'
 $BuildTime = '2026-08-16T10:11:00Z'
-$ExpectedAarSha256 = '766c5f81839fa1c171fe0b454189e2b9b1ec1df11bc1f9c33ce39c8a38257786'
+$ExpectedAarSha256 = 'a2e294f95a2d3792b8d134dcd98c6ba9839983f93b32c7312ca2e5a16a7a689a'
 
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $WrapperSource = Join-Path $PSScriptRoot 'clashbox.go'
@@ -53,6 +53,7 @@ foreach ($RequiredPath in @(
   (Join-Path $PatchRoot '0001-modern-reality-client.patch'),
   (Join-Path $PatchRoot '0002-modern-reality-tests.patch'),
   (Join-Path $PatchRoot '0003-modern-reality-dependency.patch'),
+  (Join-Path $PatchRoot '0004-reality-clienthello-fragmentation.patch'),
   $GoExe,
   $GomobileExe,
   $GobindExe,
@@ -147,7 +148,7 @@ try {
   & tar -xf $SourceArchive -C $SourcePath
   if ($LASTEXITCODE -ne 0) { throw "source extraction failed with exit code $LASTEXITCODE" }
 
-  foreach ($PatchName in @('0001-modern-reality-client.patch', '0002-modern-reality-tests.patch', '0003-modern-reality-dependency.patch')) {
+  foreach ($PatchName in @('0001-modern-reality-client.patch', '0002-modern-reality-tests.patch', '0003-modern-reality-dependency.patch', '0004-reality-clienthello-fragmentation.patch')) {
     & git -C $SourcePath apply '--whitespace=error-all' (Join-Path $PatchRoot $PatchName)
     if ($LASTEXITCODE -ne 0) { throw "Unable to apply owned Mihomo patch: $PatchName" }
   }
@@ -237,7 +238,7 @@ try {
   $Artifact = Get-Item -LiteralPath $OutputPath
   Write-Host 'clashbox AAR built and verified'
   Write-Host "  source:  $ExpectedTag ($ExpectedCommit)"
-  Write-Host "  patches: modern REALITY client version + ML-DSA-65 verification"
+  Write-Host "  patches: modern REALITY client version + ML-DSA-65 verification + ClientHello fragmentation"
   Write-Host "  output:  $OutputPath"
   Write-Host "  size:    $([math]::Round($Artifact.Length / 1MB, 2)) MB"
   Write-Host "  sha256:  $Sha256"

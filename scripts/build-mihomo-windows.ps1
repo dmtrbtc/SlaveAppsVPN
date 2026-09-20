@@ -37,7 +37,7 @@ try {
   & tar -xf $sourceArchive -C $sourcePath
   if ($LASTEXITCODE -ne 0) { throw 'source extraction failed' }
 
-  foreach ($patchName in @('0001-modern-reality-client.patch', '0002-modern-reality-tests.patch', '0003-modern-reality-dependency.patch')) {
+  foreach ($patchName in @('0001-modern-reality-client.patch', '0002-modern-reality-tests.patch', '0003-modern-reality-dependency.patch', '0004-reality-clienthello-fragmentation.patch')) {
     & git -C $sourcePath apply '--whitespace=error-all' (Join-Path $PatchRoot $patchName)
     if ($LASTEXITCODE -ne 0) { throw "Unable to apply owned Mihomo patch: $patchName" }
   }

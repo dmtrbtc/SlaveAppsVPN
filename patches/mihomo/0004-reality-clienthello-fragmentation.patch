@@ -1,0 +1,162 @@
+diff --git a/adapter/outbound/reality.go b/adapter/outbound/reality.go
+index d68d6aa..e6fa9d1 100644
+--- a/adapter/outbound/reality.go
++++ b/adapter/outbound/reality.go
+@@ -14,6 +14,7 @@ type RealityOptions struct {
+ 	Mldsa65Verify string `proxy:"mldsa65-verify,omitempty"`
+ 
+ 	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
++	FragmentClientHello   bool `proxy:"fragment-client-hello,omitempty"`
+ }
+ 
+ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
+@@ -21,6 +22,7 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
+ 	if o.PublicKey != "" {
+ 		config := new(tlsC.RealityConfig)
+ 		config.SupportX25519MLKEM768 = o.SupportX25519MLKEM768
++		config.FragmentClientHello = o.FragmentClientHello
+ 		if o.Mldsa65Verify != "" {
+ 			var decodeErr error
+ 			config.Mldsa65Verify, decodeErr = base64.RawURLEncoding.DecodeString(o.Mldsa65Verify)
+diff --git a/component/tls/reality.go b/component/tls/reality.go
+index c30b619..f913ca1 100644
+--- a/component/tls/reality.go
++++ b/component/tls/reality.go
+@@ -13,5 +13,7 @@ import (
+ 	"encoding/binary"
+ 	"errors"
++	"io"
+ 	"net"
+ 	"strings"
++	"sync"
+ 	"time"
+@@ -46,9 +48,13 @@ type RealityConfig struct {
+ 	Mldsa65Verify []byte
+ 
+ 	SupportX25519MLKEM768 bool
++	FragmentClientHello   bool
+ }
+ 
+ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
++	if realityConfig.FragmentClientHello {
++		conn = &realityFragmentConn{Conn: conn}
++	}
+ 	for retry := 0; ; retry++ {
+ 		verifier := &realityVerifier{
+ 			serverName:    serverName,
+@@ -205,3 +211,75 @@ func (c *realityVerifier) VerifyConnection(state utls.ConnectionState) error {
+ 	}
+ 	return nil
+ }
++
++const realityClientHelloFragmentSize = 512
++
++type realityFragmentConn struct {
++	net.Conn
++	mu        sync.Mutex
++	processed bool
++}
++
++func (c *realityFragmentConn) Write(p []byte) (int, error) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.processed {
++		return c.Conn.Write(p)
++	}
++	c.processed = true
++	records := fragmentRealityClientHello(p, realityClientHelloFragmentSize)
++	if len(records) == 1 {
++		return c.Conn.Write(p)
++	}
++	for i, record := range records {
++		if err := writeRealityRecord(c.Conn, record); err != nil {
++			return 0, err
++		}
++		// Keep adjacent records from being coalesced back into one oversized TCP
++		// segment by mobile network stacks and carrier middleboxes.
++		if i+1 < len(records) {
++			time.Sleep(5 * time.Millisecond)
++		}
++	}
++	return len(p), nil
++}
++
++func writeRealityRecord(conn net.Conn, p []byte) error {
++	for len(p) > 0 {
++		n, err := conn.Write(p)
++		if err != nil {
++			return err
++		}
++		if n == 0 {
++			return io.ErrUnexpectedEOF
++		}
++		p = p[n:]
++	}
++	return nil
++}
++
++func fragmentRealityClientHello(p []byte, maxPayload int) [][]byte {
++	if len(p) < 9 || p[0] != 22 || p[5] != 1 || maxPayload <= 0 {
++		return [][]byte{p}
++	}
++	payloadLen := int(p[3])<<8 | int(p[4])
++	if payloadLen+5 != len(p) || payloadLen <= maxPayload {
++		return [][]byte{p}
++	}
++	payload := p[5:]
++	records := make([][]byte, 0, (len(payload)+maxPayload-1)/maxPayload)
++	for len(payload) > 0 {
++		n := len(payload)
++		if n > maxPayload {
++			n = maxPayload
++		}
++		record := make([]byte, 5+n)
++		copy(record[:3], p[:3])
++		record[3] = byte(n >> 8)
++		record[4] = byte(n)
++		copy(record[5:], payload[:n])
++		records = append(records, record)
++		payload = payload[n:]
++	}
++	return records
++}
+diff --git a/component/tls/reality_test.go b/component/tls/reality_test.go
+index 1310cca..7059231 100644
+--- a/component/tls/reality_test.go
++++ b/component/tls/reality_test.go
+@@ -34,3 +34,35 @@ func TestVerifyMldsa65(t *testing.T) {
+ 		t.Fatal("invalid ML-DSA-65 signature accepted")
+ 	}
+ }
++
++func TestFragmentRealityClientHello(t *testing.T) {
++	payload := make([]byte, 1500)
++	payload[0] = 1
++	record := make([]byte, 5+len(payload))
++	record[0], record[1], record[2] = 22, 3, 1
++	record[3], record[4] = byte(len(payload)>>8), byte(len(payload))
++	copy(record[5:], payload)
++
++	fragments := fragmentRealityClientHello(record, 512)
++	if len(fragments) != 3 {
++		t.Fatalf("unexpected fragment count: %d", len(fragments))
++	}
++	var rebuilt []byte
++	for _, fragment := range fragments {
++		if fragment[0] != 22 || len(fragment) > 517 {
++			t.Fatalf("invalid TLS fragment: type=%d size=%d", fragment[0], len(fragment))
++		}
++		rebuilt = append(rebuilt, fragment[5:]...)
++	}
++	if !bytes.Equal(rebuilt, payload) {
++		t.Fatal("fragmented ClientHello payload changed")
++	}
++}
++
++func TestFragmentRealityClientHelloLeavesOtherRecordsUntouched(t *testing.T) {
++	record := []byte{23, 3, 3, 0, 2, 1, 2}
++	fragments := fragmentRealityClientHello(record, 512)
++	if len(fragments) != 1 || !bytes.Equal(fragments[0], record) {
++		t.Fatal("non-ClientHello record was changed")
++	}
++}

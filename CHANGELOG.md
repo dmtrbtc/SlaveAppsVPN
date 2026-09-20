@@ -4,6 +4,21 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.17] — 2026-09-20
+
+### Added
+
+- VLESS REALITY profiles carrying `pqv` now enable narrowly scoped TLS-record
+  fragmentation for their enlarged hybrid X25519/ML-KEM ClientHello.
+- The fragmentation implementation and payload-preservation behavior are
+  covered by native Mihomo tests and shipped in both Windows and Android cores.
+
+### Fixed
+
+- Hybrid REALITY handshakes can traverse mobile networks and middleboxes that
+  silently discard an oversized ClientHello spanning ordinary TCP segments.
+- Profiles without `pqv` retain the upstream handshake path unchanged.
+
 ## [0.2.41-dev.16] — 2026-09-20
 
 ### Added

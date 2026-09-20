@@ -91,6 +91,7 @@ proxies:
       spider-x: /
       mldsa65-verify: ${mldsa65Verify}
       support-x25519mlkem768: true
+      fragment-client-hello: true
   - name: Hysteria2
     type: hysteria2
     server: hysteria.example.test

@@ -58,6 +58,11 @@ function parseVless(url: URL): ProxyEntry {
     if (pqv) {
       realityOpts['mldsa65-verify'] = pqv
       realityOpts['support-x25519mlkem768'] = true
+      // Modern Xray requires the hybrid ML-KEM key share, which makes the
+      // ClientHello larger than a typical mobile-path MTU. Some carrier
+      // middleboxes silently drop that multi-packet hello. Ask our patched
+      // core to split only this handshake into small TLS records.
+      realityOpts['fragment-client-hello'] = true
     }
     extra['reality-opts'] = realityOpts
   }

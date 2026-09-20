@@ -9,13 +9,13 @@ so ordinary application builds do not need Go, gomobile, or the Android NDK.
 | Property | Value |
 | --- | --- |
 | Source | [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) tag `v1.19.30`, commit `ac017cdd246ce8bd547653d927e7bf77d7ee73d5`, plus owned patches in `patches/mihomo` |
-| SHA-256 | `766c5f81839fa1c171fe0b454189e2b9b1ec1df11bc1f9c33ce39c8a38257786` |
+| SHA-256 | `a2e294f95a2d3792b8d134dcd98c6ba9839983f93b32c7312ca2e5a16a7a689a` |
 | Go | `1.26.3` (`GOTOOLCHAIN=go1.26.3+auto`) |
 | gomobile / gobind | `golang.org/x/mobile@v0.0.0-20260529142300-ecb4cd65260a` |
 | Android toolchain | JDK 21, NDK `26.1.10909125`, minimum API 21 |
 | Build tags | `cmfa,with_gvisor` |
 | Targets | `arm64-v8a`, `armeabi-v7a` |
-| Size | 36,835,318 bytes (35.13 MiB) |
+| Size | 36,840,603 bytes (35.13 MiB) |
 | License | GPL-3.0 (inherited from Mihomo) |
 
 The generated Java package is `com.slavevpn.clash.clashbox`. Its exported

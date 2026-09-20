@@ -148,5 +148,6 @@ test('uriParser: accepts Markdown-escaped Reality links with pqv', () => {
     'spider-x': '/',
     'mldsa65-verify': 'Synthetic-MLDSA65-Verify_Value',
     'support-x25519mlkem768': true,
+    'fragment-client-hello': true,
   })
 })
