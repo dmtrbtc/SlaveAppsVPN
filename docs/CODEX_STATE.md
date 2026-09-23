@@ -1,6 +1,97 @@
 # Codex state
 
-## CURRENT HANDOFF — 2026-09-20, dev.18 REALITY minimum-version candidate
+## CURRENT HANDOFF — 2026-09-23 late evening, field root cause: server-side intermittency
+
+Read [REALITY_REGRESSION_DEV10_DEV18.md](REALITY_REGRESSION_DEV10_DEV18.md)
+final section first. Authorized live A/B on the owner's real key (secrets kept
+outside the repo) closed the field failure:
+
+- Direct-path testing with TUN off: dev.18 binary 5/5 and dev.17 release
+  binary 3/3 on EVERY handshake profile (modern/hybrid/fragment/classic).
+  All client-side hypotheses (dev.14+ parser, hybrid/ML-DSA/fragmentation,
+  26.3.27-vs-26.9.9 version, core 1.19.27→1.19.30) DISPROVEN for this node.
+- Installed client is dev.17 (df3e9a4), not dev.18 — updater did not move it;
+  investigate update channel separately.
+- Packet capture in a failing window: TCP+ICMP alive, server ACKs the
+  fragmented ClientHello and returns zero application bytes; silent for both
+  RU-ISP and EE-datacenter sources. Monitor caught recovery ~2 min later; in
+  the alive window direct probe + installed-core health-check (200 OK x4) +
+  Hiddify Android all worked simultaneously.
+- ROOT CAUSE: affected server intermittently stops answering TLS on a
+  minutes scale. Owner action: server/panel logs. Optional Slave UX: mark
+  node unstable after repeated probe failures. The other user sharing the
+  key must be retested in a same-time window.
+- Environment restored: /32 probe route and pktmon filters removed, temp
+  binaries deleted; installed client untouched (still running, user-managed).
+  No commit/push/release. The uncommitted realityCompatibilityNode diagnostic
+  toggle remains unvalidated-by-this-outcome (not needed for the root cause).
+
+---
+
+## Prior handoff — 2026-09-23, dev.18 field failure still unresolved
+
+New local work: owner explicitly approved an experimental per-node Hiddify
+compatibility mode. Servers exposes an opt-in warning and reversible toggle
+only while disconnected. Shared Mihomo config clones the named VLESS REALITY
+node, removes mldsa65-verify, disables hybrid/fragmentation, and uses Chrome;
+classical authentication and original subscription are preserved. Settings,
+Windows runtime/profile fingerprint, and Android compilation carry the field
+`realityCompatibilityNode`. This is a diagnostic option, not a verified fix.
+
+Work remains isolated in `.worktrees/windows-regression` on
+`codex/windows-regression`, HEAD `a0016b8`. No new release or core replacement
+was performed during this investigation. The user now confirms Hiddify 4.1.1
+works on Android and PrizrakBox works on Windows. The Karing-success report
+was withdrawn. Exact installed build provenance/settings remain unverified.
+
+The official PrizrakBox v1.0.20 Windows archive digest was verified. Reading
+its px.exe Go metadata WITHOUT executing it confirms Go 1.25.3, replacement
+github.com/snakem982/mihomo v1.1.6-moshen, and uTLS v1.8.1. Slave dev.18's
+local Windows binary reports Go 1.26.3 and uTLS v1.8.7. This difference is
+not evidence of a root cause. The fork tag was unavailable from GitHub.
+Hiddify 4.4.1 was a user typo, now corrected to 4.1.1. Exact release source
+tracing in REALITY_REGRESSION_DEV10_DEV18.md confirms its ordinary VLESS
+parser selects sing-box, does not import pqv, and its REALITY implementation
+removes ML-KEM key shares. This is not proof of the field failure's cause;
+do not silently weaken the existing pqv verification in Slave.
+
+The supplied dev.18 log contains successful REALITY authentication to the
+affected node AND subsequent timeouts/EOF. Selection reaches the intended leaf.
+Neither authentication nor a displayed latency proves working end-to-end
+traffic. Earlier minimum-client-version and MTU explanations were hypotheses,
+not established causes of this device's failure.
+
+The local interoperability harness previously allowed a failed external HTTP
+probe to pass after authentication. That false-success path is removed. The
+replacement uses a separate local HTTPS origin, exact 256 KiB upload/download
+verification, and eight independent connections. A direct-origin control and
+an optional official Xray reference client distinguish harness errors from
+Mihomo errors. Xray 26.9.9 blocks private destinations by default: the test
+server now explicitly allows only its loopback TCP origin ports. Before that
+test-only correction BOTH clients failed, which was NOT proof of a Mihomo
+post-authentication regression.
+
+Verified with synthetic credentials on this host:
+
+- Official Xray 26.9.9 reference: eight exact bidirectional transfers pass.
+- Unmodified dev.18 Windows Mihomo: eight transfers pass with hybrid ML-KEM,
+  ML-DSA-65, and ClientHello fragmentation enabled; eight more pass without
+  fragmentation. These are loopback tests, not Android/owner-key verification.
+- An authorized TCP-only probe to the affected endpoint is reachable now;
+  it did not send credentials and does not prove protocol compatibility.
+- A separate real UI bug is fixed locally: a failed fresh latency no longer
+  falls back to an old successful latency in Servers or the target picker.
+  Native invalid/sentinel delays are normalized to unavailable.
+- Renderer tests 40/40, Windows node/web typecheck, strict lint pass.
+
+Remaining: reproduce the actual Hiddify-versus-Slave difference using the
+owner's working client version/settings and comparable device diagnostics.
+Do not claim the connection issue fixed, promote Stable, or publish another
+speculative compatibility release based only on these local results. Preserve
+the existing authentication checks; do not drop the supplied verification key
+or silently route around the manually selected node.
+
+## PREVIOUS HANDOFF — 2026-09-20, dev.18 REALITY minimum-version candidate
 
 The reporting device confirmed that `v0.2.41-dev.17` selected the requested
 node but still timed out. A deterministic local Xray 26.9.9 interoperability
