@@ -1,0 +1,264 @@
+package zerotier
+
+import (
+	"bytes"
+	"errors"
+	"io/fs"
+	"net/netip"
+	"testing"
+	"testing/fstest"
+	"time"
+)
+
+type testStateFS struct {
+	files   fstest.MapFS
+	writes  []string
+	openErr error
+}
+
+type testPeerCacheMaintenanceStore struct {
+	*MemoryStore
+	cleaned []time.Time
+}
+
+type readErrorStateStore struct {
+	err     error
+	writes  int
+	deletes int
+}
+
+func (s *readErrorStateStore) Get(string) ([]byte, error) {
+	return nil, s.err
+}
+
+func (s *readErrorStateStore) Put(string, []byte) error {
+	s.writes++
+	return nil
+}
+
+func (s *readErrorStateStore) Delete(string) error {
+	s.deletes++
+	return nil
+}
+
+func (s *testPeerCacheMaintenanceStore) CleanPeerCache(now time.Time) error {
+	s.cleaned = append(s.cleaned, now)
+	return nil
+}
+
+func (f *testStateFS) Open(name string) (fs.File, error) {
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return f.files.Open(name)
+}
+
+func (f *testStateFS) WriteFile(name string, data []byte, perm fs.FileMode) error {
+	f.files[name] = &fstest.MapFile{Data: append([]byte(nil), data...), Mode: perm}
+	f.writes = append(f.writes, name)
+	return nil
+}
+
+func (f *testStateFS) Remove(name string) error {
+	if _, loaded := f.files[name]; !loaded {
+		return fs.ErrNotExist
+	}
+	delete(f.files, name)
+	return nil
+}
+
+func TestFileStoreReplacesStateAcrossInstances(t *testing.T) {
+	fileSystem := &testStateFS{files: make(fstest.MapFS)}
+	first, err := NewFileStore(fileSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewFileStore(fileSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const stateName = "networks.d/network.conf"
+	if err = first.Put(stateName, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	want := bytes.Repeat([]byte{0xa5}, 4096)
+	if err = second.Put(stateName, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := first.Get(stateName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("replacement state length = %d, want %d", len(got), len(want))
+	}
+	if len(fileSystem.writes) != 2 || fileSystem.writes[0] != stateName || fileSystem.writes[1] != stateName {
+		t.Fatalf("FileStore wrote unexpected temporary names: %v", fileSystem.writes)
+	}
+}
+
+func TestFileStoreRejectsNilFS(t *testing.T) {
+	if _, err := NewFileStore(nil); err == nil {
+		t.Fatal("nil filesystem was accepted for persistent state")
+	}
+}
+
+func TestFileStoreRejectsInvalidStateNames(t *testing.T) {
+	fileSystem := &testStateFS{files: make(fstest.MapFS)}
+	store, err := NewFileStore(fileSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", "..", "/state", "../state", `..\state`, `dir\state`} {
+		if err = store.Put(name, nil); err == nil {
+			t.Errorf("Put(%q) accepted an invalid state name", name)
+		}
+	}
+	if len(fileSystem.writes) != 0 {
+		t.Fatalf("invalid state names reached the filesystem: %v", fileSystem.writes)
+	}
+}
+
+func TestFileStoreTreatsReadErrorsAsMissingState(t *testing.T) {
+	fileSystem := &testStateFS{files: make(fstest.MapFS), openErr: fs.ErrPermission}
+	store, err := NewFileStore(fileSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Get("identity.secret"); !errors.Is(err, ErrStateNotFound) {
+		t.Fatalf("Get() error = %v, want ErrStateNotFound", err)
+	}
+}
+
+func TestRotateIdentityState(t *testing.T) {
+	store := NewMemoryStore()
+	secret := []byte("collided-secret-identity")
+	if err := store.Put(identitySecretStateName, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(identityPublicStateName, []byte("collided-public-identity")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RotateIdentityState(store); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := store.Get(identityCollisionBackupStateName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(backup, secret) {
+		t.Fatalf("saved collided identity = %q", backup)
+	}
+	for _, name := range []string{identitySecretStateName, identityPublicStateName} {
+		if _, err = store.Get(name); !errors.Is(err, ErrStateNotFound) {
+			t.Fatalf("collided state %s still exists: %v", name, err)
+		}
+	}
+	if err = RotateIdentityState(store); err != nil {
+		t.Fatalf("rotating missing identity: %v", err)
+	}
+}
+
+func TestRotateIdentityStatePreservesStateAfterReadError(t *testing.T) {
+	readErr := errors.New("state unavailable")
+	store := &readErrorStateStore{err: readErr}
+	if err := RotateIdentityState(store); !errors.Is(err, readErr) {
+		t.Fatalf("RotateIdentityState error = %v, want %v", err, readErr)
+	}
+	if store.writes != 0 || store.deletes != 0 {
+		t.Fatalf("read failure caused %d writes and %d deletes", store.writes, store.deletes)
+	}
+}
+
+func TestFileStoreCleansExpiredPeerCache(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	oldTime := now.Add(-PeerCacheExpiration - time.Hour)
+	freshTime := now.Add(-PeerCacheExpiration + time.Hour)
+	fileSystem := &testStateFS{files: fstest.MapFS{
+		"peers.d/46a9a1d071.peer": &fstest.MapFile{Data: []byte("old"), Mode: 0600, ModTime: oldTime},
+		"peers.d/0f1b56d269.peer": &fstest.MapFile{Data: []byte("fresh"), Mode: 0600, ModTime: freshTime},
+		"peers.d/zzzzzzzzzz.peer": &fstest.MapFile{Data: []byte("malformed"), Mode: 0600, ModTime: oldTime},
+		"peers.d/notes.txt":       &fstest.MapFile{Data: []byte("unrelated"), Mode: 0600, ModTime: oldTime},
+		"peers.d/0123456789.peer": &fstest.MapFile{Mode: fs.ModeDir | 0700, ModTime: oldTime},
+	}}
+	store, err := NewFileStore(fileSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.CleanPeerCache(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fileSystem.files["peers.d/46a9a1d071.peer"]; exists {
+		t.Fatal("expired peer cache file was not removed")
+	}
+	for _, name := range []string{
+		"peers.d/0f1b56d269.peer",
+		"peers.d/zzzzzzzzzz.peer",
+		"peers.d/notes.txt",
+		"peers.d/0123456789.peer",
+	} {
+		if _, exists := fileSystem.files[name]; !exists {
+			t.Fatalf("peer cache cleanup removed %s", name)
+		}
+	}
+}
+
+func TestFileStorePeerCacheCleanupAcceptsMissingDirectory(t *testing.T) {
+	store, err := NewFileStore(&testStateFS{files: make(fstest.MapFS)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.CleanPeerCache(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNodeBackgroundMaintainsPeerCache(t *testing.T) {
+	store := &testPeerCacheMaintenanceStore{MemoryStore: NewMemoryStore()}
+	node, err := NewNode(NodeConfig{
+		Store:  store,
+		Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+	now := time.Now()
+	node.ProcessBackgroundTasks(now)
+	if len(store.cleaned) != 1 || !store.cleaned[0].Equal(now) {
+		t.Fatalf("initial peer cache maintenance = %v", store.cleaned)
+	}
+	node.ProcessBackgroundTasks(now.Add(PeerCacheCleanupInterval - time.Millisecond))
+	if len(store.cleaned) != 1 {
+		t.Fatalf("early peer cache maintenance = %v", store.cleaned)
+	}
+	later := now.Add(PeerCacheCleanupInterval)
+	node.ProcessBackgroundTasks(later)
+	if len(store.cleaned) != 2 || !store.cleaned[1].Equal(later) {
+		t.Fatalf("periodic peer cache maintenance = %v", store.cleaned)
+	}
+}
+
+func TestPeerCacheForwardCompatibleAddressRecords(t *testing.T) {
+	for _, record := range [][]byte{
+		{0},
+		{1, 1, 2, 3, 4, 5, 6},
+		{2, 1, 2, 3, 4, 5, 6},
+		{3, 0, 2, 1, 2},
+	} {
+		endpoint, consumed, valid := parsePeerCacheEndpoint(record)
+		if valid || endpoint.IsValid() || consumed != len(record) {
+			t.Fatalf("record %x parsed as endpoint=%s consumed=%d valid=%t", record, endpoint, consumed, valid)
+		}
+	}
+	want := netip.MustParseAddrPort("192.0.2.1:9993")
+	record := appendInetAddress(nil, want)
+	endpoint, consumed, valid := parsePeerCacheEndpoint(record)
+	if !valid || endpoint != want || consumed != len(record) {
+		t.Fatalf("IPv4 cache endpoint=%s consumed=%d valid=%t", endpoint, consumed, valid)
+	}
+	truncated := []byte{3, 0, 4, 1}
+	if _, consumed, _ = parsePeerCacheEndpoint(truncated); consumed != 0 {
+		t.Fatalf("truncated extension consumed %d bytes", consumed)
+	}
+}

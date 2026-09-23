@@ -1,0 +1,314 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+const (
+	// defaultHTTPBodyLimit bounds diagnostic response memory by default.
+	defaultHTTPBodyLimit = int64(1024 * 1024)
+	// maximumHTTPBodyLimit prevents a command-line option from making the
+	// diagnostic allocate an unreasonable response buffer.
+	maximumHTTPBodyLimit = int64(64 * 1024 * 1024)
+)
+
+// httpHeaderList accumulates repeatable HTTP header flags.
+type httpHeaderList []string
+
+// String formats accumulated header values.
+func (h *httpHeaderList) String() string { return strings.Join(*h, ",") }
+
+// Set appends one HTTP header in Name: Value form.
+func (h *httpHeaderList) Set(value string) error {
+	name, content, ok := strings.Cut(value, ":")
+	if !ok || !validHTTPToken(strings.TrimSpace(name)) || strings.ContainsAny(content, "\r\n") {
+		return errors.New("HTTP header must use Name: Value form")
+	}
+	*h = append(*h, value)
+	return nil
+}
+
+// httpProbeResult reports one complete HTTP/1.1 exchange over the diagnostic
+// TCP client.
+type httpProbeResult struct {
+	Node            string         `json:"node"`
+	Network         string         `json:"network"`
+	URL             string         `json:"url"`
+	Target          string         `json:"target"`
+	DNS             string         `json:"dns,omitempty"`
+	Status          string         `json:"status"`
+	StatusCode      int            `json:"status_code"`
+	Protocol        string         `json:"protocol"`
+	TLS             bool           `json:"tls"`
+	Bytes           int            `json:"bytes"`
+	SHA256          string         `json:"sha256"`
+	Duration        time.Duration  `json:"duration"`
+	ConnectAttempts int            `json:"connect_attempts"`
+	ConnectRTT      time.Duration  `json:"connect_rtt"`
+	Path            pathDiagnostic `json:"path"`
+}
+
+// runHTTP performs one bounded HTTP/1.1 request through a real TCP connection
+// carried by iplink.
+func runHTTP(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("http", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	var headers httpHeaderList
+	networkText := flags.String("network", "", "16-digit network ID")
+	urlText := flags.String("url", "", "absolute http or https URL")
+	targetText := flags.String("target", "", "optional destination IP overriding URL resolution")
+	dnsServerText := flags.String("dns-server", "", "managed DNS override IP or IP:port")
+	method := flags.String("method", http.MethodGet, "HTTP method")
+	bodyText := flags.String("body", "", "request body")
+	flags.Var(&headers, "header", "HTTP request header in Name: Value form; repeatable")
+	expectedStatus := flags.Int("expect-status", http.StatusOK, "expected status code; zero accepts any")
+	expectedText := flags.String("expect", "", "required response-body substring")
+	bodyLimit := flags.Int64("body-limit", defaultHTTPBodyLimit, "maximum response body bytes")
+	insecure := flags.Bool("insecure", false, "skip HTTPS certificate verification")
+	serverName := flags.String("server-name", "", "HTTPS certificate server-name override")
+	peerText := flags.String("peer", "", "expected 10-digit ZeroTier peer address")
+	requireDirect := flags.Bool("require-direct", false, "require an active direct path to the expected peer")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	parsedURL, err := url.Parse(*urlText)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Hostname() == "" || parsedURL.Fragment != "" {
+		return exitUsage, errors.New("http requires an absolute http or https -url without a fragment")
+	}
+	if !validHTTPToken(*method) || *expectedStatus < 0 || *expectedStatus > 999 || *bodyLimit < 0 || *bodyLimit > maximumHTTPBodyLimit {
+		return exitUsage, errors.New("http requires a method, a valid expected status, and a bounded body limit")
+	}
+	if *peerText != "" {
+		if _, err = zerotier.ParseAddress(*peerText); err != nil {
+			return exitUsage, err
+		}
+	}
+	var explicitTarget netip.Addr
+	if *targetText != "" {
+		explicitTarget, err = netip.ParseAddr(*targetText)
+		if err != nil || explicitTarget.IsUnspecified() || explicitTarget.IsMulticast() {
+			return exitUsage, errors.New("http -target must be a unicast IP address")
+		}
+	}
+	var explicitDNS netip.AddrPort
+	if *dnsServerText != "" {
+		explicitDNS, err = parseProbeAddrPort(*dnsServerText, 53)
+		if err != nil {
+			return exitUsage, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	probe, err := startNetworkRuntime(options, networkID, stderr)
+	if err != nil {
+		return exitError, err
+	}
+	defer probe.Close()
+	code, err := probe.waitReady(ctx, networkID, netip.Addr{}, stdout, options.json)
+	if err != nil {
+		return code, err
+	}
+	probe.runtime.linkMu.RLock()
+	link := probe.runtime.link
+	probe.runtime.linkMu.RUnlock()
+	target, dnsServer, err := resolveHTTPDestination(ctx, probe.runtime, link, probe.network.Config, parsedURL.Hostname(), explicitTarget, explicitDNS)
+	if err != nil {
+		return exitProbeFailed, err
+	}
+	if err = link.ValidateDestination(target); err != nil {
+		return exitProbeFailed, err
+	}
+	port := uint16(80)
+	if parsedURL.Scheme == "https" {
+		port = 443
+	}
+	if parsedURL.Port() != "" {
+		parsedPort, parseErr := strconv.ParseUint(parsedURL.Port(), 10, 16)
+		if parseErr != nil || parsedPort == 0 {
+			return exitUsage, errors.New("HTTP URL has an invalid port")
+		}
+		port = uint16(parsedPort)
+	}
+	endpoint := netip.AddrPortFrom(target, port)
+	request, err := http.NewRequestWithContext(ctx, *method, parsedURL.String(), strings.NewReader(*bodyText))
+	if err != nil {
+		return exitUsage, err
+	}
+	for _, header := range headers {
+		name, value, _ := strings.Cut(header, ":")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		if strings.EqualFold(name, "Host") {
+			request.Host = value
+		} else {
+			request.Header.Add(name, value)
+		}
+	}
+	var connectionMu sync.Mutex
+	var connectionInfo tcpConnectInfo
+	transport := &http.Transport{
+		Proxy:             nil,
+		DisableKeepAlives: true,
+		MaxConnsPerHost:   1,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: *insecure,
+			ServerName:         *serverName,
+		},
+		TLSNextProto: make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		DialContext: func(dialCtx context.Context, network, _ string) (net.Conn, error) {
+			if network != "tcp" && network != "tcp4" && network != "tcp6" {
+				return nil, fmt.Errorf("unsupported HTTP transport network %q", network)
+			}
+			connection, dialErr := dialTCPClient(dialCtx, probe.runtime, probe.network.Config, endpoint, tcpClientDefaultMaximumAttempts)
+			if dialErr == nil {
+				connectionMu.Lock()
+				connectionInfo = connection.ConnectInfo()
+				connectionMu.Unlock()
+			}
+			return connection, dialErr
+		},
+	}
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	started := time.Now()
+	response, requestErr := client.Do(request)
+	if requestErr != nil {
+		transport.CloseIdleConnections()
+		return exitProbeFailed, requestErr
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, *bodyLimit+1))
+	closeErr := response.Body.Close()
+	transport.CloseIdleConnections()
+	digest := sha256.Sum256(body)
+	connectionMu.Lock()
+	info := connectionInfo
+	connectionMu.Unlock()
+	result := httpProbeResult{
+		Node: probe.runtime.node.Address().String(), Network: fmt.Sprintf("%016x", networkID), URL: parsedURL.Redacted(), Target: endpoint.String(),
+		Status: response.Status, StatusCode: response.StatusCode, Protocol: response.Proto, TLS: parsedURL.Scheme == "https",
+		Bytes: len(body), SHA256: hex.EncodeToString(digest[:]), Duration: time.Since(started), ConnectAttempts: info.Attempts, ConnectRTT: info.RTT,
+	}
+	if dnsServer.IsValid() {
+		result.DNS = dnsServer.String()
+	}
+	diagnostic, pathErr := diagnosePath(ctx, probe.runtime.node, probe.network.Config, target, *peerText, *requireDirect)
+	result.Path = diagnostic
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		fmt.Fprintf(stdout, "node=%s network=%s url=%q target=%s dns=%s status=%q protocol=%s tls=%t bytes=%d sha256=%s duration=%s connect-attempts=%d connect-rtt=%s\n",
+			result.Node, result.Network, result.URL, result.Target, result.DNS, result.Status, result.Protocol, result.TLS, result.Bytes, result.SHA256,
+			result.Duration, result.ConnectAttempts, result.ConnectRTT)
+		printPathDiagnostic(stdout, diagnostic)
+	}
+	if readErr != nil {
+		return exitProbeFailed, readErr
+	}
+	if closeErr != nil {
+		return exitProbeFailed, closeErr
+	}
+	if int64(len(body)) > *bodyLimit {
+		return exitProbeFailed, fmt.Errorf("HTTP response body exceeds %d bytes", *bodyLimit)
+	}
+	if *expectedStatus != 0 && response.StatusCode != *expectedStatus {
+		return exitProbeFailed, fmt.Errorf("HTTP status is %d, want %d", response.StatusCode, *expectedStatus)
+	}
+	if *expectedText != "" && !bytes.Contains(body, []byte(*expectedText)) {
+		return exitProbeFailed, errors.New("HTTP response body does not contain expected text")
+	}
+	if pathErr != nil {
+		return exitProbeFailed, pathErr
+	}
+	return exitOK, nil
+}
+
+// validHTTPToken reports whether value uses the RFC 7230 token character set
+// required by methods and field names.
+func validHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if character >= '0' && character <= '9' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' {
+			continue
+		}
+		switch character {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// resolveHTTPDestination resolves a URL host through managed DNS one record
+// family at a time and returns the first address accepted by link routing.
+func resolveHTTPDestination(ctx context.Context, runtime *probeRuntime, link *iplink.Link, config zerotier.NetworkConfigData, host string, explicitTarget netip.Addr, explicitDNS netip.AddrPort) (netip.Addr, netip.AddrPort, error) {
+	if explicitTarget.IsValid() {
+		return explicitTarget.Unmap(), netip.AddrPort{}, nil
+	}
+	if address, err := netip.ParseAddr(host); err == nil {
+		return address.Unmap(), netip.AddrPort{}, nil
+	}
+	server, _ := probeDNSServer(config, explicitDNS)
+	if !server.IsValid() {
+		return netip.Addr{}, netip.AddrPort{}, errors.New("network configuration has no managed DNS server; use -dns-server or -target")
+	}
+	if err := link.ValidateDestination(server.Addr()); err != nil {
+		return netip.Addr{}, server, err
+	}
+	resolver := newProbeResolver(runtime, link, config, server)
+	query := absoluteProbeName(host, config.DNSDomain)
+	var lookupErrors []error
+	for _, network := range []string{"ip4", "ip6"} {
+		addresses, err := resolver.LookupNetIP(ctx, network, query)
+		if err != nil {
+			lookupErrors = append(lookupErrors, err)
+			continue
+		}
+		for _, address := range addresses {
+			address = address.Unmap()
+			if !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
+				continue
+			}
+			if err = link.ValidateDestination(address); err == nil {
+				return address, server, nil
+			}
+		}
+	}
+	if len(lookupErrors) != 0 {
+		return netip.Addr{}, server, fmt.Errorf("managed DNS could not resolve %s: %w", host, errors.Join(lookupErrors...))
+	}
+	return netip.Addr{}, server, fmt.Errorf("managed DNS returned no routable address for %s", host)
+}

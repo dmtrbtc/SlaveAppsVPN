@@ -1,0 +1,195 @@
+package zerotier
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"testing"
+)
+
+func TestNetworkRulesFromOfficialConfiguration(t *testing.T) {
+	raw, err := hex.DecodeString("a5020800a5020806a50286dd00000100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseNetworkRules(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := NetworkConfigData{Rules: rules}
+	for _, etherType := range []uint16{EtherTypeIPv4, EtherTypeARP, EtherTypeIPv6} {
+		frame := Frame{EtherType: etherType, Payload: make([]byte, 40)}
+		if !config.allowsFrame(frame, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2)}) {
+			t.Fatalf("expected EtherType %04x to be accepted", etherType)
+		}
+	}
+	if config.allowsFrame(Frame{EtherType: 0x88cc, Payload: make([]byte, 40)}, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2)}) {
+		t.Fatal("unexpected EtherType was accepted")
+	}
+}
+
+func TestAdvancedRuleDecisions(t *testing.T) {
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	context := frameRuleContext{sourceZT: NewAddress(1), destinationZT: NewAddress(2)}
+	teeTarget := NewAddress(3)
+	config := NetworkConfigData{Rules: []NetworkRule{
+		{Type: ruleActionTee, Value: forwardRuleValue(teeTarget, 12)},
+		{Type: ruleActionAccept},
+	}}
+	decision := config.filterFrame(frame, context)
+	if decision.result != ruleAccept || decision.tee != teeTarget || decision.teeLength != 12 || decision.watch || !decision.redirect.IsZero() {
+		t.Fatalf("unexpected TEE decision: %+v", decision)
+	}
+
+	redirectTarget := NewAddress(4)
+	config.Rules = []NetworkRule{{Type: ruleActionRedirect, Value: forwardRuleValue(redirectTarget, 0)}}
+	decision = config.filterFrame(frame, context)
+	if decision.result != ruleAccept || decision.redirect != redirectTarget {
+		t.Fatalf("unexpected REDIRECT decision: %+v", decision)
+	}
+
+	local := NewAddress(5)
+	config.Rules = []NetworkRule{
+		{Type: ruleMatchSourceZTAddress, Value: NewAddress(99).AppendTo(nil)},
+		{Type: ruleActionWatch, Value: forwardRuleValue(local, 0)},
+		{Type: ruleActionAccept},
+	}
+	decision = config.filterFrame(frame, frameRuleContext{inbound: true, sourceZT: NewAddress(6), destinationZT: local})
+	if decision.result != ruleAccept || !decision.super {
+		t.Fatalf("inbound rule target did not super-accept: %+v", decision)
+	}
+	config.Rules = []NetworkRule{{Type: ruleActionWatch, Value: forwardRuleValue(local, 0)}}
+	decision = config.filterFrame(frame, frameRuleContext{inbound: true, sourceZT: NewAddress(6), destinationZT: local})
+	if decision.result != ruleAccept || !decision.super {
+		t.Fatalf("unconditional inbound WATCH did not super-accept: %+v", decision)
+	}
+}
+
+func forwardRuleValue(target Address, length uint16) []byte {
+	value := make([]byte, 14)
+	binary.BigEndian.PutUint64(value, target.Uint64())
+	binary.BigEndian.PutUint16(value[12:], length)
+	return value
+}
+
+func TestRulesUnknownOutboundTagSkipsOneDrop(t *testing.T) {
+	value := make([]byte, 8)
+	binary.BigEndian.PutUint32(value, 7)
+	binary.BigEndian.PutUint32(value[4:], 42)
+	config := NetworkConfigData{
+		Tags: []Tag{{ID: 7, Value: 42}},
+		Rules: []NetworkRule{
+			{Type: ruleMatchTagReceiver, Value: value},
+			{Type: ruleActionDrop},
+			{Type: ruleActionAccept},
+		},
+	}
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	if !config.allowsFrame(frame, frameRuleContext{sourceZT: NewAddress(1), destinationZT: NewAddress(2), localTags: config.Tags}) {
+		t.Fatal("unknown outbound receiver tag did not skip the guarded DROP")
+	}
+}
+
+func TestRulesHardMatchesRemainTrueWithNOT(t *testing.T) {
+	tagValue := make([]byte, 8)
+	binary.BigEndian.PutUint32(tagValue, 7)
+	binary.BigEndian.PutUint32(tagValue[4:], 42)
+	config := NetworkConfigData{Tags: []Tag{{ID: 7, Value: 42}}}
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 28)}
+	frame.Payload[0] = 0x45
+	frame.Payload[9] = 1
+	frame.Payload[20] = 8
+
+	tests := []NetworkRule{
+		{Type: ruleMatchICMP | ruleFlagNOT, Value: []byte{8, 0, 0}},
+		{Type: ruleMatchTagsEqual | ruleFlagNOT, Value: tagValue},
+		{Type: ruleMatchTagReceiver | ruleFlagNOT, Value: tagValue},
+	}
+	for _, match := range tests {
+		config.Rules = []NetworkRule{match, {Type: ruleActionAccept}}
+		if !config.allowsFrame(frame, frameRuleContext{
+			sourceZT: NewAddress(1), destinationZT: NewAddress(2), localTags: config.Tags,
+		}) {
+			t.Fatalf("hard match %d was inverted by NOT", match.Type&0x3f)
+		}
+	}
+}
+
+func TestIntegerRangeBigEndianSlotIndex(t *testing.T) {
+	value := make([]byte, 19)
+	binary.BigEndian.PutUint64(value, 5)
+	binary.BigEndian.PutUint64(value[8:], 5)
+	binary.BigEndian.PutUint16(value[16:], 0)
+	value[18] = 7 // unsigned big-endian, 8 bits, at the end of the first 8-byte slot
+	payload := make([]byte, 8)
+	payload[7] = 5
+	if !matchIntegerRange(value, payload) {
+		t.Fatal("big-endian integer range did not use the slot-relative index")
+	}
+}
+
+func TestIntegerRangeTruncatesToOfficialUint32Span(t *testing.T) {
+	value := make([]byte, 19)
+	binary.BigEndian.PutUint64(value, 1)
+	binary.BigEndian.PutUint64(value[8:], 1+(uint64(1)<<32)+1)
+	binary.BigEndian.PutUint16(value[16:], 0)
+	value[18] = 7
+	payload := make([]byte, 8)
+	payload[7] = 3
+	if matchIntegerRange(value, payload) {
+		t.Fatal("integer range retained bits outside the official uint32 span")
+	}
+}
+
+func TestIntegerRangeOutOfBoundsUsesOfficialZeroValue(t *testing.T) {
+	value := make([]byte, 19)
+	binary.BigEndian.PutUint16(value[16:], 32)
+	value[18] = 7
+	if !matchIntegerRange(value, nil) {
+		t.Fatal("out-of-bounds integer range did not compare the official zero value")
+	}
+	binary.BigEndian.PutUint64(value, 1)
+	binary.BigEndian.PutUint64(value[8:], 1)
+	if matchIntegerRange(value, nil) {
+		t.Fatal("out-of-bounds integer range matched a range that excludes zero")
+	}
+}
+
+func TestNetworkRulesDefaultToDrop(t *testing.T) {
+	if (NetworkConfigData{}).allowsFrame(Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2)}) {
+		t.Fatal("empty rules must fail closed")
+	}
+}
+
+func TestIPv4ProtocolMatchDoesNotDependOnIHL(t *testing.T) {
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	frame.Payload[0] = 0x4f
+	frame.Payload[9] = 17
+	config := NetworkConfigData{Rules: []NetworkRule{
+		{Type: ruleMatchIPProtocol, Value: []byte{17}},
+		{Type: ruleActionAccept},
+	}}
+	if !config.allowsFrame(frame, frameRuleContext{}) {
+		t.Fatal("IPv4 protocol match incorrectly rejected the official malformed-IHL case")
+	}
+}
+
+func TestCapabilityAcceptPreservesBaseAndCapabilityTee(t *testing.T) {
+	baseTarget := NewAddress(3)
+	capabilityTarget := NewAddress(4)
+	config := NetworkConfigData{Rules: []NetworkRule{
+		{Type: ruleActionTee, Value: forwardRuleValue(baseTarget, 10)},
+		{Type: ruleActionBreak},
+	}}
+	context := frameRuleContext{capabilities: []Capability{{Rules: []NetworkRule{
+		{Type: ruleActionWatch, Value: forwardRuleValue(capabilityTarget, 12)},
+		{Type: ruleActionAccept},
+	}}}}
+	decision := config.filterFrame(Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}, context)
+	if decision.result != ruleAccept || decision.tee != baseTarget || len(decision.additionalTee) != 1 {
+		t.Fatalf("decision = %+v", decision)
+	}
+	additional := decision.additionalTee[0]
+	if additional.target != capabilityTarget || additional.length != 12 || !additional.watch {
+		t.Fatalf("additional TEE = %+v", additional)
+	}
+}

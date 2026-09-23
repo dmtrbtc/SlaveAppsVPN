@@ -1,0 +1,336 @@
+package zerotier
+
+import (
+	"errors"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestCapabilityCustodyChainRoundTrip(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	capability := Capability{
+		NetworkID: networkID,
+		Timestamp: 1000,
+		ID:        5,
+		Rules: []NetworkRule{
+			{Type: ruleMatchIPProtocol, Value: []byte{6}},
+			{Type: ruleActionAccept},
+		},
+		MaxCustodyChainLength: 2,
+	}
+	controllerSignature, err := controller.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderSignature, err := holder.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Custody = []CapabilityCustody{
+		{From: controller.Address(), To: holder.Address(), Signature: controllerSignature},
+		{From: holder.Address(), To: recipient.Address(), Signature: holderSignature},
+	}
+	encoded := capability.appendBinary(nil)
+	parsed, consumed, err := ParseCapability(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := map[Address]Identity{controller.Address(): controller, holder.Address(): holder}
+	identityFor := func(address Address) (Identity, bool) {
+		identity, ok := identities[address]
+		return identity, ok
+	}
+	if consumed != len(encoded) || parsed.IssuedTo() != recipient.Address() || !parsed.Verify(identityFor) {
+		t.Fatal("capability custody chain did not verify")
+	}
+	parsed.Custody[1].From = controller.Address()
+	if parsed.Verify(identityFor) {
+		t.Fatal("capability with a broken custody chain was accepted")
+	}
+
+	dictionary, _ := appendDictionaryUint(nil, "nwid", networkID)
+	dictionary, _ = appendDictionaryUint(dictionary, "v", networkConfigVersion)
+	dictionary, _ = appendDictionaryUint(dictionary, "id", recipient.Address().Uint64())
+	dictionary, _ = appendDictionaryUint(dictionary, "t", uint64(NetworkTypePublic))
+	dictionary, err = appendDictionaryEntry(dictionary, "CAP", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseNetworkConfig(dictionary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Capabilities) != 1 || !config.Capabilities[0].Verify(identityFor) {
+		t.Fatal("network config did not retain its capability")
+	}
+}
+
+func TestCapabilityRulesAreFallbackOnly(t *testing.T) {
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	capability := Capability{Rules: []NetworkRule{
+		{Type: ruleMatchEtherType, Value: []byte{0x08, 0x00}},
+		{Type: ruleActionAccept},
+	}}
+	config := NetworkConfigData{Rules: []NetworkRule{
+		{Type: ruleMatchEtherType, Value: []byte{0x08, 0x06}},
+		{Type: ruleActionAccept},
+	}}
+	context := frameRuleContext{capabilities: []Capability{capability}}
+	if !config.allowsFrame(frame, context) {
+		t.Fatal("capability did not accept a frame with no base-rule match")
+	}
+	config.Rules = []NetworkRule{{Type: ruleActionDrop}}
+	if config.allowsFrame(frame, context) {
+		t.Fatal("capability overrode an explicit base-rule drop")
+	}
+}
+
+func TestNetworkCredentialsAcceptCapability(t *testing.T) {
+	receiver, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{
+		Identity: receiver,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(sender, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+
+	capability := Capability{
+		NetworkID: networkID, Timestamp: uint64(time.Now().UnixMilli()), ID: 3,
+		Rules: []NetworkRule{{Type: ruleActionAccept}}, MaxCustodyChainLength: 1,
+	}
+	signature, err := controller.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Custody = []CapabilityCustody{{From: controller.Address(), To: sender.Address(), Signature: signature}}
+	packet, _ := NewPacket(receiver.Address(), sender.Address(), VerbNetworkCredentials)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(capability.appendBinary(nil)...)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	key, err := sender.Agree(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, netip.MustParseAddrPort("203.0.113.60:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	capabilities := node.networks[networkID].capabilities[sender.Address()]
+	node.mu.Unlock()
+	if len(capabilities) != 1 || capabilities[0].ID != capability.ID {
+		t.Fatal("received capability was not stored")
+	}
+}
+
+func TestDeferredCapabilityRestoresSenderTrustAfterWhois(t *testing.T) {
+	receiver, _ := ParseIdentity(knownGoodIdentity)
+	sender, _ := GenerateIdentity()
+	controller, _ := GenerateIdentity()
+	holder, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{Identity: receiver, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := Capability{
+		NetworkID: networkID, Timestamp: uint64(time.Now().UnixMilli()), ID: 9,
+		Rules: []NetworkRule{{Type: ruleActionAccept}}, MaxCustodyChainLength: 2,
+	}
+	controllerSignature, err := controller.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	holderSignature, err := holder.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Custody = []CapabilityCustody{
+		{From: controller.Address(), To: holder.Address(), Signature: controllerSignature},
+		{From: holder.Address(), To: sender.Address(), Signature: holderSignature},
+	}
+	payload := []byte{0, 0, 1}
+	payload = append(payload, capability.appendBinary(nil)...)
+	payload = append(payload, 0, 0, 0, 0, 0, 0)
+	now := time.Now()
+	node.mu.Lock()
+	_ = node.addPeerLocked(sender, false)
+	_ = node.addPeerLocked(controller, false)
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	node.networks[networkID] = network
+	err = node.handleNetworkCredentialsPayloadLocked(node.peers[sender.Address()], payload, now)
+	if err != errPacketRetry {
+		node.mu.Unlock()
+		t.Fatalf("deferred credential result = %v", err)
+	}
+	if len(node.deferredCapabilities[holder.Address()]) != 1 || len(network.capabilities[sender.Address()]) != 0 {
+		node.mu.Unlock()
+		t.Fatal("capability was not deferred for the missing custody identity")
+	}
+	if err = node.addPeerLocked(holder, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	stored := network.capabilities[sender.Address()]
+	trustedAt := node.peers[sender.Address()].lastTrustEstablished
+	associatedAt := network.associated[sender.Address()]
+	node.mu.Unlock()
+	if len(stored) != 1 || stored[0].ID != capability.ID {
+		t.Fatal("deferred capability was not installed after WHOIS")
+	}
+	if trustedAt.IsZero() || associatedAt.IsZero() {
+		t.Fatal("deferred capability did not establish trust for its original sender")
+	}
+}
+
+func TestDeferredCredentialsExpire(t *testing.T) {
+	_, _, node, _ := newTestNodeWithPeer(t)
+	missing := NewAddress(0x12345)
+	expired := time.Now().Add(-deferredCredentialExpiration - time.Second)
+	node.mu.Lock()
+	node.deferredCapabilities[missing] = []deferredCapability{{received: expired}}
+	node.deferredCredentials[missing] = []deferredCredentialPacket{{received: expired}}
+	node.lastRootContact = time.Now()
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(time.Now())
+	node.mu.Lock()
+	capabilityCount := len(node.deferredCapabilities)
+	credentialCount := len(node.deferredCredentials)
+	node.mu.Unlock()
+	if capabilityCount != 0 || credentialCount != 0 {
+		t.Fatalf("expired deferred state retained: capabilities=%d credentials=%d", capabilityCount, credentialCount)
+	}
+}
+
+func TestMalformedCredentialsDoNotCommitPartialTrust(t *testing.T) {
+	receiver, _ := ParseIdentity(knownGoodIdentity)
+	sender, _ := GenerateIdentity()
+	controller, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	certificate := makeTestCOM(t, controller, sender, networkID, uint64(time.Now().UnixMilli()))
+	node, err := NewNode(NodeConfig{Identity: receiver, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_ = node.addPeerLocked(sender, false)
+	_ = node.addPeerLocked(controller, false)
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	node.networks[networkID] = network
+	payload := append(append([]byte(nil), certificate.raw...), 0, 1)
+	err = node.handleNetworkCredentialsPayloadLocked(node.peers[sender.Address()], payload, time.Now())
+	trustedAt := node.peers[sender.Address()].lastTrustEstablished
+	associatedAt := network.associated[sender.Address()]
+	_, membershipAdded := network.members[sender.Address()]
+	node.mu.Unlock()
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("malformed credential error = %v", err)
+	}
+	if !membershipAdded {
+		t.Fatal("valid credential prefix was not retained")
+	}
+	if !trustedAt.IsZero() || !associatedAt.IsZero() {
+		t.Fatalf("malformed credentials committed trust: peer=%v network=%v", trustedAt, associatedAt)
+	}
+}
+
+func TestBackgroundTasksRemoveExpiredRemoteCredentials(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := NewAddress(0x12345)
+	networkID := uint64(0x8056c2e21c000001)
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Timestamp: 1000, CredentialTimeMaxDelta: 10}
+	network.capabilities[target] = []Capability{
+		{ID: 1, Timestamp: 989},
+		{ID: 2, Timestamp: 990},
+		{ID: 3, Timestamp: 1010},
+		{ID: 4, Timestamp: 1011},
+	}
+	network.tags[target] = []Tag{
+		{ID: 1, Timestamp: 989},
+		{ID: 2, Timestamp: 990},
+		{ID: 3, Timestamp: 1010},
+		{ID: 4, Timestamp: 1011},
+	}
+	network.ownership[target] = []CertificateOfOwnership{
+		{ID: 1, Timestamp: 989},
+		{ID: 2, Timestamp: 990},
+		{ID: 3, Timestamp: 1010},
+		{ID: 4, Timestamp: 1011},
+	}
+	node.mu.Lock()
+	node.networks[networkID] = network
+	node.lastRootContact = time.Now()
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(time.Now())
+
+	node.mu.Lock()
+	capabilities := append([]Capability(nil), network.capabilities[target]...)
+	tags := append([]Tag(nil), network.tags[target]...)
+	ownership := append([]CertificateOfOwnership(nil), network.ownership[target]...)
+	node.mu.Unlock()
+	if len(capabilities) != 2 || capabilities[0].ID != 2 || capabilities[1].ID != 3 {
+		t.Fatalf("retained capabilities = %+v", capabilities)
+	}
+	if len(tags) != 2 || tags[0].ID != 2 || tags[1].ID != 3 {
+		t.Fatalf("retained tags = %+v", tags)
+	}
+	if len(ownership) != 2 || ownership[0].ID != 2 || ownership[1].ID != 3 {
+		t.Fatalf("retained ownership certificates = %+v", ownership)
+	}
+}

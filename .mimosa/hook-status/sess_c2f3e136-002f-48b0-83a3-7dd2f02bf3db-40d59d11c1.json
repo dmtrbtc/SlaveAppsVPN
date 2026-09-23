@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-23T20:32:33.225Z",
+  "sessionId": "sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "C:/Users/user/.zcode/cli/memories/projects/slaveapps-0a9a2d7c34262d7a/memory/project-reality-regression-investigation.md",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 5,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

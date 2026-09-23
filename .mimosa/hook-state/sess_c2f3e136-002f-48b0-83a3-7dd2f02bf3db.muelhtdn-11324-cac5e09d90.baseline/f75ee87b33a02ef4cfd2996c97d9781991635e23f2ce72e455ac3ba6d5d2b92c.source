@@ -1,0 +1,813 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+// TestTCPClientConnThroughIPLink verifies active open, data retransmission,
+// out-of-order receive, duplicate suppression, and FIN handling for both IP
+// families.
+func TestTCPClientConnThroughIPLink(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world")
+	for _, test := range []struct {
+		name   string
+		local  netip.Prefix
+		remote netip.Addr
+	}{
+		{name: "IPv4", local: netip.MustParsePrefix("192.0.2.1/24"), remote: netip.MustParseAddr("192.0.2.2")},
+		{name: "IPv6", local: netip.MustParsePrefix("fd00::1/64"), remote: netip.MustParseAddr("fd00::2")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, test.local, test.remote, response)
+			defer cancel()
+			sender.dropFirstData, sender.reorderResponse, sender.duplicateFINInTimeWait = true, true, true
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer dialCancel()
+			connection, err := dialTCPClient(dialCtx, runtime, config, netip.AddrPortFrom(test.remote, 8080), tcpClientDefaultMaximumAttempts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := []byte("GET / HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+			if n, writeErr := connection.Write(request); writeErr != nil || n != len(request) {
+				t.Fatalf("Write = %d, %v", n, writeErr)
+			}
+			body, err := io.ReadAll(connection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(body, response) {
+				t.Fatalf("response = %q", body)
+			}
+			if err = connection.Close(); err != nil {
+				t.Fatal(err)
+			}
+			sender.mu.Lock()
+			dataAttempts, sawFinalACK, sawClientFIN := sender.dataAttempts, sender.sawFinalACK, sender.sawClientFIN
+			sender.mu.Unlock()
+			if dataAttempts < 2 {
+				t.Fatalf("data attempts = %d, want retransmission", dataAttempts)
+			}
+			if !sawFinalACK || !sawClientFIN {
+				t.Fatalf("final ACK=%t client FIN=%t", sawFinalACK, sawClientFIN)
+			}
+			select {
+			case <-sender.duplicateFINACKed:
+			default:
+				t.Fatal("TIME_WAIT did not acknowledge a retransmitted peer FIN")
+			}
+		})
+	}
+}
+
+// TestTCPClientHelpers verifies MSS parsing and modulo sequence comparisons.
+func TestTCPClientHelpers(t *testing.T) {
+	options := []byte{1, 2, 4, 0x04, 0xb0, 0}
+	if mss := tcpPeerMSS(options, 536, 1400); mss != 1200 {
+		t.Fatalf("MSS = %d", mss)
+	}
+	if !tcpSequenceLess(0xffffffff, 1) || !tcpSequenceGreater(1, 0xffffffff) || !tcpSequenceGreaterEqual(1, 1) || !tcpSequenceLessEqual(1, 1) {
+		t.Fatal("TCP sequence comparison failed across wraparound")
+	}
+	connection := &tcpClientConn{readNotifyCh: make(chan struct{})}
+	receiveNext := uint32(100)
+	var outOfOrder []tcpReceivedPiece
+	outOfOrderBytes := 0
+	accepted, closed := connection.receiveTCPData(receiveNext+65535, []byte{1}, false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	if accepted || closed || len(outOfOrder) != 0 {
+		t.Fatalf("out-of-window segment was retained: accepted=%t closed=%t pieces=%d", accepted, closed, len(outOfOrder))
+	}
+	pattern := func(first, last byte) []byte {
+		data := make([]byte, int(last-first))
+		for index := range data {
+			data[index] = first + byte(index)
+		}
+		return data
+	}
+	connection.receiveTCPData(170, pattern(70, 120), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	connection.receiveTCPData(150, pattern(50, 100), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	accepted, closed = connection.receiveTCPData(100, pattern(0, 75), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	if !accepted || closed || receiveNext != 220 || len(outOfOrder) != 0 || outOfOrderBytes != 0 || !bytes.Equal(connection.readBuffer, pattern(0, 120)) {
+		t.Fatalf("overlap reassembly: accepted=%t closed=%t next=%d pieces=%+v bytes=%d data=%v", accepted, closed, receiveNext, outOfOrder, outOfOrderBytes, connection.readBuffer)
+	}
+	connection = &tcpClientConn{readNotifyCh: make(chan struct{})}
+	receiveNext, outOfOrder, outOfOrderBytes = 100, nil, 0
+	connection.receiveTCPData(150, pattern(50, 100), true, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	accepted, closed = connection.receiveTCPData(100, pattern(0, 75), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	if !accepted || !closed || receiveNext != 201 || len(outOfOrder) != 0 || outOfOrderBytes != 0 || !bytes.Equal(connection.readBuffer, pattern(0, 100)) {
+		t.Fatalf("overlapping FIN reassembly: accepted=%t closed=%t next=%d pieces=%+v bytes=%d data=%v", accepted, closed, receiveNext, outOfOrder, outOfOrderBytes, connection.readBuffer)
+	}
+	connection = &tcpClientConn{readNotifyCh: make(chan struct{})}
+	receiveNext, outOfOrder, outOfOrderBytes = 100, nil, 0
+	connection.receiveTCPData(150, bytes.Repeat([]byte{0xee}, 50), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	accepted, closed = connection.receiveTCPData(100, pattern(0, 75), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	expected := append(pattern(0, 50), bytes.Repeat([]byte{0xee}, 50)...)
+	if !accepted || closed || receiveNext != 200 || len(outOfOrder) != 0 || outOfOrderBytes != 0 || !bytes.Equal(connection.readBuffer, expected) {
+		t.Fatalf("first-arrival overlap policy: accepted=%t closed=%t next=%d pieces=%+v bytes=%d data=%v", accepted, closed, receiveNext, outOfOrder, outOfOrderBytes, connection.readBuffer)
+	}
+	connection = &tcpClientConn{readNotifyCh: make(chan struct{})}
+	receiveNext, outOfOrder, outOfOrderBytes = 100, nil, 0
+	connection.receiveTCPData(150, nil, true, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	connection.receiveTCPData(140, bytes.Repeat([]byte{0xaa}, 20), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	accepted, closed = connection.receiveTCPData(100, bytes.Repeat([]byte{0xbb}, 40), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	if !accepted || !closed || receiveNext != 151 || len(outOfOrder) != 0 || outOfOrderBytes != 0 || len(connection.readBuffer) != 50 {
+		t.Fatalf("cached FIN boundary: accepted=%t closed=%t next=%d pieces=%+v bytes=%d data=%v", accepted, closed, receiveNext, outOfOrder, outOfOrderBytes, connection.readBuffer)
+	}
+	connection = &tcpClientConn{readNotifyCh: make(chan struct{})}
+	receiveNext, outOfOrder, outOfOrderBytes = 0xfffffff0, nil, 0
+	connection.receiveTCPData(receiveNext+10, bytes.Repeat([]byte{0xcc}, 20), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	accepted, closed = connection.receiveTCPData(receiveNext, bytes.Repeat([]byte{0xdd}, 15), false, &receiveNext, &outOfOrder, &outOfOrderBytes)
+	if !accepted || closed || receiveNext != 14 || len(outOfOrder) != 0 || outOfOrderBytes != 0 || len(connection.readBuffer) != 30 {
+		t.Fatalf("wraparound overlap reassembly: accepted=%t closed=%t next=%d pieces=%+v bytes=%d data=%v", accepted, closed, receiveNext, outOfOrder, outOfOrderBytes, connection.readBuffer)
+	}
+}
+
+// TestTCPClientConnWithStandardHTTP verifies the concurrent read/write pattern
+// used by net/http.Transport over the raw TCP client.
+func TestTCPClientConnWithStandardHTTP(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	responseBody := "standard library HTTP over ZeroTier"
+	response := []byte("HTTP/1.1 200 OK\r\nContent-Length: " + fmt.Sprint(len(responseBody)) + "\r\nConnection: close\r\n\r\n" + responseBody)
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), netip.MustParseAddr("192.0.2.2"), response)
+	defer cancel()
+	sender.dropFirstData, sender.reorderResponse = true, true
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			return dialTCPClient(dialCtx, runtime, config, netip.MustParseAddrPort("192.0.2.2:8080"), tcpClientDefaultMaximumAttempts)
+		},
+	}
+	client := &http.Client{Transport: transport}
+	httpResponse, err := client.Get("http://example.test:8080/check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(httpResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = httpResponse.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	transport.CloseIdleConnections()
+	if httpResponse.StatusCode != http.StatusOK || string(body) != responseBody {
+		t.Fatalf("status=%d body=%q", httpResponse.StatusCode, body)
+	}
+}
+
+// TestTCPClientConnWithStandardHTTPS verifies a real crypto/tls handshake and
+// encrypted HTTP exchange over the diagnostic TCP client.
+func TestTCPClientConnWithStandardHTTPS(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), remote, nil)
+	defer cancel()
+	serverDone, stopServer := startTCPClientTestTLSServer(t, sender)
+	defer stopServer()
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
+		TLSNextProto:      make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			return dialTCPClient(dialCtx, runtime, config, netip.AddrPortFrom(remote, 8443), tcpClientDefaultMaximumAttempts)
+		},
+	}
+	client := &http.Client{Transport: transport}
+	response, err := client.Get("https://example.test:8443/secure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	transport.CloseIdleConnections()
+	if response.StatusCode != http.StatusOK || string(body) != "encrypted ZeroTier HTTP" {
+		t.Fatalf("status=%d body=%q", response.StatusCode, body)
+	}
+	select {
+	case err = <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("TLS test server did not complete")
+	}
+}
+
+// TestProbeResolverFallsBackToTCP verifies that the standard resolver retries
+// a truncated UDP response over the diagnostic TCP client.
+func TestProbeResolverFallsBackToTCP(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), remote, nil)
+	defer cancel()
+	sender.truncateDNS = true
+	bridge, server := net.Pipe()
+	sender.attachApplication(bridge)
+	defer sender.detachApplication()
+	serverDone := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		var lengthBytes [2]byte
+		if _, err := io.ReadFull(server, lengthBytes[:]); err != nil {
+			serverDone <- err
+			return
+		}
+		query := make([]byte, binary.BigEndian.Uint16(lengthBytes[:]))
+		if _, err := io.ReadFull(server, query); err != nil {
+			serverDone <- err
+			return
+		}
+		response := makeDNSResponse(query, netip.MustParseAddr("203.0.113.7"))
+		binary.BigEndian.PutUint16(lengthBytes[:], uint16(len(response)))
+		if _, err := server.Write(append(lengthBytes[:], response...)); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+	resolver := newProbeResolver(runtime, runtime.link, config, netip.AddrPortFrom(remote, 53))
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ctxCancel()
+	addresses, err := resolver.LookupNetIP(ctx, "ip4", "example.test.")
+	if err != nil || len(addresses) != 1 || addresses[0] != netip.MustParseAddr("203.0.113.7") {
+		t.Fatalf("addresses=%v err=%v", addresses, err)
+	}
+	select {
+	case err = <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TCP DNS server did not complete")
+	}
+	sender.mu.Lock()
+	synAttempts := sender.synAttempts
+	sender.mu.Unlock()
+	if synAttempts == 0 {
+		t.Fatal("resolver did not establish a TCP fallback connection")
+	}
+}
+
+// TestTCPClientHandshakeAttempts verifies SYN retransmission and its explicit
+// attempt bound.
+func TestTCPClientHandshakeAttempts(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	local := netip.MustParsePrefix("192.0.2.1/24")
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, local, remote, nil)
+	defer cancel()
+	sender.dropSYNs, sender.duplicateSYNACK = 1, true
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ctxCancel()
+	connection, err := dialTCPClient(ctx, runtime, config, netip.AddrPortFrom(remote, 8080), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts := connection.ConnectInfo().Attempts; attempts != 2 {
+		t.Fatalf("connect attempts = %d", attempts)
+	}
+	select {
+	case <-sender.duplicateACKed:
+	case <-time.After(time.Second):
+		t.Fatal("retransmitted SYN-ACK was not acknowledged")
+	}
+	if err = connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, config, sender, cancelSecond := newTCPClientTestRuntime(t, networkID, local, remote, nil)
+	defer cancelSecond()
+	sender.dropSYNs = 1
+	_, err = dialTCPClient(ctx, runtime, config, netip.AddrPortFrom(remote, 8080), 1)
+	if err == nil || !strings.Contains(err.Error(), "after 1 attempts") {
+		t.Fatalf("one-attempt dial error = %v", err)
+	}
+}
+
+// TestTCPClientReadDeadlineWakesBlockedRead verifies dynamic net.Conn deadline
+// behavior after a connection is established.
+func TestTCPClientReadDeadlineWakesBlockedRead(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, _, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), remote, nil)
+	defer cancel()
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ctxCancel()
+	connection, err := dialTCPClient(ctx, runtime, config, netip.AddrPortFrom(remote, 8080), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = connection.SetReadDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, readErr := connection.Read(make([]byte, 1))
+		done <- readErr
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if err = connection.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-done:
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatalf("Read error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SetReadDeadline did not wake Read")
+	}
+	if err = connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestConnectTCPThroughIPLink verifies the complete-handshake branch used by
+// tcp -mode connect.
+func TestConnectTCPThroughIPLink(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), remote, nil)
+	defer cancel()
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ctxCancel()
+	result, err := runtime.connectTCP(ctx, config, netip.AddrPortFrom(remote, 8080), 1)
+	sender.mu.Lock()
+	sawClientFIN := sender.sawClientFIN
+	sender.mu.Unlock()
+	if err != nil || result.Status != tcpProbeStatusOpen || result.Attempts != 1 || result.Source == "" || !sawClientFIN {
+		t.Fatalf("result=%+v err=%v clientFIN=%t", result, err, sawClientFIN)
+	}
+}
+
+// TestTCPClientWaitsForDelayedPeerFIN verifies FIN_WAIT_2 when the peer first
+// acknowledges the client FIN and closes its own direction later.
+func TestTCPClientWaitsForDelayedPeerFIN(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	remote := netip.MustParseAddr("192.0.2.2")
+	runtime, config, sender, cancel := newTCPClientTestRuntime(t, networkID, netip.MustParsePrefix("192.0.2.1/24"), remote, nil)
+	defer cancel()
+	sender.delayFINAfterClient = true
+	ctx, ctxCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer ctxCancel()
+	connection, err := dialTCPClient(ctx, runtime, config, netip.AddrPortFrom(remote, 8080), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if err = connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sender.mu.Lock()
+	finACKs := sender.finACKs
+	sender.mu.Unlock()
+	if elapsed := time.Since(started); elapsed < tcpClientTimeWaitDuration || elapsed >= tcpClientFINWaitTimeout || finACKs == 0 {
+		t.Fatalf("Close duration=%s peer FIN ACKs=%d", elapsed, finACKs)
+	}
+}
+
+// newTCPClientTestRuntime creates an iplink and runtime backed by one emulated
+// TCP peer.
+func newTCPClientTestRuntime(t *testing.T, networkID uint64, local netip.Prefix, remote netip.Addr, response []byte) (*probeRuntime, zerotier.NetworkConfigData, *tcpClientTestSender, context.CancelFunc) {
+	t.Helper()
+	packets := make(chan []byte, 64)
+	linkErrs := make(chan error, 4)
+	sender := &tcpClientTestSender{
+		networkID: networkID, address: zerotier.NewAddress(0x12345), remoteIP: remote,
+		response: response, packets: packets, errs: linkErrs,
+		duplicateACKed: make(chan struct{}), duplicateFINACKed: make(chan struct{}),
+	}
+	link, err := iplink.New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.link = link
+	config := zerotier.NetworkConfigData{NetworkID: networkID, MTU: zerotier.DefaultNetworkMTU, Assigned: []netip.Prefix{local}}
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime := &probeRuntime{node: &zerotier.Node{}, link: link, packets: packets, linkErrs: linkErrs, ctx: ctx}
+	return runtime, config, sender, cancel
+}
+
+// startTCPClientTestTLSServer bridges a standard-library TLS server to the
+// emulated peer's TCP byte stream.
+func startTCPClientTestTLSServer(t *testing.T, sender *tcpClientTestSender) (<-chan error, func()) {
+	t.Helper()
+	certificateSource := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	tlsConfig := certificateSource.TLS.Clone()
+	certificateSource.Close()
+	bridge, serverTransport := net.Pipe()
+	sender.attachApplication(bridge)
+	done := make(chan error, 1)
+	go func() {
+		server := tls.Server(serverTransport, tlsConfig)
+		defer server.Close()
+		request, err := http.ReadRequest(bufio.NewReader(server))
+		if err != nil {
+			done <- err
+			return
+		}
+		_ = request.Body.Close()
+		if request.Method != http.MethodGet || request.URL.Path != "/secure" {
+			done <- fmt.Errorf("unexpected TLS HTTP request %s %s", request.Method, request.URL.Path)
+			return
+		}
+		body := "encrypted ZeroTier HTTP"
+		_, err = fmt.Fprintf(server, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+		done <- err
+	}()
+	return done, func() {
+		sender.detachApplication()
+		_ = serverTransport.Close()
+	}
+}
+
+// tcpClientTestSender emulates one remote TCP server and IPv4/IPv6 neighbor.
+type tcpClientTestSender struct {
+	networkID              uint64
+	address                zerotier.Address
+	remoteIP               netip.Addr
+	response               []byte
+	packets                chan<- []byte
+	errs                   chan<- error
+	link                   *iplink.Link
+	dropFirstData          bool
+	dropSYNs               int
+	duplicateSYNACK        bool
+	duplicateFINInTimeWait bool
+	delayFINAfterClient    bool
+	reorderResponse        bool
+	duplicateACKed         chan struct{}
+	duplicateFINACKed      chan struct{}
+	duplicateOnce          sync.Once
+	duplicateFINOnce       sync.Once
+	application            net.Conn
+	applicationData        chan []byte
+	applicationDone        chan struct{}
+	applicationOnce        sync.Once
+	truncateDNS            bool
+
+	mu                    sync.Mutex
+	client                netip.AddrPort
+	serverPort            uint16
+	clientNext            uint32
+	serverNext            uint32
+	request               []byte
+	dataAttempts          int
+	synAttempts           int
+	handshakeACKs         int
+	finACKs               int
+	responseSent          bool
+	remoteFINSent         bool
+	duplicateFINScheduled bool
+	sawFinalACK           bool
+	sawClientFIN          bool
+}
+
+// Address returns the local ZeroTier address used by the test link.
+func (s *tcpClientTestSender) Address() zerotier.Address { return s.address }
+
+// SendFrame responds to neighbor discovery and remote TCP traffic.
+func (s *tcpClientTestSender) SendFrame(networkID uint64, destination zerotier.MAC, etherType uint16, payload []byte) error {
+	if networkID != s.networkID {
+		return nil
+	}
+	if etherType == zerotier.EtherTypeARP {
+		s.answerARP(destination, payload)
+		return nil
+	}
+	if etherType != zerotier.EtherTypeIPv4 && etherType != zerotier.EtherTypeIPv6 {
+		return nil
+	}
+	if source, target, icmp, ok := ipProtocolPayload(payload, icmpv6Protocol); ok && len(icmp) >= 24 && icmp[0] == 135 {
+		s.answerNDP(destination, source, target, icmp)
+		return nil
+	}
+	if s.truncateDNS {
+		if source, target, udp, ok := ipProtocolPayload(payload, udpProtocol); ok && target == s.remoteIP && len(udp) >= udpHeaderSize && binary.BigEndian.Uint16(udp[2:4]) == 53 {
+			s.answerTruncatedDNS(source, udp)
+			return nil
+		}
+	}
+	source, target, tcp, ok := ipProtocolPayload(payload, tcpProtocol)
+	if !ok || target != s.remoteIP || len(tcp) < tcpHeaderSize {
+		return nil
+	}
+	headerSize := int(tcp[12]>>4) * 4
+	if headerSize < tcpHeaderSize || headerSize > len(tcp) {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.client = netip.AddrPortFrom(source, binary.BigEndian.Uint16(tcp[0:2]))
+	serverPort := binary.BigEndian.Uint16(tcp[2:4])
+	s.serverPort = serverPort
+	sequence := binary.BigEndian.Uint32(tcp[4:8])
+	acknowledgement := binary.BigEndian.Uint32(tcp[8:12])
+	flags := tcp[13]
+	data := append([]byte(nil), tcp[headerSize:]...)
+	if flags&tcpFlagSYN != 0 {
+		s.synAttempts++
+		if s.synAttempts <= s.dropSYNs {
+			return nil
+		}
+		s.clientNext, s.serverNext = sequence+1, 0x50607081
+		options := []byte{2, 4, 0x04, 0xb0}
+		s.deliverTCP(serverPort, s.serverNext-1, s.clientNext, tcpFlagSYN|tcpFlagACK, options, nil)
+		return nil
+	}
+	if flags&tcpFlagFIN != 0 {
+		s.sawClientFIN = true
+		if sequence == s.clientNext {
+			s.clientNext++
+		}
+		responseSequence, responseFlags := s.serverNext, byte(tcpFlagACK)
+		if !s.remoteFINSent && s.delayFINAfterClient {
+			s.deliverTCP(serverPort, responseSequence, s.clientNext, responseFlags, nil, nil)
+			time.AfterFunc(150*time.Millisecond, func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if s.remoteFINSent {
+					return
+				}
+				finSequence := s.serverNext
+				s.serverNext++
+				s.remoteFINSent = true
+				s.deliverTCP(s.serverPort, finSequence, s.clientNext, tcpFlagACK|tcpFlagFIN, nil, nil)
+			})
+			return nil
+		}
+		if !s.remoteFINSent {
+			responseFlags |= tcpFlagFIN
+			s.remoteFINSent = true
+			s.serverNext++
+		}
+		s.deliverTCP(serverPort, responseSequence, s.clientNext, responseFlags, nil, nil)
+		if s.duplicateFINInTimeWait && !s.duplicateFINScheduled {
+			s.duplicateFINScheduled = true
+			finSequence := s.serverNext - 1
+			time.AfterFunc(tcpClientInitialRTO+100*time.Millisecond, func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				s.deliverTCP(s.serverPort, finSequence, s.clientNext, tcpFlagACK|tcpFlagFIN, nil, nil)
+			})
+		}
+		return nil
+	}
+	if len(data) != 0 {
+		s.dataAttempts++
+		if s.dropFirstData && s.dataAttempts == 1 {
+			return nil
+		}
+		if sequence == s.clientNext {
+			s.request = append(s.request, data...)
+			s.clientNext += uint32(len(data))
+		}
+		s.deliverTCP(serverPort, s.serverNext, s.clientNext, tcpFlagACK, nil, nil)
+		if s.applicationData != nil {
+			select {
+			case s.applicationData <- append([]byte(nil), data...):
+			case <-s.applicationDone:
+			}
+			return nil
+		}
+		if !s.responseSent && bytes.Contains(s.request, []byte("\r\n\r\n")) {
+			s.responseSent = true
+			s.sendResponse(serverPort)
+		}
+		return nil
+	}
+	if !s.responseSent && acknowledgement == s.serverNext && sequence == s.clientNext {
+		s.handshakeACKs++
+		if s.duplicateSYNACK && s.handshakeACKs == 1 {
+			options := []byte{2, 4, 0x04, 0xb0}
+			s.deliverTCP(serverPort, s.serverNext-1, s.clientNext, tcpFlagSYN|tcpFlagACK, options, nil)
+		} else if s.handshakeACKs >= 2 {
+			s.duplicateOnce.Do(func() { close(s.duplicateACKed) })
+		}
+	}
+	if s.remoteFINSent && acknowledgement == s.serverNext {
+		s.sawFinalACK = true
+		s.finACKs++
+		if s.finACKs >= 2 {
+			s.duplicateFINOnce.Do(func() { close(s.duplicateFINACKed) })
+		}
+	}
+	return nil
+}
+
+// answerTruncatedDNS returns a valid UDP response with the TC bit set.
+func (s *tcpClientTestSender) answerTruncatedDNS(client netip.Addr, udp []byte) {
+	length := int(binary.BigEndian.Uint16(udp[4:6]))
+	if length < udpHeaderSize+12 || length > len(udp) {
+		return
+	}
+	query := udp[udpHeaderSize:length]
+	response := append([]byte(nil), query...)
+	binary.BigEndian.PutUint16(response[2:4], 0x8200)
+	binary.BigEndian.PutUint16(response[6:8], 0)
+	binary.BigEndian.PutUint16(response[8:10], 0)
+	binary.BigEndian.PutUint16(response[10:12], 0)
+	packet := udpPacket(s.remoteIP, client, 53, binary.BigEndian.Uint16(udp[0:2]), response)
+	remoteMAC := zerotier.NewMAC(0x020000000002)
+	etherType := uint16(zerotier.EtherTypeIPv4)
+	if s.remoteIP.Is6() {
+		etherType = zerotier.EtherTypeIPv6
+	}
+	go s.deliver(zerotier.Frame{NetworkID: s.networkID, Source: remoteMAC, Destination: zerotier.MACForAddress(s.address, s.networkID), EtherType: etherType, Payload: packet})
+}
+
+// attachApplication connects a server-side byte stream to emitted TCP data.
+func (s *tcpClientTestSender) attachApplication(connection net.Conn) {
+	s.mu.Lock()
+	s.application = connection
+	s.applicationData = make(chan []byte, 64)
+	s.applicationDone = make(chan struct{})
+	applicationData := s.applicationData
+	applicationDone := s.applicationDone
+	s.mu.Unlock()
+	go func() {
+		for {
+			select {
+			case data := <-applicationData:
+				if _, err := connection.Write(data); err != nil {
+					return
+				}
+			case <-applicationDone:
+				return
+			}
+		}
+	}()
+	go func() {
+		buffer := make([]byte, 4096)
+		for {
+			n, err := connection.Read(buffer)
+			if n != 0 {
+				s.sendApplicationOutput(buffer[:n])
+			}
+			if err != nil {
+				s.sendApplicationFIN()
+				return
+			}
+		}
+	}()
+}
+
+// detachApplication closes the test byte-stream bridge and its goroutines.
+func (s *tcpClientTestSender) detachApplication() {
+	s.applicationOnce.Do(func() {
+		s.mu.Lock()
+		connection, done := s.application, s.applicationDone
+		s.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+		if connection != nil {
+			_ = connection.Close()
+		}
+	})
+}
+
+// sendApplicationOutput emits bytes written by the bridged TLS server.
+func (s *tcpClientTestSender) sendApplicationOutput(payload []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(payload) != 0 {
+		size := len(payload)
+		if size > 1000 {
+			size = 1000
+		}
+		s.deliverTCP(s.serverPort, s.serverNext, s.clientNext, tcpFlagACK|tcpFlagPSH, nil, payload[:size])
+		s.serverNext += uint32(size)
+		payload = payload[size:]
+	}
+}
+
+// sendApplicationFIN closes the bridged server's TCP sending direction.
+func (s *tcpClientTestSender) sendApplicationFIN() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applicationDone != nil {
+		select {
+		case <-s.applicationDone:
+			return
+		default:
+		}
+	}
+	if s.serverPort == 0 {
+		return
+	}
+	s.deliverTCP(s.serverPort, s.serverNext, s.clientNext, tcpFlagACK|tcpFlagFIN, nil, nil)
+	s.serverNext++
+	s.remoteFINSent = true
+}
+
+// answerARP returns an IPv4 neighbor advertisement.
+func (s *tcpClientTestSender) answerARP(destination zerotier.MAC, payload []byte) {
+	if !s.remoteIP.Is4() || len(payload) < 28 || binary.BigEndian.Uint16(payload[6:8]) != 1 {
+		return
+	}
+	remoteMAC := zerotier.NewMAC(0x020000000002)
+	reply := append([]byte(nil), payload[:28]...)
+	binary.BigEndian.PutUint16(reply[6:8], 2)
+	remoteMACBytes := remoteMAC.Bytes()
+	copy(reply[8:14], remoteMACBytes[:])
+	copy(reply[14:18], payload[24:28])
+	copy(reply[18:24], payload[8:14])
+	copy(reply[24:28], payload[14:18])
+	go s.deliver(zerotier.Frame{NetworkID: s.networkID, Source: remoteMAC, Destination: destination, EtherType: zerotier.EtherTypeARP, Payload: reply})
+}
+
+// answerNDP returns an IPv6 neighbor advertisement.
+func (s *tcpClientTestSender) answerNDP(destination zerotier.MAC, source, _ netip.Addr, request []byte) {
+	if !s.remoteIP.Is6() || netip.AddrFrom16([16]byte(request[8:24])) != s.remoteIP {
+		return
+	}
+	remoteMAC := zerotier.NewMAC(0x020000000002)
+	icmp := make([]byte, 32)
+	icmp[0] = 136
+	binary.BigEndian.PutUint32(icmp[4:8], 0x60000000)
+	copy(icmp[8:24], s.remoteIP.AsSlice())
+	icmp[24], icmp[25] = 2, 1
+	mac := remoteMAC.Bytes()
+	copy(icmp[26:32], mac[:])
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(s.remoteIP, source, icmp))
+	packet := make([]byte, 40+len(icmp))
+	packet[0] = 0x60
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(icmp)))
+	packet[6], packet[7] = icmpv6Protocol, 255
+	copy(packet[8:24], s.remoteIP.AsSlice())
+	copy(packet[24:40], source.AsSlice())
+	copy(packet[40:], icmp)
+	go s.deliver(zerotier.Frame{NetworkID: s.networkID, Source: remoteMAC, Destination: destination, EtherType: zerotier.EtherTypeIPv6, Payload: packet})
+}
+
+// sendResponse sends a deliberately reordered response followed by FIN.
+func (s *tcpClientTestSender) sendResponse(serverPort uint16) {
+	split := len(s.response) / 2
+	first, second := s.response[:split], s.response[split:]
+	base := s.serverNext
+	s.serverNext += uint32(len(s.response)) + 1
+	s.remoteFINSent = true
+	if s.reorderResponse {
+		s.deliverTCP(serverPort, base+uint32(len(first)), s.clientNext, tcpFlagACK|tcpFlagPSH|tcpFlagFIN, nil, second)
+		s.deliverTCP(serverPort, base+uint32(len(first)), s.clientNext, tcpFlagACK|tcpFlagPSH|tcpFlagFIN, nil, second)
+	}
+	s.deliverTCP(serverPort, base, s.clientNext, tcpFlagACK|tcpFlagPSH, nil, first)
+	if !s.reorderResponse {
+		s.deliverTCP(serverPort, base+uint32(len(first)), s.clientNext, tcpFlagACK|tcpFlagPSH|tcpFlagFIN, nil, second)
+	}
+}
+
+// deliverTCP builds and asynchronously delivers one server segment.
+func (s *tcpClientTestSender) deliverTCP(serverPort uint16, sequence, acknowledgement uint32, flags byte, options, payload []byte) {
+	packet := tcpPacket(s.remoteIP, s.client.Addr(), serverPort, s.client.Port(), sequence, acknowledgement, flags, 65535, options, payload)
+	remoteMAC := zerotier.NewMAC(0x020000000002)
+	etherType := uint16(zerotier.EtherTypeIPv4)
+	if s.remoteIP.Is6() {
+		etherType = zerotier.EtherTypeIPv6
+	}
+	go s.deliver(zerotier.Frame{NetworkID: s.networkID, Source: remoteMAC, Destination: zerotier.MACForAddress(s.address, s.networkID), EtherType: etherType, Payload: packet})
+}
+
+// deliver passes one emulated inbound frame through iplink.
+func (s *tcpClientTestSender) deliver(frame zerotier.Frame) {
+	packet, err := s.link.HandleFrame(frame)
+	if err != nil {
+		select {
+		case s.errs <- err:
+		default:
+		}
+		return
+	}
+	if packet != nil {
+		s.packets <- append([]byte(nil), packet...)
+	}
+}

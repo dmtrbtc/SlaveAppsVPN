@@ -1,0 +1,256 @@
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"net"
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+// TestUDPProbeConnCloseUnblocksRead verifies the net.Conn close contract used
+// by the standard library resolver.
+func TestUDPProbeConnCloseUnblocksRead(t *testing.T) {
+	connection := newTestUDPProbeConn()
+	done := make(chan error, 1)
+	go func() {
+		_, err := connection.Read(make([]byte, 512))
+		done <- err
+	}()
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("Read error = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not unblock Read")
+	}
+	if err := connection.SetDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("SetDeadline after Close = %v, want net.ErrClosed", err)
+	}
+}
+
+// TestUDPProbeConnReadDeadlineWakesBlockedRead verifies that a deadline set
+// after Read starts applies to that blocked operation.
+func TestUDPProbeConnReadDeadlineWakesBlockedRead(t *testing.T) {
+	connection := newTestUDPProbeConn()
+	if err := connection.SetReadDeadline(time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := connection.Read(make([]byte, 512))
+		done <- err
+	}()
+	<-started
+	time.Sleep(10 * time.Millisecond)
+	if err := connection.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		var timeout net.Error
+		if !errors.As(err, &timeout) || !timeout.Timeout() {
+			t.Fatalf("Read error = %v, want timeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SetReadDeadline did not unblock Read")
+	}
+}
+
+// newTestUDPProbeConn creates the minimum live channels needed by Read tests.
+func newTestUDPProbeConn() *udpProbeConn {
+	return &udpProbeConn{
+		ctx: context.Background(), runtime: &probeRuntime{
+			packets: make(chan []byte), linkErrs: make(chan error),
+		},
+		closedCh: make(chan struct{}), readChangedCh: make(chan struct{}),
+	}
+}
+
+// TestUDPPacketIPv4AndIPv6 verifies datagram construction, payload, tuple, and
+// checksum validation for both IP families.
+func TestUDPPacketIPv4AndIPv6(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source netip.Addr
+		target netip.Addr
+	}{
+		{name: "IPv4", source: netip.MustParseAddr("192.0.2.1"), target: netip.MustParseAddr("192.0.2.2")},
+		{name: "IPv6", source: netip.MustParseAddr("fd00::1"), target: netip.MustParseAddr("fd00::2")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := udpPacket(test.target, test.source, 53, 55000, []byte("response"))
+			payload, ok := parseUDPReply(packet, test.source, test.target, 55000, 53)
+			if !ok || string(payload) != "response" {
+				t.Fatalf("payload=%q valid=%t", payload, ok)
+			}
+			corrupt := append([]byte(nil), packet...)
+			corrupt[len(corrupt)-1] ^= 1
+			if _, ok = parseUDPReply(corrupt, test.source, test.target, 55000, 53); ok {
+				t.Fatal("corrupt UDP packet was accepted")
+			}
+		})
+	}
+}
+
+// TestUDPProbeAndStandardResolverThroughIPLink verifies generic UDP echo and
+// standard-library DNS codec traffic through the real iplink implementation.
+func TestUDPProbeAndStandardResolverThroughIPLink(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	packets := make(chan []byte, 16)
+	linkErrs := make(chan error, 1)
+	sender := &udpProbeTestSender{
+		networkID: networkID, address: zerotier.NewAddress(0x12345), packets: packets, errs: linkErrs,
+		response: func(payload []byte) []byte {
+			if len(payload) >= 12 && binary.BigEndian.Uint16(payload[4:6]) == 1 {
+				return makeDNSResponse(payload, netip.MustParseAddr("203.0.113.7"))
+			}
+			return append([]byte("reply:"), payload...)
+		},
+	}
+	link, err := iplink.New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.link = link
+	config := zerotier.NetworkConfigData{
+		NetworkID: networkID, MTU: zerotier.DefaultNetworkMTU,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &probeRuntime{node: &zerotier.Node{}, link: link, packets: packets, linkErrs: linkErrs}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := runtime.probeUDP(ctx, config, netip.MustParseAddr("192.0.2.2"), 9000, []byte("hello"), []byte("reply:hello"), true, 1, time.Second)
+	if err != nil || result.Status != "reply" || string(result.Response) != "reply:hello" {
+		t.Fatalf("UDP result=%+v err=%v", result, err)
+	}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(dialCtx context.Context, network, _ string) (net.Conn, error) {
+			if !strings.HasPrefix(network, "udp") {
+				t.Fatalf("resolver requested network %q", network)
+			}
+			return newUDPProbeConn(dialCtx, runtime, link, netip.MustParseAddrPort("192.0.2.2:53"))
+		},
+	}
+	addresses, err := resolver.LookupNetIP(ctx, "ip4", "example.com")
+	if err != nil || len(addresses) != 1 || addresses[0] != netip.MustParseAddr("203.0.113.7") {
+		t.Fatalf("DNS addresses=%v err=%v", addresses, err)
+	}
+}
+
+// udpProbeTestSender emulates ARP and a remote UDP application.
+type udpProbeTestSender struct {
+	networkID uint64
+	address   zerotier.Address
+	link      *iplink.Link
+	packets   chan<- []byte
+	errs      chan<- error
+	response  func([]byte) []byte
+}
+
+// Address returns the local ZeroTier address used by the test link.
+func (s *udpProbeTestSender) Address() zerotier.Address { return s.address }
+
+// SendFrame answers ARP and returns application-generated UDP responses.
+func (s *udpProbeTestSender) SendFrame(networkID uint64, destination zerotier.MAC, etherType uint16, payload []byte) error {
+	if networkID != s.networkID {
+		return nil
+	}
+	remoteMAC := zerotier.NewMAC(0x020000000002)
+	switch etherType {
+	case zerotier.EtherTypeARP:
+		if len(payload) < 28 || binary.BigEndian.Uint16(payload[6:8]) != 1 {
+			return nil
+		}
+		reply := append([]byte(nil), payload[:28]...)
+		binary.BigEndian.PutUint16(reply[6:8], 2)
+		remoteMACBytes := remoteMAC.Bytes()
+		copy(reply[8:14], remoteMACBytes[:])
+		copy(reply[14:18], payload[24:28])
+		copy(reply[18:24], payload[8:14])
+		copy(reply[24:28], payload[14:18])
+		go s.deliver(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: destination, EtherType: etherType, Payload: reply})
+	case zerotier.EtherTypeIPv4:
+		if source, target, icmp, ok := ipProtocolPayload(payload, icmpv4Protocol); ok && len(icmp) >= 8 && icmp[0] == 8 {
+			reply := append([]byte(nil), payload...)
+			copy(reply[12:16], target.AsSlice())
+			copy(reply[16:20], source.AsSlice())
+			replyICMP := reply[20:]
+			replyICMP[0] = 0
+			binary.BigEndian.PutUint16(replyICMP[2:4], 0)
+			binary.BigEndian.PutUint16(replyICMP[2:4], checksum(replyICMP))
+			binary.BigEndian.PutUint16(reply[10:12], 0)
+			binary.BigEndian.PutUint16(reply[10:12], checksum(reply[:20]))
+			go s.deliver(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: destination, EtherType: etherType, Payload: reply})
+			return nil
+		}
+		source, target, udp, ok := ipProtocolPayload(payload, udpProtocol)
+		if !ok || len(udp) < udpHeaderSize {
+			return nil
+		}
+		length := int(binary.BigEndian.Uint16(udp[4:6]))
+		if length < udpHeaderSize || length > len(udp) {
+			return nil
+		}
+		response := s.response(udp[udpHeaderSize:length])
+		reply := udpPacket(target, source, binary.BigEndian.Uint16(udp[2:4]), binary.BigEndian.Uint16(udp[0:2]), response)
+		go s.deliver(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: destination, EtherType: etherType, Payload: reply})
+	}
+	return nil
+}
+
+// deliver passes one emulated inbound frame through iplink.
+func (s *udpProbeTestSender) deliver(frame zerotier.Frame) {
+	packet, err := s.link.HandleFrame(frame)
+	if err != nil {
+		select {
+		case s.errs <- err:
+		default:
+		}
+		return
+	}
+	if packet != nil {
+		s.packets <- append([]byte(nil), packet...)
+	}
+}
+
+// makeDNSResponse creates one minimal A response preserving the query ID and
+// question encoded by the standard library resolver.
+func makeDNSResponse(query []byte, address netip.Addr) []byte {
+	end := 12
+	for end < len(query) && query[end] != 0 {
+		length := int(query[end])
+		end += 1 + length
+	}
+	end++
+	if end+4 > len(query) {
+		return nil
+	}
+	questionEnd := end + 4
+	response := make([]byte, questionEnd, questionEnd+16)
+	copy(response, query[:questionEnd])
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	binary.BigEndian.PutUint16(response[4:6], 1)
+	binary.BigEndian.PutUint16(response[6:8], 1)
+	binary.BigEndian.PutUint16(response[8:10], 0)
+	binary.BigEndian.PutUint16(response[10:12], 0)
+	response = append(response, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
+	bytes := address.As4()
+	return append(response, bytes[:]...)
+}

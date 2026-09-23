@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-09-08T19:46:44.530Z",
+  "packageName": "com.slavevpn.app.p31smoke",
+  "androidApi": "36",
+  "concurrentWrites": true,
+  "beforeRestart": {
+    "bridge": true,
+    "local": true,
+    "native": true,
+    "mirrorMatches": true
+  },
+  "processStopConfirmed": true,
+  "afterRestart": {
+    "bridge": true,
+    "local": true,
+    "native": true,
+    "mirrorMatches": true
+  },
+  "restartedProcessFatalObserved": false,
+  "vpnConnectedByTest": false,
+  "productionPackageAccessed": false,
+  "existingDevPackageAccessed": false
+}

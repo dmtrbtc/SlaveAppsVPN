@@ -1,0 +1,412 @@
+package zerotier
+
+import (
+	"bytes"
+	"errors"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestPacketAuthenticationFailureTraceMatchesOfficialFields(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	endpoint := netip.MustParseAddrPort("192.0.2.30:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{localSocket: 7, endpoint: endpoint}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond}
+	node.remoteTraceTarget = remote.Address()
+	node.remoteTraceLevel = TraceLevelDebug
+	node.mu.Unlock()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbUserMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint64(1)
+	var wrongKey [SymmetricKeySize]byte
+	if err = packet.Armor(wrongKey[:], true); err != nil {
+		t.Fatal(err)
+	}
+	packetID := packet.PacketID()
+	if err = node.ProcessWirePacket(7, endpoint, packet.Bytes(), time.Now()); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("authentication error = %v, want ErrInvalidPacket", err)
+	}
+
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var traces []Dictionary
+	for _, wire := range *sent {
+		tracePacket, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || tracePacket.Dearmor(key[:]) != nil || tracePacket.Uncompress() != nil || tracePacket.Verb() != VerbRemoteTrace {
+			continue
+		}
+		trace, parseErr := ParseDictionary(tracePacket.Payload())
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		traces = append(traces, trace)
+	}
+	if len(traces) != 1 {
+		t.Fatalf("authentication trace count = %d, want 1", len(traces))
+	}
+	trace := traces[0]
+	if trace.String("event") != "1004" || trace.Uint("packetId", 0) != packetID ||
+		trace.Uint("remoteZtAddr", 0) != remote.Address().Uint64() || trace.String("remotePhyAddr") != endpoint.String() ||
+		trace.Uint("localSocket", 0) != 7 || trace.String("reason") != "invalid MAC" {
+		t.Fatalf("authentication trace = %#v", trace)
+	}
+	if _, exists := trace["packetVerb"]; exists {
+		t.Fatalf("authentication trace unexpectedly contains packetVerb: %#v", trace)
+	}
+}
+
+func TestDroppedHelloTraceMatchesOfficialFields(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	endpoint := netip.MustParseAddrPort("192.0.2.33:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{localSocket: 11, endpoint: endpoint}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond}
+	node.remoteTraceTarget = remote.Address()
+	node.remoteTraceLevel = TraceLevelDebug
+	node.mu.Unlock()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbHello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.Append(ProtocolVersionMin-1, NodeVersionMajor, NodeVersionMinor)
+	_ = packet.AppendUint16(NodeVersionRevision)
+	_ = packet.AppendUint64(uint64(time.Now().UnixMilli()))
+	_ = packet.Append(remote.AppendBinary(nil, false)...)
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], false); err != nil {
+		t.Fatal(err)
+	}
+	packetID := packet.PacketID()
+	if err = node.ProcessWirePacket(11, endpoint, packet.Bytes(), time.Now()); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("old HELLO error = %v, want ErrInvalidPacket", err)
+	}
+
+	var trace Dictionary
+	for _, wire := range *sent {
+		tracePacket, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || tracePacket.Dearmor(key[:]) != nil || tracePacket.Uncompress() != nil || tracePacket.Verb() != VerbRemoteTrace {
+			continue
+		}
+		trace, parseErr = ParseDictionary(tracePacket.Payload())
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		break
+	}
+	if trace == nil || trace.String("event") != "1005" || trace.Uint("packetId", 0) != packetID ||
+		trace.Uint("remoteZtAddr", 0) != remote.Address().Uint64() || trace.String("remotePhyAddr") != endpoint.String() ||
+		trace.Uint("localSocket", 0) != 11 || trace.String("reason") != "protocol version too old" {
+		t.Fatalf("dropped HELLO trace = %#v", trace)
+	}
+	for _, field := range []string{"packetVerb", "packetHops"} {
+		if _, exists := trace[field]; exists {
+			t.Fatalf("dropped HELLO trace unexpectedly contains %s: %#v", field, trace)
+		}
+	}
+}
+
+func TestClusterRedirectTraceMatchesOfficialTimingAndFields(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	origin := netip.MustParseAddrPort("192.0.2.31:9993")
+	redirect := netip.MustParseAddrPort("198.51.100.31:29993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{localSocket: 3, endpoint: origin}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond, priority: 1}
+	node.remoteTraceTarget = remote.Address()
+	node.remoteTraceLevel = TraceLevelNormal
+	node.mu.Unlock()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbPushDirectPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint16(1)
+	appendPushedIPv4(packet, 0x02, redirect)
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(3, origin, packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(*sent) < 2 || (*sent)[0].remote != origin || (*sent)[1].remote != redirect {
+		t.Fatalf("cluster redirect send order = %+v, want trace to origin before probe to %s", *sent, redirect)
+	}
+	tracePacket, err := ParsePacket((*sent)[0].data)
+	if err != nil || tracePacket.Dearmor(key[:]) != nil || tracePacket.Uncompress() != nil || tracePacket.Verb() != VerbRemoteTrace {
+		t.Fatalf("first cluster redirect packet is not a remote trace: %v", err)
+	}
+	trace, err := ParseDictionary(tracePacket.Payload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trace.String("event") != "1003" || trace.Uint("remoteZtAddr", 0) != remote.Address().Uint64() ||
+		trace.String("remotePhyAddr") != redirect.String() || trace.Uint("localSocket", 0) != 3 {
+		t.Fatalf("cluster redirect trace = %#v", trace)
+	}
+	if _, exists := trace["packetId"]; exists {
+		t.Fatalf("cluster redirect trace unexpectedly contains packetId: %#v", trace)
+	}
+}
+
+func TestUnknownPathConfirmationTraceFollowsProbeRateLimit(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	now := time.Now()
+	knownEndpoint := netip.MustParseAddrPort("192.0.2.34:9993")
+	unknownEndpoint := netip.MustParseAddrPort("198.51.100.34:29993")
+	const networkID = uint64(0x1234567890abcdef)
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.protocol = ProtocolVersion
+	peer.paths[pathKey{localSocket: 2, endpoint: knownEndpoint}] = &peerPathState{lastReceive: now, latency: time.Millisecond, priority: 1}
+	node.remoteTraceTarget = remote.Address()
+	node.remoteTraceLevel = TraceLevelNormal
+	for _, receivedAt := range []time.Time{now, now.Add(peerPathProbeWindow), now.Add(peerPathProbeWindow + time.Nanosecond)} {
+		node.observeAuthenticatedPacketPathLocked(peer, 3, unknownEndpoint, VerbFrame, uint64(receivedAt.UnixNano()), networkID, receivedAt)
+	}
+	node.mu.Unlock()
+
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hellos, traces int
+	for _, wire := range *sent {
+		packet, parseErr := ParsePacket(wire.data)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		switch wire.remote {
+		case unknownEndpoint:
+			if packet.Dearmor(key[:]) != nil || packet.Verb() != VerbHello {
+				t.Fatalf("unknown-path packet is not a HELLO: endpoint=%s verb=%s", wire.remote, packet.Verb())
+			}
+			hellos++
+		case knownEndpoint:
+			if packet.Dearmor(key[:]) != nil || packet.Uncompress() != nil || packet.Verb() != VerbRemoteTrace {
+				t.Fatalf("known-path packet is not a remote trace: endpoint=%s verb=%s", wire.remote, packet.Verb())
+			}
+			trace, parseErr := ParseDictionary(packet.Payload())
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			if trace.String("event") != "1001" || trace.String("remotePhyAddr") != unknownEndpoint.String() {
+				t.Fatalf("path-confirmation trace = %#v", trace)
+			}
+			traces++
+		default:
+			t.Fatalf("unexpected physical destination %s", wire.remote)
+		}
+	}
+	if hellos != 2 || traces != 2 {
+		t.Fatalf("unknown-path confirmation packets: HELLO=%d trace=%d, want 2 each", hellos, traces)
+	}
+}
+
+func BenchmarkPeerConfirmingPathTraceDisabled(b *testing.B) {
+	remote, err := GenerateIdentity()
+	if err != nil {
+		b.Fatal(err)
+	}
+	node := &Node{}
+	peer := &peer{identity: remote}
+	path := pathKey{localSocket: 3, endpoint: netip.MustParseAddrPort("198.51.100.34:29993")}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		node.tracePeerConfirmingPathLocked(0, peer, path, uint64(index), VerbFrame)
+	}
+}
+
+func TestNetworkFilterRemoteTraceGeneration(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	endpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{endpoint: endpoint}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond}
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{
+		NetworkID: networkID, Type: NetworkTypePublic, MTU: 2800,
+		RemoteTraceTarget: remote.Address(), RemoteTraceLevel: TraceLevelRules,
+		Rules: []NetworkRule{{Type: ruleActionAccept}},
+	}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+
+	payload := []byte{0x45, 0, 0, 20}
+	if err := node.SendFrame(networkID, MACForAddress(remote.Address(), networkID), EtherTypeIPv4, payload); err != nil {
+		t.Fatal(err)
+	}
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trace Dictionary
+	for _, wire := range *sent {
+		packet, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || packet.Dearmor(key[:]) != nil || packet.Uncompress() != nil || packet.Verb() != VerbRemoteTrace {
+			continue
+		}
+		trace, err = ParseDictionary(packet.Payload())
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if trace == nil {
+		t.Fatal("remote trace packet was not sent")
+	}
+	if trace.String("event") != "2006" || trace.Uint("networkId", 0) != networkID || trace.String("filterInbound") != "0" || trace.Uint("filterResult", 0) != 1 {
+		t.Fatalf("remote trace dictionary = %#v", trace)
+	}
+	if len(trace["filterBaseRuleLog"]) != maxNetworkRules/2 || !bytes.Equal(trace["frameData"], payload) {
+		t.Fatal("remote trace omitted rule log or frame data")
+	}
+}
+
+func TestIncomingFrameDropTraceMatchesOfficialFields(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	endpoint := netip.MustParseAddrPort("192.0.2.32:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{localSocket: 9, endpoint: endpoint}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond}
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{
+		NetworkID: networkID, Type: NetworkTypePublic, MTU: DefaultNetworkMTU,
+		RemoteTraceTarget: remote.Address(), RemoteTraceLevel: TraceLevelVerbose,
+	}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint64(networkID)
+	_ = packet.AppendUint16(EtherTypeIPv4)
+	_ = packet.Append(0x45)
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	packetID := packet.PacketID()
+	if err = node.ProcessWirePacket(9, endpoint, packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var trace Dictionary
+	for _, wire := range *sent {
+		tracePacket, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || tracePacket.Dearmor(key[:]) != nil || tracePacket.Uncompress() != nil || tracePacket.Verb() != VerbRemoteTrace {
+			continue
+		}
+		candidate, parseErr := ParseDictionary(tracePacket.Payload())
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if candidate.String("event") == "2002" {
+			trace = candidate
+			break
+		}
+	}
+	if trace == nil || trace.Uint("packetId", 0) != packetID || trace.Uint("packetVerb", 0) != uint64(VerbFrame) ||
+		trace.Uint("remoteZtAddr", 0) != remote.Address().Uint64() || trace.String("remotePhyAddr") != endpoint.String() ||
+		trace.Uint("localSocket", 0) != 9 || trace.Uint("networkId", 0) != networkID ||
+		trace.Uint("sourceMac", 0) != MACForAddress(remote.Address(), networkID).Uint64() ||
+		trace.Uint("destMac", 0) != MACForAddress(local.Address(), networkID).Uint64() || trace.String("reason") != "filter blocked" {
+		t.Fatalf("incoming frame-drop trace = %#v", trace)
+	}
+	for _, field := range []string{"etherType", "vlanId", "frameLength"} {
+		if _, exists := trace[field]; exists {
+			t.Fatalf("incoming frame-drop trace unexpectedly contains %s: %#v", field, trace)
+		}
+	}
+}
+
+func TestRemoteTraceWaitsForPeerIdentity(t *testing.T) {
+	local, _, node, _ := newTestNodeWithPeer(t)
+	targetIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	node.sendRemoteTraceLocked(targetIdentity.Address(), traceString("event", "2005"))
+	if len(node.pendingRemoteTraces[targetIdentity.Address()]) != 1 {
+		node.mu.Unlock()
+		t.Fatal("trace for unknown peer was not queued")
+	}
+	if err = node.addPeerLocked(targetIdentity, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	queued := len(node.pendingRemoteTraces[targetIdentity.Address()])
+	node.mu.Unlock()
+	if queued != 0 || local.Address().IsZero() {
+		t.Fatal("queued trace was not consumed after WHOIS identity became available")
+	}
+}
+
+func TestCredentialRemoteTraceMatchesOfficialFieldsAtNormalLevel(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	endpoint := netip.MustParseAddrPort("192.0.2.20:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{endpoint: endpoint}] = &peerPathState{lastReceive: time.Now(), latency: time.Millisecond}
+	network := newNetwork(networkID)
+	network.Config = NetworkConfigData{NetworkID: networkID, RemoteTraceTarget: remote.Address(), RemoteTraceLevel: TraceLevelNormal}
+	node.networks[networkID] = network
+	node.traceCredentialRejectedLocked(network, CredentialTypeTag, 7, 1000, remote.Address(), "invalid", 42)
+	node.traceRevocationRejectedLocked(network, Revocation{ID: 9, Type: CredentialTypeTag, Target: remote.Address()}, "invalid")
+	node.mu.Unlock()
+
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var traces []Dictionary
+	for _, wire := range *sent {
+		packet, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || packet.Dearmor(key[:]) != nil || packet.Uncompress() != nil || packet.Verb() != VerbRemoteTrace {
+			continue
+		}
+		trace, parseErr := ParseDictionary(packet.Payload())
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		traces = append(traces, trace)
+	}
+	if len(traces) != 2 {
+		t.Fatalf("credential trace count = %d, want 2", len(traces))
+	}
+	if traces[0].Uint("credType", 0) != uint64(CredentialTypeTag) || traces[0].Uint("credInfo", 0) != 42 {
+		t.Fatalf("tag rejection trace = %#v", traces[0])
+	}
+	if traces[1].Uint("credType", 0) != uint64(CredentialTypeRevocation) || traces[1].Uint("credId", 0) != 9 ||
+		traces[1].Uint("credRevocationTarget", 0) != remote.Address().Uint64() {
+		t.Fatalf("revocation rejection trace = %#v", traces[1])
+	}
+}

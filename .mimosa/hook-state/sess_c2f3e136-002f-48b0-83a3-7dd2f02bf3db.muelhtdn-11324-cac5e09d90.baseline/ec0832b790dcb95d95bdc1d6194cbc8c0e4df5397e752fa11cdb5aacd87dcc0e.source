@@ -1,0 +1,160 @@
+package tcpfallback
+
+import (
+	"errors"
+	"io"
+	"net"
+	"net/netip"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+func newTestSession(t *testing.T) (*Session, net.Conn) {
+	t.Helper()
+	connection, peer := net.Pipe()
+	result := make(chan struct {
+		session *Session
+		err     error
+	}, 1)
+	go func() {
+		session, err := NewSession(connection)
+		result <- struct {
+			session *Session
+			err     error
+		}{session: session, err: err}
+	}()
+	hello := make([]byte, len(HelloRecord()))
+	if _, err := io.ReadFull(peer, hello); err != nil {
+		t.Fatal(err)
+	}
+	created := <-result
+	if created.err != nil {
+		t.Fatal(created.err)
+	}
+	t.Cleanup(func() {
+		_ = created.session.Close()
+		_ = peer.Close()
+	})
+	return created.session, peer
+}
+
+func TestSessionReadWrite(t *testing.T) {
+	session, peer := newTestSession(t)
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	inbound := []byte("inbound fallback packet")
+	received := make(chan []byte, 1)
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- session.Run(func(gotRemote netip.AddrPort, packet []byte) error {
+			if gotRemote != remote {
+				t.Errorf("received remote = %s, want %s", gotRemote, remote)
+			}
+			received <- append([]byte(nil), packet...)
+			return nil
+		})
+	}()
+	record, err := EncodePacket(remote, inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = WriteRecord(peer, record); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case packet := <-received:
+		if string(packet) != string(inbound) {
+			t.Fatalf("received packet = %q, want %q", packet, inbound)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session did not deliver inbound packet")
+	}
+
+	outbound := []byte("outbound fallback packet")
+	if err = session.Send(remote, outbound); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ReadRecord(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Remote != remote || string(decoded.Packet) != string(outbound) {
+		t.Fatalf("outbound record = %+v", decoded)
+	}
+	if err = session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runErr:
+	case <-time.After(time.Second):
+		t.Fatal("session Run did not stop after Close")
+	}
+}
+
+func TestSessionQueueUsesByteLimit(t *testing.T) {
+	session, _ := newTestSession(t)
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	packet := make([]byte, zerotier.PacketMinSize)
+	accepted := 0
+	for {
+		err := session.Send(remote, packet)
+		if errors.Is(err, ErrQueueFull) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		accepted++
+	}
+	if accepted <= 64 {
+		t.Fatalf("fallback queue accepted only %d small records", accepted)
+	}
+	if session.queued > MaxQueuedBytes || session.queued+minPacketRecordSize <= MaxQueuedBytes {
+		t.Fatalf("fallback queue bytes = %d", session.queued)
+	}
+}
+
+func TestPolicy(t *testing.T) {
+	start := time.Unix(1700000000, 0)
+	policy := NewPolicy(false)
+	if decision := policy.ObserveSend(start.Add(FallbackAfter + time.Second)); decision.Relay || decision.Connect {
+		t.Fatalf("inactive policy decision = %+v", decision)
+	}
+	policy.Reset(start)
+	if decision := policy.ObserveSend(start.Add(FallbackAfter + time.Second)); !decision.Relay || decision.Connect {
+		t.Fatalf("first delayed send decision = %+v", decision)
+	}
+	decision := policy.ObserveSend(start.Add(FallbackAfter + ConnectAfter + 2*time.Second))
+	if !decision.Relay || !decision.Connect {
+		t.Fatalf("eligible delayed send decision = %+v", decision)
+	}
+	policy.ObserveDirect(start.Add(FallbackAfter + ConnectAfter + 3*time.Second))
+	if policy.RelayRequired(start.Add(FallbackAfter + ConnectAfter + 4*time.Second)) {
+		t.Fatal("recent direct receive still required fallback")
+	}
+	policy.Reset(time.Time{})
+	if policy.RelayRequired(start.Add(24 * time.Hour)) {
+		t.Fatal("retired policy still required fallback")
+	}
+
+	forced := NewPolicy(true)
+	forced.Reset(start)
+	if decision = forced.ObserveSend(start); !decision.Relay || !decision.Connect || !forced.Force() {
+		t.Fatalf("forced decision = %+v", decision)
+	}
+}
+
+func TestEligibilityAndDirectEvidence(t *testing.T) {
+	v4 := netip.MustParseAddrPort("8.8.8.8:9993")
+	v6 := netip.MustParseAddrPort("[2001:4860:4860::8888]:9993")
+	if !Eligible(v4, zerotier.FragmentHeaderSize+1) || Eligible(v6, zerotier.FragmentHeaderSize+1) {
+		t.Fatal("fallback eligibility did not preserve the IPv4-only relay policy")
+	}
+	if !DirectEvidence(v4, zerotier.FragmentHeaderSize+1) || !DirectEvidence(v6, zerotier.FragmentHeaderSize+1) {
+		t.Fatal("global direct evidence did not accept both IP families")
+	}
+	if DirectEvidence(v4, zerotier.FragmentHeaderSize) {
+		t.Fatal("short packet was accepted as direct evidence")
+	}
+}

@@ -1,0 +1,770 @@
+package zerotier
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestNetworkConfigLargerThanLegacyUint16Limit(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "v", networkConfigVersion)
+	data, _ = appendDictionaryUint(data, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "id", 0x1234567890)
+	data, _ = appendDictionaryEntry(data, "padding", bytes.Repeat([]byte{'x'}, 70*1024))
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.NetworkID != 0x1234567890abcdef || config.IssuedTo != NewAddress(0x1234567890) {
+		t.Fatalf("parsed oversized config = %+v", config)
+	}
+}
+
+func TestNetworkConfigDataEqual(t *testing.T) {
+	base := NetworkConfigData{
+		NetworkID: 0x17d709436c04d6bc,
+		IssuedTo:  NewAddress(0x0f1b56d269),
+		Timestamp: 1234,
+		Revision:  5,
+		Raw:       []byte("configuration"),
+	}
+	equal := base
+	equal.Raw = append([]byte(nil), base.Raw...)
+	if !base.Equal(equal) {
+		t.Fatal("identical network configurations were not equal")
+	}
+	differentRaw := equal
+	differentRaw.Raw = []byte("different")
+	if !base.Equal(differentRaw) {
+		t.Fatal("wire-only network configuration differences changed equality")
+	}
+	differentRevision := equal
+	differentRevision.Revision++
+	if base.Equal(differentRevision) {
+		t.Fatal("different network configuration revisions were equal")
+	}
+	adHoc := base
+	adHoc.Raw = nil
+	if !adHoc.Equal(adHoc) {
+		t.Fatal("locally generated network configuration was not equal to itself")
+	}
+	nilSlices := base
+	emptySlices := base
+	emptySlices.Assigned = []netip.Prefix{}
+	emptySlices.Routes = []NetworkRoute{}
+	emptySlices.DNSServers = []netip.AddrPort{}
+	emptySlices.Ownership = []CertificateOfOwnership{}
+	emptySlices.Tags = []Tag{}
+	emptySlices.Capabilities = []Capability{}
+	emptySlices.Specialists = []uint64{}
+	emptySlices.Rules = []NetworkRule{}
+	if !nilSlices.Equal(emptySlices) {
+		t.Fatal("nil and empty network configuration fields were not equal")
+	}
+}
+
+func TestNetworkConfigManagedAddressHelpers(t *testing.T) {
+	v4 := netip.MustParsePrefix("192.0.2.1/24")
+	v6 := netip.MustParsePrefix("2001:db8::1/64")
+	first := NetworkConfigData{Assigned: []netip.Prefix{v4, v6}}
+	second := NetworkConfigData{Assigned: []netip.Prefix{v6, v4}}
+	if !first.ManagedAddressesEqual(second) || !second.ManagedAddressesEqual(first) {
+		t.Fatal("managed address comparison depended on ordering")
+	}
+	if !first.HasManagedIPv6() {
+		t.Fatal("managed IPv6 prefix was not detected")
+	}
+	second.Assigned = []netip.Prefix{v4, netip.MustParsePrefix("2001:db8:1::1/64")}
+	if first.ManagedAddressesEqual(second) {
+		t.Fatal("different managed addresses compared equal")
+	}
+	if (NetworkConfigData{Assigned: []netip.Prefix{v4}}).HasManagedIPv6() {
+		t.Fatal("IPv4-only configuration reported managed IPv6")
+	}
+}
+
+func TestNetworkConfigEqualityIgnoresDictionaryOrderAndUnknownKeys(t *testing.T) {
+	first, _ := appendDictionaryUint(nil, "v", networkConfigVersion)
+	first, _ = appendDictionaryUint(first, "nwid", 0x17d709436c04d6bc)
+	first, _ = appendDictionaryUint(first, "id", 0x0f1b56d269)
+	first, _ = appendDictionaryEntry(first, "n", []byte("example"))
+
+	second, _ := appendDictionaryEntry(nil, "unknown", []byte("ignored"))
+	second, _ = appendDictionaryEntry(second, "n", []byte("example"))
+	second, _ = appendDictionaryUint(second, "id", 0x0f1b56d269)
+	second, _ = appendDictionaryUint(second, "nwid", 0x17d709436c04d6bc)
+	second, _ = appendDictionaryUint(second, "v", networkConfigVersion)
+
+	firstConfig, err := ParseNetworkConfig(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondConfig, err := ParseNetworkConfig(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !firstConfig.Equal(secondConfig) {
+		t.Fatal("equivalent dictionaries produced different effective configurations")
+	}
+}
+
+func TestDuplicateNetworkConfigDoesNotReapply(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	raw := appendTestNetworkConfig(t, networkID, identity.Address())
+	config, err := ParseNetworkConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const updateID = uint64(0x0102030405060708)
+	now := time.Now()
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = config
+	network.configUpdateSerial = 7
+	network.assemblies[updateID] = &configAssembly{
+		updateID:  updateID,
+		data:      append([]byte(nil), raw...),
+		received:  make([]bool, len(raw)),
+		count:     len(raw),
+		updatedAt: now,
+	}
+	for i := range network.assemblies[updateID].received {
+		network.assemblies[updateID].received[i] = true
+	}
+	node.networks[networkID] = network
+	node.pending[9] = pendingRequest{verb: VerbNetworkConfigRequest, networkID: networkID, sentAt: now}
+	err = node.applyNetworkConfigAssemblyLocked(network, updateID, now)
+	_, assemblyPresent := network.assemblies[updateID]
+	_, pendingPresent := node.pending[9]
+	serial := network.configUpdateSerial
+	callbacks := len(node.callbacks)
+	lastUpdateID := network.lastConfigUpdateID
+	lastReceive := network.LastConfigReceive
+	node.mu.Unlock()
+	if err != nil || assemblyPresent || pendingPresent || serial != 7 || callbacks != 0 || lastUpdateID != updateID || !lastReceive.Equal(now) {
+		t.Fatalf("duplicate config: err=%v assembly=%t pending=%t serial=%d callbacks=%d update=%x receive=%v", err, assemblyPresent, pendingPresent, serial, callbacks, lastUpdateID, lastReceive)
+	}
+}
+
+func TestDuplicateNetworkConfigRecoversFailureState(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const networkID = uint64(0x1234567890abcdef)
+	raw := appendTestNetworkConfig(t, networkID, identity.Address())
+	config, err := ParseNetworkConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []NetworkStatus{NetworkStatusAccessDenied, NetworkStatusNotFound, NetworkStatusAuthenticationRequired} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			var callbacks int
+			var readyEvents int
+			node, newErr := NewNode(NodeConfig{
+				Identity: identity,
+				Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+				OnNetworkConfig: func(NetworkConfigData) {
+					callbacks++
+				},
+				OnEvent: func(event Event) {
+					if event.Type == EventNetworkConfigReady {
+						readyEvents++
+					}
+				},
+			})
+			if newErr != nil {
+				t.Fatal(newErr)
+			}
+			const updateID = uint64(0x0102030405060708)
+			node.mu.Lock()
+			network := newNetwork(networkID)
+			network.Status = status
+			network.Config = config
+			network.Authentication = NetworkAuthenticationInfo{Version: 1, AuthenticationURL: "https://auth.example"}
+			network.configUpdateSerial = 7
+			network.assemblies[updateID] = &configAssembly{
+				updateID: updateID,
+				data:     append([]byte(nil), raw...),
+				received: make([]bool, len(raw)),
+				count:    len(raw),
+			}
+			for i := range network.assemblies[updateID].received {
+				network.assemblies[updateID].received[i] = true
+			}
+			node.networks[networkID] = network
+			err = node.applyNetworkConfigAssemblyLocked(network, updateID, time.Now())
+			node.unlockAndRunCallbacks()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if network.Status != NetworkStatusOK || network.configUpdateSerial != 8 {
+				t.Fatalf("recovered network status=%d serial=%d", network.Status, network.configUpdateSerial)
+			}
+			if network.Authentication != (NetworkAuthenticationInfo{}) {
+				t.Fatalf("recovered authentication state = %+v", network.Authentication)
+			}
+			if callbacks != 1 || readyEvents != 1 {
+				t.Fatalf("recovery callbacks=%d ready=%d", callbacks, readyEvents)
+			}
+		})
+	}
+}
+
+func TestChangedNetworkConfigEmitsUpdateInsteadOfReady(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	raw := appendTestNetworkConfig(t, networkID, identity.Address())
+	config, err := ParseNetworkConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTimestamp := []byte(fmt.Sprintf("ts=%016x", testConfigTimestamp))
+	newTimestamp := []byte(fmt.Sprintf("ts=%016x", testConfigTimestamp+1))
+	updatedRaw := bytes.Replace(raw, oldTimestamp, newTimestamp, 1)
+	if bytes.Equal(updatedRaw, raw) {
+		t.Fatal("test network configuration timestamp was not replaced")
+	}
+	var readyEvents, updateEvents int
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			switch event.Type {
+			case EventNetworkConfigReady:
+				readyEvents++
+			case EventNetworkConfigChanged:
+				updateEvents++
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	const updateID = uint64(0x0102030405060708)
+	received := make([]bool, len(updatedRaw))
+	for i := range received {
+		received[i] = true
+	}
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = config
+	network.assemblies[updateID] = &configAssembly{
+		updateID: updateID,
+		data:     updatedRaw,
+		received: received,
+		count:    len(updatedRaw),
+	}
+	node.networks[networkID] = network
+	err = node.applyNetworkConfigAssemblyLocked(network, updateID, time.Now())
+	node.unlockAndRunCallbacks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readyEvents != 0 || updateEvents != 1 {
+		t.Fatalf("configuration events: ready=%d update=%d", readyEvents, updateEvents)
+	}
+}
+
+func TestPermanentlyInvalidCompletedConfigIsDiscarded(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const networkID = uint64(0x1234567890abcdef)
+	raw := appendTestNetworkConfig(t, networkID, NewAddress(0x1234567890))
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const updateID = uint64(0x0102030405060708)
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.assemblies[updateID] = &configAssembly{
+		updateID: updateID,
+		data:     append([]byte(nil), raw...),
+		received: make([]bool, len(raw)),
+		count:    len(raw),
+	}
+	for i := range network.assemblies[updateID].received {
+		network.assemblies[updateID].received[i] = true
+	}
+	node.networks[networkID] = network
+	err = node.applyNetworkConfigAssemblyLocked(network, updateID, time.Now())
+	_, retained := network.assemblies[updateID]
+	node.mu.Unlock()
+	if !errors.Is(err, ErrInvalidPacket) || retained {
+		t.Fatalf("invalid completed config: err=%v retained=%t", err, retained)
+	}
+}
+
+func TestConfigCapabilityForAnotherMemberDiscardsAssembly(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	raw := appendTestNetworkConfig(t, networkID, local.Address())
+	capability := Capability{
+		NetworkID: networkID, Timestamp: 3, ID: 4,
+		Rules: []NetworkRule{{Type: ruleActionAccept}}, MaxCustodyChainLength: 1,
+	}
+	capability.Custody = []CapabilityCustody{{From: controller.Address(), To: other.Address()}}
+	signature, err := controller.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Custody[0].Signature = signature
+	raw, err = appendDictionaryEntry(raw, "CAP", capability.appendBinary(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const updateID = uint64(0x1122334455667788)
+	node.mu.Lock()
+	if err = node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	network := newNetwork(networkID)
+	network.assemblies[updateID] = &configAssembly{updateID: updateID, data: raw, received: make([]bool, len(raw)), count: len(raw)}
+	for i := range network.assemblies[updateID].received {
+		network.assemblies[updateID].received[i] = true
+	}
+	node.networks[networkID] = network
+	err = node.applyNetworkConfigAssemblyLocked(network, updateID, time.Now())
+	_, retained := network.assemblies[updateID]
+	node.mu.Unlock()
+	if !errors.Is(err, ErrInvalidPacket) || retained {
+		t.Fatalf("foreign capability config: err=%v retained=%t", err, retained)
+	}
+}
+
+func TestAdHocNetworkConfiguration(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received []NetworkConfigData
+	var readyEvents, updateEvents int
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnNetworkConfig: func(config NetworkConfigData) {
+			received = append(received, config)
+		},
+		OnEvent: func(event Event) {
+			switch event.Type {
+			case EventNetworkConfigReady:
+				readyEvents++
+			case EventNetworkConfigChanged:
+				updateEvents++
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const portNetwork = uint64(0xff00160050000000)
+	if err = node.Join(portNetwork); err != nil {
+		t.Fatal(err)
+	}
+	portConfig, ok := node.Network(portNetwork)
+	if !ok || portConfig.Status != NetworkStatusOK || portConfig.Config.Name != "adhoc-0016-0050" || portConfig.Config.Type != NetworkTypePublic || portConfig.Config.MulticastLimit != 0 || len(portConfig.Config.Assigned) != 1 || portConfig.Config.Assigned[0] != SixPlaneAddress(portNetwork, identity.Address()) || len(portConfig.Config.Rules) != 14 {
+		t.Fatalf("port ad-hoc config = %+v", portConfig)
+	}
+
+	const hubNetwork = uint64(0xff0a012345678901)
+	if err = node.Join(hubNetwork); err != nil {
+		t.Fatal(err)
+	}
+	hubConfig, ok := node.Network(hubNetwork)
+	wantHub := NewAddress(0x0123456789)
+	wantIPv4 := netip.PrefixFrom(netip.AddrFrom4([4]byte{10, byte(identity.Address().Uint64() >> 16), byte(identity.Address().Uint64() >> 8), byte(identity.Address().Uint64())}), 8)
+	if !ok || hubConfig.Status != NetworkStatusOK || hubConfig.Config.Name != "adhoc-10.0.0.0" || hubConfig.Config.MulticastLimit != 1024 || len(hubConfig.Config.Assigned) != 2 || hubConfig.Config.Assigned[1] != wantIPv4 || len(hubConfig.Config.Specialists) != 1 || NewAddress(hubConfig.Config.Specialists[0]) != wantHub {
+		t.Fatalf("hub ad-hoc config = %+v", hubConfig)
+	}
+	if err = node.RefreshNetwork(portNetwork); err != nil {
+		t.Fatal(err)
+	}
+
+	const invalidNetwork = uint64(0xff00160050000002)
+	if err = node.Join(invalidNetwork); err != nil {
+		t.Fatal(err)
+	}
+	invalidConfig, ok := node.Network(invalidNetwork)
+	if !ok || invalidConfig.Status != NetworkStatusNotFound {
+		t.Fatalf("invalid ad-hoc network status = %+v", invalidConfig)
+	}
+	if len(received) != 3 || readyEvents != 2 || updateEvents != 1 {
+		t.Fatalf("ad-hoc configuration callbacks=%d ready=%d update=%d", len(received), readyEvents, updateEvents)
+	}
+}
+
+func TestNetworkConfigSpecialists(t *testing.T) {
+	const (
+		networkID = uint64(0x1234567890abcdef)
+		address   = uint64(0x46a9a1d071)
+	)
+	data, err := appendDictionaryUint(nil, "nwid", networkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	data, err = appendDictionaryUint(data, "id", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var specialist [8]byte
+	binary.BigEndian.PutUint64(specialist[:], specialistTypeMulticastReplicator|specialistTypeNetworkRelay|address)
+	data, err = appendDictionaryEntry(data, "S", specialist[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := NewAddress(address)
+	if !config.isSpecialist(want, specialistTypeMulticastReplicator) || !config.isSpecialist(want, specialistTypeNetworkRelay) {
+		t.Fatalf("specialist flags were not parsed: %x", config.Specialists)
+	}
+	addresses := config.specialistAddresses(specialistTypeMulticastReplicator)
+	if len(addresses) != 1 || addresses[0] != want {
+		t.Fatalf("specialist addresses = %v, want %s", addresses, want)
+	}
+}
+
+func TestZeroTierTargetName(t *testing.T) {
+	tests := []struct {
+		goos, goarch string
+		want         string
+	}{
+		{"darwin", "amd64", "macos/x86_64"},
+		{"freebsd", "arm64", "bsd/arm64"},
+		{"linux", "386", "linux/x86"},
+		{"linux", "mips64le", "linux/mips"},
+		{"linux", "mips64p32", "linux/mips"},
+		{"linux", "riscv64", "linux/riscv"},
+		{"linux", "s390x", "linux/s390"},
+		{"ios", "arm64", "ios_iphone/arm64"},
+		{"plan9", "wasm", "unknown/unknown"},
+	}
+	for _, test := range tests {
+		if got := zeroTierTargetName(test.goos, test.goarch); got != test.want {
+			t.Errorf("zeroTierTargetName(%q, %q) = %q, want %q", test.goos, test.goarch, got, test.want)
+		}
+	}
+}
+
+func TestNetworkConfigParsesSSOAndTrace(t *testing.T) {
+	data, err := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	entries := []struct {
+		key   string
+		value string
+	}{
+		{"id", "0000001234567890"},
+		{"ssoe", "1"},
+		{"ssov", "0000000000000001"},
+		{"aurl", "https://auth.example/legacy"},
+		{"aexpt", "0000018bcfe56800"},
+		{"iurl", "https://issuer.example"},
+		{"ssoce", "https://central.example"},
+		{"sson", "nonce"},
+		{"ssos", "state"},
+		{"ssocid", "client"},
+		{"ssop", "provider"},
+		{"tt", "00000046a9a1d071"},
+		{"tl", "0000000000000002"},
+	}
+	for _, entry := range entries {
+		data, err = appendDictionaryEntry(data, entry.key, []byte(entry.value))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.SSOEnabled || config.SSOVersion != 1 || config.AuthenticationURL != "https://auth.example/legacy" ||
+		config.IssuerURL != "https://issuer.example" || config.CentralAuthURL != "https://central.example" ||
+		config.SSONonce != "nonce" || config.SSOState != "state" || config.SSOClientID != "client" || config.SSOProvider != "provider" ||
+		config.RemoteTraceTarget != NewAddress(0x46a9a1d071) || config.RemoteTraceLevel != 2 {
+		t.Fatalf("SSO/trace fields were not preserved: %+v", config)
+	}
+}
+
+func TestNetworkRulesTruncateAtAdvertisedMaximum(t *testing.T) {
+	raw := make([]byte, (1024+1)*2)
+	rules, err := ParseNetworkRules(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1024 {
+		t.Fatalf("oversized rules retained %d entries, want 1024", len(rules))
+	}
+}
+
+func TestNetworkConfigTruncatesFixedStringFields(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+	for _, entry := range []struct {
+		key    string
+		length int
+	}{
+		{key: "n", length: maxNetworkNameLength},
+		{key: "aurl", length: maxAuthenticationURL},
+		{key: "iurl", length: maxAuthenticationURL},
+		{key: "ssoce", length: maxAuthenticationURL},
+		{key: "sson", length: maxSSONonceLength},
+		{key: "ssos", length: maxSSOStateLength},
+		{key: "ssocid", length: maxSSOClientIDLength},
+		{key: "ssop", length: maxSSOProviderLength},
+	} {
+		data, _ = appendDictionaryEntry(data, entry.key, bytes.Repeat([]byte{'x'}, entry.length+10))
+	}
+	data, _ = appendDictionaryEntry(data, "ssoe", []byte("true"))
+	data, _ = appendDictionaryUint(data, "ssov", 1)
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lengths := []int{len(config.Name), len(config.AuthenticationURL), len(config.IssuerURL), len(config.CentralAuthURL), len(config.SSONonce), len(config.SSOState), len(config.SSOClientID), len(config.SSOProvider)}
+	want := []int{maxNetworkNameLength, maxAuthenticationURL, maxAuthenticationURL, maxAuthenticationURL, maxSSONonceLength, maxSSOStateLength, maxSSOClientIDLength, maxSSOProviderLength}
+	for i := range want {
+		if lengths[i] != want[i] {
+			t.Fatalf("fixed string %d length = %d, want %d", i, lengths[i], want[i])
+		}
+	}
+}
+
+func TestLegacyPublicNetworkConfig(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+	data, _ = appendDictionaryEntry(data, "p", []byte("0"))
+	data, _ = appendDictionaryEntry(data, "eb", []byte("1"))
+	data, _ = appendDictionaryEntry(data, "v4s", []byte("192.0.2.10/24,198.51.100.10/24"))
+	data, _ = appendDictionaryEntry(data, "et", []byte("0800,86dd"))
+	data, _ = appendDictionaryEntry(data, "ab", []byte("46a9a1d071"))
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFlags := NetworkConfigFlagEnableBroadcast | NetworkConfigFlagEnableIPv6NDPEmulation
+	if config.Type != NetworkTypePublic || config.Flags&wantFlags != wantFlags || len(config.Assigned) != 2 || len(config.Rules) != 4 || len(config.Specialists) != 1 || !config.isSpecialist(NewAddress(0x46a9a1d071), specialistTypeActiveBridge) {
+		t.Fatalf("legacy config was not decoded: %+v", config)
+	}
+}
+
+func TestLegacyNetworkConfigAcceptsWildcardEtherTypeAndSkipsNetworkAddress(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+	data, _ = appendDictionaryEntry(data, "v4s", []byte("192.0.2.0/24,192.0.2.10/24"))
+	data, _ = appendDictionaryEntry(data, "et", []byte("0000,0800"))
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Assigned) != 1 || config.Assigned[0] != netip.MustParsePrefix("192.0.2.10/24") {
+		t.Fatalf("legacy assigned addresses = %v", config.Assigned)
+	}
+	if len(config.Rules) != 3 || config.Rules[0].Type != ruleActionAccept || config.Rules[1].Type != ruleMatchEtherType ||
+		!bytes.Equal(config.Rules[1].Value, []byte{0x08, 0x00}) || config.Rules[2].Type != ruleActionAccept {
+		t.Fatalf("legacy wildcard EtherType rules = %+v", config.Rules)
+	}
+}
+
+func TestLegacyNetworkConfigClampsMTU(t *testing.T) {
+	for _, test := range []struct {
+		mtu  uint64
+		want uint32
+	}{
+		{mtu: 1, want: MinNetworkMTU},
+		{mtu: uint64(MaxNetworkMTU) + 1, want: MaxNetworkMTU},
+	} {
+		data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+		data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+		data, _ = appendDictionaryUint(data, "mtu", test.mtu)
+		config, err := ParseNetworkConfig(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.MTU != test.want {
+			t.Fatalf("legacy MTU %d was clamped to %d, want %d", test.mtu, config.MTU, test.want)
+		}
+	}
+}
+
+func TestLegacyPrivateNetworkConfigParsesMembershipCertificate(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	certificate := makeTestCOM(t, controller, member, networkID, 1000000)
+	legacy := "1:" + hex.EncodeToString(certificate.signedData()) + ":" + certificate.SignedBy.String() + ":" + hex.EncodeToString(certificate.Signature[:])
+	data, _ := appendDictionaryUint(nil, "nwid", networkID)
+	data, _ = appendDictionaryUint(data, "id", member.Address().Uint64())
+	data, _ = appendDictionaryEntry(data, "com", []byte(legacy))
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Type != NetworkTypePrivate || config.COM == nil || !config.COM.Verify(controller) {
+		t.Fatalf("legacy private configuration COM = %+v", config.COM)
+	}
+}
+
+func TestNetworkConfigTruncatesFixedCapacityFields(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+
+	var assigned []byte
+	for i := 0; i < maxAssignedAddresses+1; i++ {
+		assigned = appendInetAddress(assigned, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.10"), 24))
+	}
+	data, _ = appendDictionaryEntry(data, "I", assigned)
+
+	var routes []byte
+	for i := 0; i < maxNetworkRoutes+1; i++ {
+		routes = appendInetAddress(routes, netip.AddrPortFrom(netip.MustParseAddr("198.51.100.0"), 24))
+		routes = appendInetAddress(routes, netip.AddrPort{})
+		routes = binary.BigEndian.AppendUint16(routes, 0)
+		routes = binary.BigEndian.AppendUint16(routes, uint16(i))
+	}
+	data, _ = appendDictionaryEntry(data, "RT", routes)
+
+	specialists := make([]byte, (maxNetworkSpecialists+1)*8)
+	for i := 0; i < maxNetworkSpecialists+1; i++ {
+		binary.BigEndian.PutUint64(specialists[i*8:], specialistTypeNetworkRelay|uint64(i+1))
+	}
+	data, _ = appendDictionaryEntry(data, "S", specialists)
+
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Assigned) != maxAssignedAddresses || len(config.Routes) != maxNetworkRoutes || len(config.Specialists) != maxNetworkSpecialists {
+		t.Fatalf("fixed-capacity fields were not truncated: assigned=%d routes=%d specialists=%d", len(config.Assigned), len(config.Routes), len(config.Specialists))
+	}
+}
+
+func TestNetworkConfigRetainsValidCredentialPrefix(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	data, _ := appendDictionaryUint(nil, "nwid", networkID)
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	data, _ = appendDictionaryUint(data, "id", member.Address().Uint64())
+
+	tag := makeTestTag(t, controller, member.Address(), networkID, 1, 2, 3)
+	tags := append(tag.appendBinary(nil), 0xff)
+	data, _ = appendDictionaryEntry(data, "TAG", tags)
+
+	capability := Capability{NetworkID: networkID, Timestamp: 3, ID: 4, Rules: []NetworkRule{{Type: ruleActionAccept}}, MaxCustodyChainLength: 1}
+	signature, err := controller.Sign(capability.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Custody = []CapabilityCustody{{From: controller.Address(), To: member.Address(), Signature: signature}}
+	capabilities := append(capability.appendBinary(nil), 0xff)
+	data, _ = appendDictionaryEntry(data, "CAP", capabilities)
+
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Tags) != 1 || config.Tags[0].ID != tag.ID || len(config.Capabilities) != 1 || config.Capabilities[0].ID != capability.ID {
+		t.Fatalf("valid credential prefix was not retained: tags=%d capabilities=%d", len(config.Tags), len(config.Capabilities))
+	}
+}
+
+func TestNetworkConfigNullRouteTargetUsesGatewayFamily(t *testing.T) {
+	data, _ := appendDictionaryUint(nil, "nwid", 0x1234567890abcdef)
+	data, _ = appendDictionaryUint(data, "v", networkConfigVersion)
+	data, _ = appendDictionaryUint(data, "id", 0x46a9a1d071)
+	routes := appendInetAddress(nil, netip.AddrPort{})
+	routes = appendInetAddress(routes, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.1"), 0))
+	routes = binary.BigEndian.AppendUint16(routes, 7)
+	routes = binary.BigEndian.AppendUint16(routes, 9)
+	data, _ = appendDictionaryEntry(data, "RT", routes)
+	config, err := ParseNetworkConfig(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Routes) != 1 || config.Routes[0].Target != netip.MustParsePrefix("0.0.0.0/0") || config.Routes[0].Via != netip.MustParseAddr("192.0.2.1") || config.Routes[0].Flags != 7 || config.Routes[0].Metric != 9 {
+		t.Fatalf("null-target route = %+v", config.Routes)
+	}
+}
+
+func TestNetworkConfigRejectsTruncatedDNS(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := appendTestNetworkConfig(t, 0x1234567890abcdef, identity.Address())
+	config, err = appendDictionaryEntry(config, "DNS", make([]byte, 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ParseNetworkConfig(config); !errors.Is(err, ErrInvalidDictionary) {
+		t.Fatalf("truncated DNS error = %v, want ErrInvalidDictionary", err)
+	}
+}

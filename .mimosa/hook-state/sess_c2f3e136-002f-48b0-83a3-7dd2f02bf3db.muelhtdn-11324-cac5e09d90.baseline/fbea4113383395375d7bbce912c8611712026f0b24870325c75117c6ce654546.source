@@ -1,0 +1,111 @@
+package ztcrypto
+
+import (
+	"bytes"
+	"testing"
+)
+
+func TestGMACSIVRoundTrip(t *testing.T) {
+	key := make([]byte, 48)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	iv := []byte{0, 1, 2, 3, 4, 5, 6, 7}
+	aad := []byte("header-data")
+	plaintext := []byte("ZeroTier AES-GMAC-SIV test payload")
+	keys, err := NewGMACSIVKeys(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, opaque := keys.Seal(nil, iv, plaintext, aad)
+	opened, err := keys.Open(nil, opaque, ciphertext, aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(opened, plaintext) || bytes.Equal(ciphertext, plaintext) {
+		t.Fatal("AES-GMAC-SIV round trip mismatch")
+	}
+	ciphertext2, opaque2 := keys.Seal(nil, iv, plaintext, aad)
+	if opaque2 != opaque || !bytes.Equal(ciphertext2, ciphertext) {
+		t.Fatal("identical GMAC-SIV inputs were not deterministic")
+	}
+
+	modifiedCiphertext := append([]byte(nil), ciphertext...)
+	modifiedCiphertext[0] ^= 1
+	if _, err := keys.Open(nil, opaque, modifiedCiphertext, aad); err == nil {
+		t.Fatal("modified ciphertext was accepted")
+	}
+	modifiedOpaque := opaque
+	modifiedOpaque[0] ^= 1
+	if _, err := keys.Open(nil, modifiedOpaque, ciphertext, aad); err == nil {
+		t.Fatal("modified opaque authenticator was accepted")
+	}
+	modifiedAAD := append([]byte(nil), aad...)
+	modifiedAAD[0] ^= 1
+	if _, err := keys.Open(nil, opaque, ciphertext, modifiedAAD); err == nil {
+		t.Fatal("modified AAD was accepted")
+	}
+	wrongKey := append([]byte(nil), key...)
+	wrongKey[0] ^= 1
+	wrongKeys, err := NewGMACSIVKeys(wrongKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrongKeys.Open(nil, opaque, ciphertext, aad); err == nil {
+		t.Fatal("wrong key was accepted")
+	}
+}
+
+func TestGMACSIVOfficialVector(t *testing.T) {
+	key := make([]byte, 48)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	iv := []byte{0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe}
+	aad := []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x40, 0x55, 0x60}
+	plaintext := []byte("official-vector-payload")
+	wantOpaque := [16]byte{0xc1, 0xfd, 0x36, 0xf7, 0x7e, 0xc5, 0x87, 0xd7, 0x86, 0x05, 0xd0, 0x45, 0xa4, 0x5b, 0x11, 0xda}
+	wantCiphertext := []byte{0x8d, 0xdf, 0x84, 0x64, 0xda, 0x15, 0x90, 0x9c, 0x5b, 0xf1, 0x02, 0xd9, 0x7d, 0xf4, 0x06, 0x03, 0x95, 0x7e, 0x06, 0x36, 0x16, 0xde, 0x49}
+
+	keys, err := NewGMACSIVKeys(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, opaque := keys.Seal(nil, iv, plaintext, aad)
+	if opaque != wantOpaque || !bytes.Equal(ciphertext, wantCiphertext) {
+		t.Fatalf("official AES-GMAC-SIV vector mismatch: opaque=%x ciphertext=%x", opaque, ciphertext)
+	}
+	opened, err := keys.Open(nil, wantOpaque, wantCiphertext, aad)
+	if err != nil || !bytes.Equal(opened, plaintext) {
+		t.Fatalf("open official AES-GMAC-SIV vector: plaintext=%x err=%v", opened, err)
+	}
+	inPlace := append([]byte(nil), plaintext...)
+	inPlace, opaque = keys.Seal(inPlace[:0], iv, inPlace, aad)
+	if opaque != wantOpaque || !bytes.Equal(inPlace, wantCiphertext) {
+		t.Fatalf("reused AES-GMAC-SIV vector mismatch: opaque=%x ciphertext=%x", opaque, inPlace)
+	}
+	opened, err = keys.Open(inPlace[:0], wantOpaque, inPlace, aad)
+	if err != nil || !bytes.Equal(opened, plaintext) {
+		t.Fatalf("open reused AES-GMAC-SIV vector: plaintext=%x err=%v", opened, err)
+	}
+}
+
+func TestGMACSIVRejectsInvalidSizes(t *testing.T) {
+	key := make([]byte, gmacSIVMasterKeySize)
+	iv := make([]byte, gmacSIVIVSize)
+	if _, err := NewGMACSIVKeys(key[:len(key)-1]); err == nil {
+		t.Fatal("short key was accepted")
+	}
+	keys, err := NewGMACSIVKeys(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("short IV", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("short IV was accepted")
+			}
+		}()
+		keys.Seal(nil, iv[:len(iv)-1], nil, nil)
+	})
+}

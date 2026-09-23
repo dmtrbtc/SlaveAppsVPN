@@ -1,0 +1,362 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/netip"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+// watchEventRecord is the stable JSON-lines projection of a node event.
+type watchEventRecord struct {
+	Kind           string `json:"kind"`
+	Time           string `json:"time"`
+	Type           string `json:"type"`
+	Node           string `json:"node,omitempty"`
+	Peer           string `json:"peer,omitempty"`
+	Reporter       string `json:"reporter,omitempty"`
+	PeerRole       string `json:"peer_role,omitempty"`
+	Route          string `json:"route,omitempty"`
+	Network        string `json:"network,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	Previous       string `json:"previous_endpoint,omitempty"`
+	PathCount      int    `json:"path_count,omitempty"`
+	Authentication string `json:"authentication_url,omitempty"`
+}
+
+// watchProbeRecord reports one periodic L3 and path sample.
+type watchProbeRecord struct {
+	Kind     string         `json:"kind"`
+	Time     string         `json:"time"`
+	Received bool           `json:"received"`
+	RTT      time.Duration  `json:"rtt,omitempty"`
+	Error    string         `json:"error,omitempty"`
+	Path     pathDiagnostic `json:"path"`
+}
+
+// watchResult summarizes lifecycle invariants and optional periodic probes.
+type watchResult struct {
+	Kind                string        `json:"kind"`
+	Node                string        `json:"node"`
+	Network             string        `json:"network"`
+	Duration            time.Duration `json:"duration"`
+	ReadyEvents         int           `json:"ready_events"`
+	ConfigUpdates       int           `json:"config_updates"`
+	OnlineEvents        int           `json:"online_events"`
+	OfflineEvents       int           `json:"offline_events"`
+	Sent                int           `json:"sent"`
+	Received            int           `json:"received"`
+	MaximumFailures     int           `json:"maximum_consecutive_failures"`
+	DirectSamples       int           `json:"direct_samples"`
+	RelaySamples        int           `json:"relay_samples"`
+	InvariantViolations []string      `json:"invariant_violations,omitempty"`
+}
+
+// watchState checks event ordering across one continuous node lifetime.
+type watchState struct {
+	seenEvent  bool
+	started    bool
+	down       bool
+	online     bool
+	ready      bool
+	seenOnline bool
+	seenReady  bool
+	violations []string
+}
+
+// observe applies one event and records impossible duplicate transitions.
+func (s *watchState) observe(event zerotier.Event) {
+	if !s.seenEvent && event.Type != zerotier.EventNodeUp {
+		s.violations = append(s.violations, "node-up was not the first event")
+	}
+	if s.down {
+		s.violations = append(s.violations, "event occurred after node-down")
+	}
+	s.seenEvent = true
+	switch event.Type {
+	case zerotier.EventNodeUp:
+		if s.started {
+			s.violations = append(s.violations, "duplicate node-up event")
+		}
+		s.started = true
+	case zerotier.EventNodeOnline:
+		if s.online {
+			s.violations = append(s.violations, "duplicate online event without an offline transition")
+		}
+		s.online, s.seenOnline = true, true
+	case zerotier.EventNodeOffline:
+		if !s.online && s.seenOnline {
+			s.violations = append(s.violations, "duplicate offline event without an online transition")
+		}
+		s.online = false
+	case zerotier.EventNodeDown:
+		s.down = true
+		s.online = false
+	case zerotier.EventNetworkConfigPending:
+		s.ready = false
+	case zerotier.EventNetworkConfigReady:
+		if s.ready {
+			s.violations = append(s.violations, "duplicate network-config-ready event without a non-ready transition")
+		}
+		s.ready, s.seenReady = true, true
+	case zerotier.EventNetworkConfigChanged:
+		if !s.ready {
+			s.violations = append(s.violations, "network-config-changed occurred before network-config-ready")
+		}
+	case zerotier.EventNetworkAccessDenied, zerotier.EventNetworkNotFound, zerotier.EventNetworkAuthenticationRequired, zerotier.EventNetworkLeft:
+		s.ready = false
+	case zerotier.EventNodeIdentityCollision:
+		s.violations = append(s.violations, "fatal identity collision")
+	}
+}
+
+// runWatch monitors lifecycle events and optionally sends periodic ICMP probes
+// without restarting the node after transient failures.
+func runWatch(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("watch", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "16-digit network ID")
+	targetText := flags.String("target", "", "optional IPv4 or IPv6 probe destination")
+	duration := flags.Duration("duration", 10*time.Minute, "monitor duration")
+	interval := flags.Duration("interval", 5*time.Second, "periodic probe and snapshot interval")
+	probeTimeout := flags.Duration("probe-timeout", 3*time.Second, "timeout for each periodic echo")
+	maximumFailures := flags.Int("max-failures", 3, "maximum allowed consecutive failed periodic probes")
+	payloadSize := flags.Int("size", defaultPingPayloadSize, "periodic ICMP payload bytes")
+	peerText := flags.String("peer", "", "expected 10-digit ZeroTier peer address")
+	requireDirect := flags.Bool("require-direct", false, "require at least one active direct-path sample")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	if *duration <= 0 || *interval <= 0 || *probeTimeout <= 0 || *payloadSize < 0 || *payloadSize > maximumPingPayloadSize || *maximumFailures < 0 {
+		return exitUsage, errors.New("watch requires positive duration, interval, and probe timeout with a valid ICMP size")
+	}
+	var target netip.Addr
+	if *targetText != "" {
+		target, err = netip.ParseAddr(*targetText)
+		if err != nil || target.IsUnspecified() || target.IsMulticast() {
+			return exitUsage, errors.New("watch -target must be a unicast IP address")
+		}
+	}
+	if *peerText != "" {
+		if _, err = zerotier.ParseAddress(*peerText); err != nil {
+			return exitUsage, err
+		}
+	}
+	if *requireDirect && *peerText == "" && !target.Is6() {
+		return exitUsage, errors.New("watch -require-direct needs -peer unless the IPv6 target encodes a ZeroTier address")
+	}
+	probe, err := startNetworkRuntime(options, networkID, stderr)
+	if err != nil {
+		return exitError, err
+	}
+	defer probe.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+	defer cancel()
+	started := time.Now()
+	startupDeadline := started.Add(options.timeout)
+	probeTimer := time.NewTimer(*interval)
+	defer probeTimer.Stop()
+	state := watchState{}
+	result := watchResult{Kind: "summary", Node: probe.runtime.node.Address().String(), Network: fmt.Sprintf("%016x", networkID)}
+	consecutiveFailures := 0
+	var lastStatus zerotier.NetworkStatus
+	for {
+		select {
+		case event := <-probe.runtime.events:
+			if event.NetworkID != 0 && event.NetworkID != networkID {
+				continue
+			}
+			state.observe(event)
+			switch event.Type {
+			case zerotier.EventNetworkConfigReady:
+				result.ReadyEvents++
+			case zerotier.EventNetworkConfigChanged:
+				result.ConfigUpdates++
+			case zerotier.EventNodeOnline:
+				result.OnlineEvents++
+			case zerotier.EventNodeOffline:
+				result.OfflineEvents++
+			}
+			printWatchEvent(stdout, event, options.json)
+		case err := <-probe.runtime.linkErrs:
+			return exitProbeFailed, err
+		case <-probeTimer.C:
+			network, exists := probe.runtime.node.Network(networkID)
+			if exists {
+				lastStatus = network.Status
+			}
+			if !state.seenReady && time.Now().After(startupDeadline) && lastStatus != zerotier.NetworkStatusAuthenticationRequired {
+				return exitNotReady, fmt.Errorf("network %016x did not become ready before startup timeout", networkID)
+			}
+			if !target.IsValid() || !exists || network.Status != zerotier.NetworkStatusOK || network.LastConfigReceive.IsZero() {
+				probeTimer.Reset(*interval)
+				continue
+			}
+			probe.runtime.linkMu.RLock()
+			link := probe.runtime.link
+			probe.runtime.linkMu.RUnlock()
+			if err = link.ApplyNetworkConfig(network.Config); err != nil {
+				return exitProbeFailed, err
+			}
+			if err = link.ValidateDestination(target); err != nil {
+				return exitProbeFailed, err
+			}
+			attemptCtx, attemptCancel := context.WithTimeout(ctx, *probeTimeout)
+			ping, pingErr := probe.runtime.ping(attemptCtx, network.Config, target, 1, *payloadSize, time.Second)
+			attemptCancel()
+			result.Sent += ping.Sent
+			record := watchProbeRecord{Kind: "probe", Time: time.Now().Format(time.RFC3339Nano), Received: ping.Received != 0}
+			if len(ping.Replies) != 0 {
+				record.RTT = ping.Replies[0].RTT
+			}
+			if pingErr != nil {
+				record.Error = pingErr.Error()
+				consecutiveFailures++
+				if consecutiveFailures > result.MaximumFailures {
+					result.MaximumFailures = consecutiveFailures
+				}
+			} else {
+				result.Received++
+				consecutiveFailures = 0
+			}
+			record.Path, _ = diagnosePath(ctx, probe.runtime.node, network.Config, target, *peerText, false)
+			switch record.Path.Mode {
+			case "direct":
+				result.DirectSamples++
+			case "relay":
+				result.RelaySamples++
+			}
+			printWatchProbe(stdout, record, options.json)
+			probeTimer.Reset(*interval)
+		case <-ctx.Done():
+			if network, exists := probe.runtime.node.Network(networkID); exists {
+				lastStatus = network.Status
+			}
+			result.Duration = time.Since(started).Round(time.Millisecond)
+			result.InvariantViolations = append(result.InvariantViolations, state.violations...)
+			printWatchSummary(stdout, result, options.json)
+			if len(result.InvariantViolations) != 0 {
+				return exitProbeFailed, fmt.Errorf("watch detected %d lifecycle invariant violations", len(result.InvariantViolations))
+			}
+			if lastStatus == zerotier.NetworkStatusAuthenticationRequired {
+				return exitAuthentication, errors.New("network still requires external authentication")
+			}
+			if !state.seenReady || !state.ready || lastStatus != zerotier.NetworkStatusOK {
+				return exitNotReady, errors.New("network was not ready when watch completed")
+			}
+			if !state.online || !probe.runtime.node.Online() {
+				return exitNotReady, errors.New("node was offline when watch completed")
+			}
+			if target.IsValid() && result.Received == 0 {
+				return exitProbeFailed, errors.New("watch received no periodic echo replies")
+			}
+			if *requireDirect && result.DirectSamples == 0 {
+				return exitProbeFailed, errors.New("watch did not observe an active direct peer path")
+			}
+			if target.IsValid() && result.MaximumFailures > *maximumFailures {
+				return exitProbeFailed, fmt.Errorf("watch observed %d consecutive probe failures, limit is %d", result.MaximumFailures, *maximumFailures)
+			}
+			return exitOK, nil
+		}
+	}
+}
+
+// printWatchEvent writes one lifecycle event as text or JSON Lines.
+func printWatchEvent(w io.Writer, event zerotier.Event, jsonOutput bool) {
+	loginURL, _ := event.Authentication.LoginURL()
+	record := watchEventRecord{
+		Kind: "event", Time: time.Now().Format(time.RFC3339Nano), Type: event.Type.String(),
+		PathCount: event.PathCount, Authentication: loginURL,
+	}
+	if !event.NodeAddress.IsZero() {
+		record.Node = event.NodeAddress.String()
+	}
+	if !event.PeerAddress.IsZero() {
+		record.Peer = event.PeerAddress.String()
+		record.PeerRole = event.PeerRole.String()
+	}
+	if !event.ReporterAddress.IsZero() {
+		record.Reporter = event.ReporterAddress.String()
+		record.PeerRole = event.PeerRole.String()
+	}
+	if event.Route != zerotier.PeerRouteUnknown {
+		record.Route = event.Route.String()
+	}
+	if event.NetworkID != 0 {
+		record.Network = fmt.Sprintf("%016x", event.NetworkID)
+	}
+	if event.Endpoint.IsValid() {
+		record.Endpoint = event.Endpoint.String()
+	}
+	if event.PreviousEndpoint.IsValid() {
+		record.Previous = event.PreviousEndpoint.String()
+	}
+	if jsonOutput {
+		_ = json.NewEncoder(w).Encode(record)
+		return
+	}
+	fmt.Fprintf(w, "time=%s event=%s", record.Time, record.Type)
+	if record.Network != "" {
+		fmt.Fprintf(w, " network=%s", record.Network)
+	}
+	if record.Node != "" {
+		fmt.Fprintf(w, " node=%s", record.Node)
+	}
+	if record.Peer != "" {
+		fmt.Fprintf(w, " peer=%s", record.Peer)
+	}
+	if record.Reporter != "" {
+		fmt.Fprintf(w, " reporter=%s", record.Reporter)
+	}
+	if record.PeerRole != "" {
+		fmt.Fprintf(w, " peer-role=%s", record.PeerRole)
+	}
+	if record.Route != "" {
+		fmt.Fprintf(w, " route=%s", record.Route)
+	}
+	if record.Endpoint != "" {
+		fmt.Fprintf(w, " endpoint=%s", record.Endpoint)
+	}
+	if record.Previous != "" {
+		fmt.Fprintf(w, " previous=%s", record.Previous)
+	}
+	if record.PathCount != 0 {
+		fmt.Fprintf(w, " paths=%d", record.PathCount)
+	}
+	if record.Authentication != "" {
+		fmt.Fprintf(w, " auth-url=%q", record.Authentication)
+	}
+	fmt.Fprintln(w)
+}
+
+// printWatchProbe writes one periodic probe sample as text or JSON Lines.
+func printWatchProbe(w io.Writer, record watchProbeRecord, jsonOutput bool) {
+	if jsonOutput {
+		_ = json.NewEncoder(w).Encode(record)
+		return
+	}
+	fmt.Fprintf(w, "time=%s probe-received=%t rtt=%s path=%s error=%q\n", record.Time, record.Received, record.RTT, record.Path.Mode, record.Error)
+}
+
+// printWatchSummary writes the final watch aggregate.
+func printWatchSummary(w io.Writer, result watchResult, jsonOutput bool) {
+	if jsonOutput {
+		_ = json.NewEncoder(w).Encode(result)
+		return
+	}
+	fmt.Fprintf(w, "node=%s network=%s duration=%s ready=%d updates=%d online=%d offline=%d sent=%d received=%d max-failures=%d direct=%d relay=%d violations=%v\n",
+		result.Node, result.Network, result.Duration, result.ReadyEvents, result.ConfigUpdates, result.OnlineEvents, result.OfflineEvents,
+		result.Sent, result.Received, result.MaximumFailures, result.DirectSamples, result.RelaySamples, result.InvariantViolations)
+}

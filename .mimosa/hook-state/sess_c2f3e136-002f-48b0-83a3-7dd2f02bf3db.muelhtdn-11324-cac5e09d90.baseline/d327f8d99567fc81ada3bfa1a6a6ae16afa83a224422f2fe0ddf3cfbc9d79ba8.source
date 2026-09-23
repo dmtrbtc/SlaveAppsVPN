@@ -1,0 +1,172 @@
+package zerotier
+
+import (
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestRevocationRoundTripAndApplication(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	revocation := makeTestRevocation(t, controller, target.Address(), networkID, CredentialTypeTag, 7, 1000)
+	encoded := revocation.appendBinary(nil)
+	parsed, consumed, err := ParseRevocation(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed != len(encoded) || !parsed.Verify(controller) || parsed.CredentialID != 7 {
+		t.Fatal("controller-signed revocation did not round trip")
+	}
+
+	receiver, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: receiver,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(target, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	network := newNetwork(networkID)
+	network.tags[target.Address()] = []Tag{{NetworkID: networkID, Timestamp: 1000, ID: 7, Value: 42}}
+	node.networks[networkID] = network
+	if err := node.addRevocationLocked(network, target.Address(), parsed); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	remaining := len(network.tags[target.Address()])
+	revoked := network.credentialRevoked(target.Address(), CredentialTypeTag, 7, 1000)
+	node.mu.Unlock()
+	if remaining != 0 || !revoked {
+		t.Fatalf("revocation application: remaining=%d revoked=%t", remaining, revoked)
+	}
+}
+
+func TestNetworkCredentialsAcceptRevocation(t *testing.T) {
+	receiver, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{
+		Identity: receiver,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	for _, identity := range []Identity{sender, controller, target} {
+		if err := node.addPeerLocked(identity, false); err != nil {
+			node.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+
+	revocation := makeTestRevocation(t, controller, target.Address(), networkID, CredentialTypeCapability, 3, uint64(time.Now().UnixMilli()))
+	packet, _ := NewPacket(receiver.Address(), sender.Address(), VerbNetworkCredentials)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(revocation.appendBinary(nil)...)
+	_ = packet.AppendUint16(0)
+	key, err := sender.Agree(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, netip.MustParseAddrPort("203.0.113.70:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	revoked := node.networks[networkID].credentialRevoked(target.Address(), CredentialTypeCapability, 3, revocation.Threshold)
+	node.mu.Unlock()
+	if !revoked {
+		t.Fatal("received revocation was not stored")
+	}
+}
+
+func TestCredentialRevocationRequiresFreshMembership(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	controller, _ := GenerateIdentity()
+	target, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCOM := makeTestCOM(t, controller, target, networkID, 1000)
+	newCOM := makeTestCOM(t, controller, target, networkID, 1002)
+	revocation := makeTestRevocation(t, controller, target.Address(), networkID, CredentialTypeTag, 7, 1001)
+	node.mu.Lock()
+	_ = node.addPeerLocked(controller, false)
+	_ = node.addPeerLocked(target, false)
+	network := newNetwork(networkID)
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePrivate, COM: &oldCOM}
+	network.members[target.Address()] = oldCOM
+	node.networks[networkID] = network
+	if err = node.addRevocationLocked(network, controller.Address(), revocation); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	allowedWithOldCOM := network.allows(node.peers[target.Address()])
+	if err = node.addMembershipLocked(network, newCOM); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	allowedWithNewCOM := network.allows(node.peers[target.Address()])
+	node.mu.Unlock()
+	if allowedWithOldCOM || !allowedWithNewCOM {
+		t.Fatalf("membership after credential revocation: old=%t new=%t", allowedWithOldCOM, allowedWithNewCOM)
+	}
+}
+
+func makeTestRevocation(t *testing.T, controller Identity, target Address, networkID uint64, credentialType CredentialType, credentialID uint32, threshold uint64) Revocation {
+	t.Helper()
+	revocation := Revocation{
+		ID: 99, NetworkID: networkID, CredentialID: credentialID, Threshold: threshold,
+		Target: target, SignedBy: controller.Address(), Type: credentialType,
+	}
+	signature, err := controller.Sign(revocation.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	revocation.Signature = signature
+	return revocation
+}

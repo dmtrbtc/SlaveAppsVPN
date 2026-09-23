@@ -1,0 +1,157 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260923T201519446Z-15676-2359918f731c",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "bash-discovery",
+      "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+      "reason": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files"
+    },
+    {
+      "stage": "baseline",
+      "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+      "reason": "baseline_partial: baseline exceeded 5000 candidate files"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": false,
+      "captured_files": 5000,
+      "candidate_limit": 5000,
+      "truncated": true,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 0
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 0,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 0,
+      "selected_files": 0,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 0,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "bash_discovery_incomplete": 1,
+      "baseline_partial": 1,
+      "project_check_failed": 2
+    },
+    "reasons": [
+      {
+        "code": "bash_discovery_incomplete",
+        "stage": "bash-discovery",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "project enumeration exceeded 5000 reviewable files",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "baseline exceeded 5000 candidate files",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "baseline_partial: baseline exceeded 5000 candidate files",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-09-23T20:15:19.446Z",
+  "session_id": "sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db",
+  "target": ".",
+  "revision": "f3277ffcebe462702f744d4585e02413488cda95",
+  "rules_version": "unavailable",
+  "diff_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 0,
+    "changed_files": []
+  },
+  "timing": {
+    "started_at": "2026-09-23T20:15:15.686Z",
+    "completed_at": "2026-09-23T20:15:19.446Z",
+    "duration_ms": 3760,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 3760,
+    "peakMemoryBytes": 138661888,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db-20260923T201519446Z-15676-2359918f731c.json",
+    "latest_report": ".mimosa/reports/task-review-sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db.json",
+    "history_summary": ".mimosa/history/run-20260923T201519446Z-15676-2359918f731c.json"
+  }
+}

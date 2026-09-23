@@ -1,0 +1,21 @@
+package ztcrypto
+
+import (
+	"encoding/hex"
+	"testing"
+)
+
+func TestSalsa2012OfficialVector(t *testing.T) {
+	keyBytes, _ := hex.DecodeString("0f62b5085bae0154a7fa4da0f34699ec3f92e5388bde3184d72a7dd02376c91c")
+	nonceBytes, _ := hex.DecodeString("288ff65dc42b92f9")
+	want, _ := hex.DecodeString("99db33ad11ce0ccb3bfdbf8d0c18160452d014cde989b4c411a559ff7c20a169e6dc9909d816becedc4063ce07cea828f44bf9b6c9a0a0b200e1b52af41859c5")
+	var key [32]byte
+	var nonce [8]byte
+	copy(key[:], keyBytes)
+	copy(nonce[:], nonceBytes)
+	got := make([]byte, 64)
+	Salsa2012XORKeyStream(got, make([]byte, 64), &nonce, &key)
+	if string(got) != string(want) {
+		t.Fatalf("stream mismatch\n got %x\nwant %x", got, want)
+	}
+}

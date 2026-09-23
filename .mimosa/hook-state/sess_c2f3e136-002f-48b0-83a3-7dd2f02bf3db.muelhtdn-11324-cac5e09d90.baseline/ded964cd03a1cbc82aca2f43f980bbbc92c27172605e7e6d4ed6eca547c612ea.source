@@ -1,0 +1,42 @@
+import { getDefaultEnabledScenarios } from '@slave-vpn/routing'
+import type { AppSettings } from './types.js'
+
+/**
+ * Build the default settings. Env-driven fields (apiBaseUrl, telegramBotUsername)
+ * are passed as overrides by the platform — core must not read process.env so it
+ * stays runnable in a renderer too.
+ */
+export function createDefaultSettings(overrides: Partial<AppSettings> = {}): AppSettings {
+  const base: AppSettings = {
+    language: 'ru',
+    // «Только заблокированное» — default: minimal tunnel, only RKN-blocked
+    // resources go through the VPN; everything else direct (max speed).
+    vpnMode: 'blocked',
+    autoStart: false,
+    minimizeToTray: true,
+    notificationsEnabled: true,
+    autoConnect: false,
+    connectOnBoot: false,
+    killSwitch: false,
+    apiBaseUrl: 'https://change-me.example.com/api',
+    telegramBotUsername: '',
+    devMode: false,
+    updateChannel: 'stable',
+    selectedEngine: 'mihomo',
+    dnsPreset: 'secure',
+    dnsStrategy: 'prefer_ipv4',
+    customDnsProfile: null,
+    dohProvider: { id: 'cloudflare' },
+    balancerEnabled: false,
+    balancerMode: 'balanced',
+    autoSelectProxy: false,
+    selectedProxy: null,
+    splitProcessList: [],
+    splitTunnelMode: 'off',
+    ruleProviders: [],
+    enabledScenarios: getDefaultEnabledScenarios() as string[],
+    customRoutingRules: [],
+    utlsFingerprint: 'randomized',
+  }
+  return { ...base, ...overrides }
+}

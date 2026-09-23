@@ -1,0 +1,914 @@
+package zerotier
+
+import (
+	"encoding/binary"
+	"errors"
+	"math"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestBondingPathSelection(t *testing.T) {
+	now := time.Now()
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	peer := &peer{
+		paths: map[pathKey]*peerPathState{
+			first:  {lastReceive: now, latency: 20 * time.Millisecond},
+			second: {lastReceive: now, latency: 30 * time.Millisecond},
+		},
+		bondFlows: make(map[int32]bondFlow),
+	}
+	node := &Node{}
+
+	node.bondingPolicy = BondingBroadcast
+	if paths := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 1, now, nil); len(paths) != 2 {
+		t.Fatalf("broadcast FRAME selected %d paths", len(paths))
+	}
+	if paths := node.bondedPathsLocked(peer, VerbEcho, noFlowID, 1, now, nil); len(paths) != 1 {
+		t.Fatalf("broadcast ECHO selected %d paths", len(paths))
+	}
+	node.bondingPolicy = BondingNone
+	node.peerPaths = map[Address]PeerPathConfig{
+		peer.identity.Address(): {BondingPolicy: BondingBroadcast, BondingPolicySet: true},
+	}
+	if paths := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 1, now, nil); len(paths) != 2 {
+		t.Fatalf("peer-specific broadcast selected %d paths", len(paths))
+	}
+	node.peerPaths = nil
+
+	node.bondingPolicy = BondingBalanceXOR
+	selected := node.bondedPathsLocked(peer, VerbFrame, 1234, 1, now, nil)
+	again := node.bondedPathsLocked(peer, VerbFrame, 1234, 2, now.Add(time.Second), nil)
+	if len(selected) != 1 || len(again) != 1 || selected[0] != again[0] {
+		t.Fatalf("balance-xor did not keep flow affinity: %v then %v", selected, again)
+	}
+
+	peer.bondRRIndex, peer.bondRRPackets = 0, 0
+	node.bondingPolicy = BondingBalanceRoundRobin
+	for i := 0; i < int(bondRoundRobinPackets); i++ {
+		paths := node.bondedPathsLocked(peer, VerbFrame, noFlowID, uint64(i), now, nil)
+		if len(paths) != 1 || paths[0] != first {
+			t.Fatalf("round-robin packet %d selected %v", i, paths)
+		}
+	}
+	if paths := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 65, now, nil); len(paths) != 1 || paths[0] != second {
+		t.Fatalf("round-robin did not rotate after %d packets: %v", bondRoundRobinPackets, paths)
+	}
+}
+
+func TestActiveBackupFailoverHysteresis(t *testing.T) {
+	now := time.Unix(1000, 0)
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	options := defaultBondingOptions()
+	options.UpDelay = 2 * time.Second
+	options.DownDelay = time.Second
+	options.LinkSelectMethod = BondingLinkSelectFailure
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		first:  {lastReceive: now, latency: time.Millisecond},
+		second: {lastReceive: now, latency: 20 * time.Millisecond},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingActiveBackup, bondingOptions: options}
+	if selected := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 1, now, nil); len(selected) != 1 || selected[0] != first {
+		t.Fatalf("initial active-backup path = %v", selected)
+	}
+
+	stable := now.Add(16 * time.Second)
+	peer.paths[first].lastReceive = stable
+	peer.paths[second].lastReceive = stable
+	node.maintainBondLocked(peer, BondingActiveBackup, options, stable)
+	fail := stable.Add(options.FailoverInterval + options.DownDelay)
+	peer.paths[second].lastReceive = fail
+	if selected := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 2, fail, nil); len(selected) != 1 || selected[0] != second {
+		t.Fatalf("failed active path did not switch: %v", selected)
+	}
+
+	recovered := fail.Add(time.Second)
+	peer.paths[first].lastReceive = recovered
+	node.maintainBondLocked(peer, BondingActiveBackup, options, recovered)
+	if peer.paths[first].bondEligible {
+		t.Fatal("recovered path ignored up-delay")
+	}
+	recovered = recovered.Add(options.UpDelay)
+	peer.paths[first].lastReceive = recovered
+	node.maintainBondLocked(peer, BondingActiveBackup, options, recovered)
+	if !peer.paths[first].bondEligible || peer.bondActive != second {
+		t.Fatalf("recovered path eligibility=%t active=%v", peer.paths[first].bondEligible, peer.bondActive)
+	}
+}
+
+func TestActiveBackupFailureSelectsHighestScoredPath(t *testing.T) {
+	now := time.Unix(1000, 0)
+	active := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	poor := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	best := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("203.0.113.1:9993")}
+	options := defaultBondingOptions()
+	options.LinkSelectMethod = BondingLinkSelectFailure
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		active: {lastReceive: now},
+		poor:   {lastReceive: now, bondLatency: options.Quality.LatencyMax},
+		best:   {lastReceive: now},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingActiveBackup, bondingOptions: options}
+	node.maintainBondLocked(peer, BondingActiveBackup, options, now)
+	if peer.bondActive != active {
+		t.Fatalf("initial active path = %v, want %v", peer.bondActive, active)
+	}
+	later := now.Add(bondOptimizeInterval + options.FailoverInterval)
+	peer.paths[poor].lastReceive = later
+	peer.paths[best].lastReceive = later
+	node.maintainBondLocked(peer, BondingActiveBackup, options, later)
+	if peer.bondActive != best {
+		t.Fatalf("failed active path selected %v, want highest-scored %v", peer.bondActive, best)
+	}
+}
+
+func TestActiveBackupAlwaysReselectsPrimary(t *testing.T) {
+	now := time.Now()
+	primary := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	spare := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	options, err := normalizeBondingOptions(BondingOptions{Links: []BondingLink{
+		{Name: "primary", LocalSockets: []int64{0}, Mode: BondingLinkPrimary, FailoverTo: "spare"},
+		{Name: "spare", LocalSockets: []int64{1}, Mode: BondingLinkSpare},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		primary: {lastReceive: now}, spare: {lastReceive: now},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingActiveBackup, bondingOptions: options}
+	node.maintainBondLocked(peer, BondingActiveBackup, options, now)
+	if peer.bondActive != primary {
+		t.Fatalf("initial active path = %v", peer.bondActive)
+	}
+	later := now.Add(bondOptimizeInterval + options.FailoverInterval)
+	peer.paths[spare].lastReceive = later
+	node.maintainBondLocked(peer, BondingActiveBackup, options, later)
+	if peer.bondActive != spare {
+		t.Fatalf("failed primary did not select spare: %v", peer.bondActive)
+	}
+	peer.paths[primary].lastReceive = later.Add(time.Second)
+	peer.paths[spare].lastReceive = later.Add(time.Second)
+	node.maintainBondLocked(peer, BondingActiveBackup, options, later.Add(time.Second))
+	if peer.bondActive != primary {
+		t.Fatalf("recovered primary was not reselected: %v", peer.bondActive)
+	}
+}
+
+func TestActiveBackupExplicitFailoverReselectsPrimaryWhenOptimizing(t *testing.T) {
+	now := time.Unix(1000, 0)
+	primary := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	spare := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	options, err := normalizeBondingOptions(BondingOptions{
+		LinkSelectMethod: BondingLinkSelectOptimize,
+		Links: []BondingLink{
+			{Name: "primary", LocalSockets: []int64{0}, Mode: BondingLinkPrimary, FailoverTo: "spare"},
+			{Name: "spare", LocalSockets: []int64{1}, Mode: BondingLinkSpare},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		primary: {lastReceive: now, bondLatency: options.Quality.LatencyMax},
+		spare:   {lastReceive: now},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingActiveBackup, bondingOptions: options}
+	node.maintainBondLocked(peer, BondingActiveBackup, options, now)
+	if peer.bondActive != primary {
+		t.Fatalf("initial active path = %v, want primary", peer.bondActive)
+	}
+
+	failedAt := now.Add(bondOptimizeInterval + options.FailoverInterval)
+	peer.paths[spare].lastReceive = failedAt
+	node.maintainBondLocked(peer, BondingActiveBackup, options, failedAt)
+	if peer.bondActive != spare {
+		t.Fatalf("failed primary selected %v, want spare", peer.bondActive)
+	}
+
+	recoveredAt := failedAt.Add(bondOptimizeInterval + time.Second)
+	peer.paths[primary].lastReceive = recoveredAt
+	peer.paths[spare].lastReceive = recoveredAt
+	node.maintainBondLocked(peer, BondingActiveBackup, options, recoveredAt)
+	if peer.bondActive != primary {
+		t.Fatalf("explicit optimize failover retained %v, want recovered primary", peer.bondActive)
+	}
+}
+
+func TestBondingCustomRoundRobinAndLinkPreference(t *testing.T) {
+	now := time.Now()
+	v4 := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	v6 := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("[2001:db8::1]:9993")}
+	spare := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	one := 1
+	options, err := normalizeBondingOptions(BondingOptions{
+		PacketsPerLink: &one,
+		Links: []BondingLink{
+			{Name: "primary", LocalSockets: []int64{0, 1}, IPPreference: 46},
+			{Name: "spare", LocalSockets: []int64{2}, Mode: BondingLinkSpare},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		v4: {lastReceive: now}, v6: {lastReceive: now}, spare: {lastReceive: now},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingBalanceRoundRobin, bondingOptions: options}
+	for i := uint64(0); i < 3; i++ {
+		selected := node.bondedPathsLocked(peer, VerbFrame, noFlowID, i, now, nil)
+		if len(selected) != 1 || selected[0] != v4 {
+			t.Fatalf("preferred link selection %d = %v", i, selected)
+		}
+	}
+}
+
+func TestBondingCustomRoundRobinRunLength(t *testing.T) {
+	now := time.Now()
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	one := 1
+	options, err := normalizeBondingOptions(BondingOptions{PacketsPerLink: &one})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		first: {lastReceive: now}, second: {lastReceive: now},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingBalanceRoundRobin, bondingOptions: options}
+	if selected := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 1, now, nil); len(selected) != 1 || selected[0] != first {
+		t.Fatalf("first RR run selected %v", selected)
+	}
+	if selected := node.bondedPathsLocked(peer, VerbFrame, noFlowID, 2, now, nil); len(selected) != 1 || selected[0] != second {
+		t.Fatalf("second RR run selected %v", selected)
+	}
+}
+
+func TestBalanceAwareUsesLinkCapacity(t *testing.T) {
+	now := time.Now()
+	slow := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	fast := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	options, err := normalizeBondingOptions(BondingOptions{Links: []BondingLink{
+		{Name: "slow", LocalSockets: []int64{0}, Capacity: 1},
+		{Name: "fast", LocalSockets: []int64{1}, Capacity: 3},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		slow: {lastReceive: now, bondLatency: time.Millisecond}, fast: {lastReceive: now, bondLatency: time.Millisecond},
+	}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingBalanceAware, bondingOptions: options}
+	counts := map[pathKey]int{}
+	var slowFlow int32
+	for flowID := int32(1); flowID <= 512; flowID++ {
+		selected := node.bondedPathsLocked(peer, VerbFrame, flowID, uint64(flowID), now, nil)
+		counts[selected[0]]++
+		if selected[0] == slow && slowFlow == 0 {
+			slowFlow = flowID
+		}
+	}
+	if counts[fast] <= 2*counts[slow] {
+		t.Fatalf("capacity weighting selected slow=%d fast=%d", counts[slow], counts[fast])
+	}
+	peer.paths[slow].bondLatency = options.Quality.LatencyMax + time.Millisecond
+	selected := node.bondedPathsLocked(peer, VerbFrame, slowFlow, 1000, now.Add(bondMaintenancePeriod), nil)
+	if len(selected) != 1 || selected[0] != fast {
+		t.Fatalf("flow on avoided path was not reassigned: %v", selected)
+	}
+}
+
+func TestActiveBackupPathNegotiation(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	options := defaultBondingOptions()
+	options.LinkSelectMethod = BondingLinkSelectOptimize
+	var sentPath pathKey
+	var wire []byte
+	node, err := NewNode(NodeConfig{
+		Identity: local, BondingPolicy: BondingActiveBackup, BondingOptions: options,
+		Sender: WireSenderFunc(func(localSocket int64, remote netip.AddrPort, packet []byte) error {
+			sentPath = pathKey{localSocket: localSocket, endpoint: remote}
+			wire = append([]byte(nil), packet...)
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.paths[first] = &peerPathState{lastReceive: now, latency: time.Millisecond}
+	peer.paths[second] = &peerPathState{lastReceive: now, latency: time.Millisecond}
+	node.maintainBondLocked(peer, BondingActiveBackup, options, now)
+	peer.paths[first].bondPacketsIn = 10
+	peer.paths[second].bondPacketsOut = 10
+	peer.bondLastNegotiation = now.Add(-bondOptimizeInterval)
+	node.processBondNegotiationLocked(peer, options, now)
+	node.mu.Unlock()
+	if sentPath != second || len(wire) == 0 {
+		t.Fatalf("negotiation sent via %v with %d bytes", sentPath, len(wire))
+	}
+	packet, err := ParsePacket(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Dearmor(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Verb() != VerbPathNegotiation || len(packet.Payload()) != 2 {
+		t.Fatalf("negotiation packet verb=%d payload=%x", packet.Verb(), packet.Payload())
+	}
+
+	node.mu.Lock()
+	peer.bondLastNegotiation = now
+	peer.bondLocalUtility = -1
+	reply, _ := NewPacket(local.Address(), remote.Address(), VerbPathNegotiation)
+	_ = reply.AppendUint16(1)
+	if err = node.handlePathNegotiationLocked(peer, second, reply, now.Add(time.Second)); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.maintainBondLocked(peer, BondingActiveBackup, options, now.Add(time.Second))
+	active := peer.bondActive
+	node.mu.Unlock()
+	if active != second {
+		t.Fatalf("negotiated active path = %v, want %v", active, second)
+	}
+}
+
+func TestFrameFlowID(t *testing.T) {
+	ipv4 := make([]byte, 24)
+	ipv4[0], ipv4[9] = 0x45, 17
+	ipv4[20], ipv4[21], ipv4[22], ipv4[23] = 0x12, 0x34, 0x56, 0x78
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: ipv4}
+	if got, want := frameFlowID(frame), int32(0x1234^0x5678^17); got != want {
+		t.Fatalf("IPv4 flow ID = %d, want %d", got, want)
+	}
+
+	ipv6 := make([]byte, 52)
+	ipv6[0], ipv6[6] = 0x60, 0 // hop-by-hop extension
+	ipv6[40], ipv6[41] = 6, 0
+	ipv6[48], ipv6[49], ipv6[50], ipv6[51] = 0x12, 0x34, 0x56, 0x78
+	frame = Frame{EtherType: EtherTypeIPv6, Payload: ipv6}
+	if got, want := frameFlowID(frame), int32(0x1234^0x5678^6); got != want {
+		t.Fatalf("IPv6 flow ID = %d, want %d", got, want)
+	}
+
+	fragmented := make([]byte, 56)
+	fragmented[0], fragmented[6] = 0x60, 44
+	fragmented[40] = 17
+	fragmented[48], fragmented[49], fragmented[50], fragmented[51] = 0x12, 0x34, 0x56, 0x78
+	if got := frameFlowID(Frame{EtherType: EtherTypeIPv6, Payload: fragmented}); got != noFlowID {
+		t.Fatalf("fragmented IPv6 flow ID = %d, want no flow", got)
+	}
+
+	mobility := make([]byte, 52)
+	mobility[0], mobility[6] = 0x60, 135
+	mobility[40], mobility[41] = 17, 0
+	mobility[48], mobility[49], mobility[50], mobility[51] = 0x12, 0x34, 0x56, 0x78
+	if got, want := frameFlowID(Frame{EtherType: EtherTypeIPv6, Payload: mobility}), int32(0x1234^0x5678^17); got != want {
+		t.Fatalf("IPv6 mobility flow ID = %d, want %d", got, want)
+	}
+}
+
+func TestIncomingEvenPacketIDStillLearnsBondFlow(t *testing.T) {
+	now := time.Now()
+	key := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.55:9993")}
+	peer := &peer{
+		paths:     map[pathKey]*peerPathState{key: {lastReceive: now}},
+		bondFlows: make(map[int32]bondFlow),
+	}
+	node := &Node{bondingPolicy: BondingBalanceXOR}
+	packet, err := NewPacket(NewAddress(1), NewAddress(2), VerbFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet.data[7] &^= 1
+	const flowID = int32(1234)
+	node.recordIncomingBondPacketLocked(peer, key, packet, flowID, now)
+	flow, ok := peer.bondFlows[flowID]
+	if !ok || flow.path != key || !flow.lastActive.Equal(now) {
+		t.Fatalf("even packet flow = %+v, present=%t", flow, ok)
+	}
+	if len(peer.paths[key].qosIncoming) != 0 {
+		t.Fatal("even packet ID was incorrectly added to QoS sampling")
+	}
+}
+
+func TestBalanceRoundRobinBuildsOfficialInboundFlowRecord(t *testing.T) {
+	now := time.Now()
+	key := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.56:9993")}
+	peer := &peer{
+		paths:     map[pathKey]*peerPathState{key: {lastReceive: now}},
+		bondFlows: make(map[int32]bondFlow),
+	}
+	node := &Node{bondingPolicy: BondingBalanceRoundRobin}
+	packet, err := NewPacket(NewAddress(1), NewAddress(2), VerbFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const flowID = int32(1234)
+	node.recordIncomingBondPacketLocked(peer, key, packet, flowID, now)
+	flow, ok := peer.bondFlows[flowID]
+	if !ok || flow.path != key || !flow.lastActive.Equal(now) {
+		t.Fatalf("balance-rr inbound flow = %+v, present=%t", flow, ok)
+	}
+}
+
+func TestQoSMeasurementUpdatesPathQuality(t *testing.T) {
+	now := time.Now()
+	key := pathKey{endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	path := &peerPathState{qosOutgoing: make(map[uint64]time.Time)}
+	peer := &peer{paths: map[pathKey]*peerPathState{key: path}, bondFlows: make(map[int32]bondFlow)}
+	node := &Node{bondingPolicy: BondingBalanceAware}
+	packet, err := NewPacket(NewAddress(1), NewAddress(2), VerbQoSMeasurement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, roundTrip := range []time.Duration{40, 60, 80, 100} {
+		packetID := uint64(123 + i)
+		path.qosOutgoing[packetID] = now.Add(-roundTrip * time.Millisecond)
+		var record [10]byte
+		qosByteOrder.PutUint64(record[:8], packetID)
+		qosByteOrder.PutUint16(record[8:], 20)
+		_ = packet.Append(record[:]...)
+	}
+	if err = node.handleQoSMeasurementLocked(peer, key, packet, now); err != nil {
+		t.Fatal(err)
+	}
+	if path.bondLatency != 25*time.Millisecond || absDuration(path.jitter-12909944*time.Nanosecond) > time.Microsecond || !path.lastQoSReceive.Equal(now) {
+		t.Fatalf("QoS quality = latency %s receive %s", path.bondLatency, path.lastQoSReceive)
+	}
+	if len(path.qosOutgoing) != 0 {
+		t.Fatalf("%d acknowledged QoS samples were retained", len(path.qosOutgoing))
+	}
+}
+
+func TestQoSLatencyUsesLast64Samples(t *testing.T) {
+	path := new(peerPathState)
+	for i := 0; i <= qosLatencyWindowSize; i++ {
+		recordQoSLatencySample(path, time.Duration(i)*time.Millisecond)
+	}
+	if len(path.qosLatencySamples) != qosLatencyWindowSize || path.bondLatency != 32500*time.Microsecond {
+		t.Fatalf("QoS window = %d samples, mean %s", len(path.qosLatencySamples), path.bondLatency)
+	}
+	const wantJitter = 18618987 * time.Nanosecond
+	if absDuration(path.jitter-wantJitter) > time.Microsecond {
+		t.Fatalf("QoS window jitter = %s, want %s", path.jitter, wantJitter)
+	}
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func TestBalanceAwareNormalizesEachMetricAcrossBond(t *testing.T) {
+	now := time.Now()
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.10:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.10:9993")}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		first:  {lastReceive: now, loss: 0.1},
+		second: {lastReceive: now, bondLatency: 100 * time.Millisecond, loss: 0.05},
+	}}
+	options := defaultBondingOptions()
+	options.Quality = BondingQuality{
+		LatencyMax: 100 * time.Millisecond, JitterMax: time.Millisecond,
+		PacketLossMax: 0.1, PacketErrorMax: 0.1,
+		LatencyWeight: 0.5, PacketLossWeight: 0.5,
+	}
+	node := &Node{}
+	node.estimateBondQualityLocked(peer, []pathKey{first, second}, options)
+	if got := peer.paths[first].bondQuality; got < 0.52 || got > 0.54 {
+		t.Fatalf("relative first-path quality = %f, want about 0.527", got)
+	}
+	if got := peer.paths[second].bondQuality; got < 0.46 || got > 0.48 {
+		t.Fatalf("relative second-path quality = %f, want about 0.473", got)
+	}
+}
+
+func TestBondQualityExcludesUnbondedSparePaths(t *testing.T) {
+	now := time.Now()
+	first := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.20:9993")}
+	second := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.20:9993")}
+	spare := pathKey{localSocket: 3, endpoint: netip.MustParseAddrPort("203.0.113.20:9993")}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		first:  {lastReceive: now},
+		second: {lastReceive: now},
+		spare:  {lastReceive: now},
+	}}
+	options := defaultBondingOptions()
+	options.Links = []BondingLink{
+		{Name: "first", LocalSockets: []int64{1}, Capacity: 1},
+		{Name: "second", LocalSockets: []int64{2}, Capacity: 1},
+		{Name: "spare", LocalSockets: []int64{3}, Capacity: 1, Mode: BondingLinkSpare},
+	}
+	node := &Node{}
+	paths := node.maintainBondLocked(peer, BondingBalanceAware, options, now)
+	if len(paths) != 2 || containsPath(paths, spare) {
+		t.Fatalf("bonded paths = %v, want the two primary paths", paths)
+	}
+	if quality := peer.paths[first].bondQuality + peer.paths[second].bondQuality; math.Abs(quality-1) > 1e-9 {
+		t.Fatalf("bonded relative quality total = %f, want 1", quality)
+	}
+}
+
+func TestBalanceAwareFallsBackToHighestRelativeQuality(t *testing.T) {
+	first := pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("192.0.2.11:9993")}
+	second := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.11:9993")}
+	peer := &peer{paths: map[pathKey]*peerPathState{
+		first:  {bondAvoid: true, bondCapacity: 0.25, bondQuality: 0.8},
+		second: {bondAvoid: true, bondCapacity: 1, bondQuality: 0.2},
+	}}
+	for flowID := int32(0); flowID < 32; flowID++ {
+		if selected := awareBondPath(peer, []pathKey{first, second}, flowID); selected != first {
+			t.Fatalf("all-avoided fallback selected %v, want highest-quality path", selected)
+		}
+	}
+}
+
+func TestQoSMeasurementGeneration(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("192.0.2.1:9993")
+	var wire []byte
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		BondingPolicy: BondingBalanceXOR,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			wire = append([]byte(nil), packet...)
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	key := pathKey{endpoint: endpoint}
+	peer.paths[key] = &peerPathState{
+		lastReceive: now,
+		qosIncoming: map[uint64]time.Time{123: now.Add(-20 * time.Millisecond)},
+	}
+	node.sendQoSMeasurementsLocked(peer, now)
+	node.mu.Unlock()
+	if len(wire) == 0 {
+		t.Fatal("QoS measurement was not sent")
+	}
+	packet, err := ParsePacket(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyMaterial, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Dearmor(keyMaterial[:]); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Verb() != VerbQoSMeasurement || len(packet.Payload()) != 10 || qosByteOrder.Uint64(packet.Payload()) != 123 || qosByteOrder.Uint16(packet.Payload()[8:]) != 20 {
+		t.Fatalf("QoS packet = verb %d payload %x", packet.Verb(), packet.Payload())
+	}
+}
+
+func TestExcludedBondPathDoesNotParticipateInMonitoring(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := normalizeBondingOptions(BondingOptions{Links: []BondingLink{{
+		Name: "allowed", LocalSockets: []int64{1},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local, BondingPolicy: BondingBalanceXOR, BondingOptions: options,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	allowed := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	excluded := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.1:9993")}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.protocol = ProtocolVersion
+	peer.lastReceive = now
+	peer.paths[allowed] = &peerPathState{lastReceive: now, qosIncoming: map[uint64]time.Time{1: now.Add(-time.Millisecond)}}
+	peer.paths[excluded] = &peerPathState{lastReceive: now, qosIncoming: map[uint64]time.Time{3: now.Add(-time.Millisecond)}}
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbFrame)
+	if err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.recordIncomingBondPacketLocked(peer, excluded, packet, noFlowID, now)
+	node.recordOutgoingBondPacketLocked(peer, excluded, 5, 0, VerbFrame, noFlowID, now)
+	node.sendQoSMeasurementsLocked(peer, now)
+	excludedOutgoing := len(peer.paths[excluded].qosOutgoing)
+	node.mu.Unlock()
+
+	if excludedOutgoing != 0 {
+		t.Fatalf("excluded bond path recorded %d outgoing QoS samples", excludedOutgoing)
+	}
+	if len(sent) != 1 || sent[0].remote != allowed.endpoint {
+		t.Fatalf("QoS destinations = %+v, want only %s", sent, allowed.endpoint)
+	}
+
+	sent = nil
+	node.mu.Lock()
+	peer.paths[allowed].lastReceive = now.Add(-options.FailoverInterval)
+	peer.paths[excluded].lastReceive = now.Add(-options.FailoverInterval)
+	peer.paths[allowed].lastProbe = now.Add(-options.FailoverInterval)
+	peer.paths[excluded].lastProbe = now.Add(-options.FailoverInterval)
+	peer.lastNontrivialReceive = time.Time{}
+	node.lastRootContact = now
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(now)
+	if len(sent) != 1 || sent[0].remote != allowed.endpoint {
+		t.Fatalf("bond probe destinations = %+v, want only %s", sent, allowed.endpoint)
+	}
+}
+
+func TestBroadcastSendRetainsOnlySuccessfulPendingPacketIDs(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("send failed")
+	failingEndpoint := netip.MustParseAddrPort("198.51.100.10:9993")
+	var successfulPacketID uint64
+	var attempts []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		BondingPolicy: BondingBroadcast,
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), TrustedPathID: 7}},
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			attempts = append(attempts, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			if endpoint == failingEndpoint {
+				return wantErr
+			}
+			successfulPacketID = binary.BigEndian.Uint64(packet)
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.protocol = ProtocolVersion
+	successfulPath := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.10:9993")}
+	failingPath := pathKey{localSocket: 2, endpoint: failingEndpoint}
+	node.addPeerPathLocked(peer, failingPath, &peerPathState{lastReceive: now, priority: 1}, now)
+	node.addPeerPathLocked(peer, successfulPath, &peerPathState{lastReceive: now, priority: 1}, now)
+	selectedPaths := node.activeDirectPeerPathsLocked(peer, time.Now())
+	if len(selectedPaths) != 2 {
+		node.mu.Unlock()
+		t.Fatalf("active broadcast paths = %v, peer paths = %+v", selectedPaths, peer.paths)
+	}
+	packet, packetErr := NewPacket(remote.Address(), local.Address(), VerbFrame)
+	if packetErr != nil {
+		node.mu.Unlock()
+		t.Fatal(packetErr)
+	}
+	broadcastPaths := node.bondedPathsLocked(peer, packet.Verb(), noFlowID, packet.PacketID(), time.Now(), nil)
+	if len(broadcastPaths) != 2 {
+		node.mu.Unlock()
+		t.Fatalf("broadcast paths = %v, policy = %v, root = %t, verb = %v", broadcastPaths, node.bondingPolicyForPeerLocked(peer), peer.root, packet.Verb())
+	}
+	request := pendingRequest{verb: VerbFrame, peer: remote.Address(), sentAt: now}
+	node.pending[packet.PacketID()] = request
+	sendErr := node.sendPacketLocked(peer, packet, true)
+	pending := make(map[uint64]pendingRequest, len(node.pending))
+	for packetID, tracked := range node.pending {
+		pending[packetID] = tracked
+	}
+	node.mu.Unlock()
+	if sendErr != nil {
+		t.Fatalf("partially successful broadcast error = %v", sendErr)
+	}
+	tracked := pending[successfulPacketID]
+	if successfulPacketID == 0 || len(pending) != 1 || tracked.verb != request.verb || tracked.peer != request.peer || tracked.replyPaths == nil || len(tracked.replyPaths.remaining) != 1 {
+		t.Fatalf("pending requests = %+v, successful packet = %x, attempts = %+v", pending, successfulPacketID, attempts)
+	}
+}
+
+func TestBroadcastPendingRequestAcceptsEverySuccessfulReply(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sentPacketIDs []uint64
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		BondingPolicy: BondingBroadcast,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			sentPacketIDs = append(sentPacketIDs, binary.BigEndian.Uint64(packet))
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.protocol = ProtocolVersion
+	first := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.20:9993")}
+	second := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.20:9993")}
+	node.addPeerPathLocked(peer, first, &peerPathState{lastReceive: now, priority: 1}, now)
+	node.addPeerPathLocked(peer, second, &peerPathState{lastReceive: now, priority: 1}, now)
+	request, packetErr := NewPacket(remote.Address(), local.Address(), VerbExtFrame)
+	if packetErr != nil {
+		node.mu.Unlock()
+		t.Fatal(packetErr)
+	}
+	const networkID = uint64(0x1234567890abcdef)
+	pending := pendingRequest{verb: VerbExtFrame, peer: remote.Address(), networkID: networkID, sentAt: now}
+	node.pending[request.PacketID()] = pending
+	if err = node.sendPacketLocked(peer, request, true); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if len(sentPacketIDs) != 2 || sentPacketIDs[0] != sentPacketIDs[1] {
+		node.mu.Unlock()
+		t.Fatalf("broadcast packet IDs = %x", sentPacketIDs)
+	}
+	sentPacketID := sentPacketIDs[0]
+	tracked, ok := node.pending[sentPacketID]
+	if !ok || tracked.replyPaths == nil || len(tracked.replyPaths.remaining) != 2 {
+		node.mu.Unlock()
+		t.Fatalf("broadcast pending = %+v, found = %t", tracked, ok)
+	}
+	reply, replyErr := NewPacket(local.Address(), remote.Address(), VerbOK)
+	if replyErr == nil {
+		replyErr = reply.Append(byte(VerbExtFrame))
+	}
+	if replyErr == nil {
+		replyErr = reply.AppendUint64(sentPacketID)
+	}
+	if replyErr == nil {
+		replyErr = reply.AppendUint64(networkID)
+	}
+	if replyErr != nil {
+		node.mu.Unlock()
+		t.Fatal(replyErr)
+	}
+	if err = node.handleOKLocked(first.localSocket, first.endpoint, peer, reply, now); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	tracked, ok = node.pending[sentPacketID]
+	if !ok || tracked.replyPaths == nil || len(tracked.replyPaths.remaining) != 1 {
+		node.mu.Unlock()
+		t.Fatalf("pending after first reply = %+v, found = %t", tracked, ok)
+	}
+	if err = node.handleOKLocked(first.localSocket, first.endpoint, peer, reply, now); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	tracked, ok = node.pending[sentPacketID]
+	if !ok || tracked.replyPaths == nil || len(tracked.replyPaths.remaining) != 1 {
+		node.mu.Unlock()
+		t.Fatalf("duplicate reply consumed another path: pending=%+v found=%t", tracked, ok)
+	}
+	if err = node.handleOKLocked(second.localSocket, second.endpoint, peer, reply, now); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	_, ok = node.pending[sentPacketID]
+	node.mu.Unlock()
+	if ok {
+		t.Fatal("pending request remained after every successful copy replied")
+	}
+}
+
+func TestProtocolErrorDoesNotConsumeBroadcastExpectation(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.30:9993")}
+	second := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.30:9993")}
+	request, err := NewPacket(remote.Address(), local.Address(), VerbExtFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := NewPacket(local.Address(), remote.Address(), VerbError)
+	if err == nil {
+		err = reply.Append(byte(VerbExtFrame))
+	}
+	if err == nil {
+		err = reply.AppendUint64(request.PacketID())
+	}
+	if err == nil {
+		err = reply.Append(0x01)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	node.pending[request.PacketID()] = pendingRequest{
+		verb:   VerbExtFrame,
+		peer:   remote.Address(),
+		sentAt: time.Now(),
+		replyPaths: &pendingReplyPaths{remaining: map[pathKey]struct{}{
+			first:  {},
+			second: {},
+		}},
+	}
+	err = node.handleErrorLocked(peer, reply, time.Now())
+	if err == nil {
+		err = node.handleErrorLocked(peer, reply, time.Now())
+	}
+	tracked, ok := node.pending[request.PacketID()]
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || tracked.replyPaths == nil || len(tracked.replyPaths.remaining) != 2 {
+		t.Fatalf("protocol ERROR consumed pending request: %+v", tracked)
+	}
+}

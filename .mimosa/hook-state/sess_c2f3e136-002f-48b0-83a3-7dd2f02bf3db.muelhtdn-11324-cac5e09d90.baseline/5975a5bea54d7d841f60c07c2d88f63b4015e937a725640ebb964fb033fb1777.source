@@ -1,0 +1,115 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/netip"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	zttransport "github.com/metacubex/zerotier-go/transport"
+)
+
+// fallbackProbeResult reports root and optional controller connectivity through
+// the forced TCP relay transport.
+type fallbackProbeResult struct {
+	Node      string                 `json:"node"`
+	Online    bool                   `json:"online"`
+	Transport string                 `json:"transport"`
+	Relay     string                 `json:"relay"`
+	Network   string                 `json:"network,omitempty"`
+	Status    zerotier.NetworkStatus `json:"status,omitempty"`
+	Peers     []zerotier.PeerStatus  `json:"peers"`
+	Duration  time.Duration          `json:"duration"`
+}
+
+// runFallback verifies that a node and optional network can become ready with
+// UDP disabled and TCP fallback forced.
+func runFallback(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("fallback", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "optional 16-digit network ID")
+	relay := flags.String("relay", "", "TCP fallback relay host:port")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	if flags.NArg() != 0 || options.timeout <= 0 {
+		return exitUsage, errors.New("fallback accepts no positional arguments and requires a positive timeout")
+	}
+	var networkID uint64
+	var err error
+	if *networkText != "" {
+		networkID, err = zerotier.ParseNetworkID(*networkText)
+		if err != nil {
+			return exitUsage, err
+		}
+	}
+	options.mode = physicalProbeTCPFallback
+	options.relay = *relay
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	started := time.Now()
+	var runtime *probeRuntime
+	var network zerotier.Network
+	if networkID != 0 {
+		probe, startErr := startNetworkRuntime(options, networkID, stderr)
+		if startErr != nil {
+			return exitError, startErr
+		}
+		defer probe.Close()
+		code, readyErr := probe.waitReady(ctx, networkID, netip.Addr{}, stdout, options.json)
+		if readyErr != nil {
+			return code, readyErr
+		}
+		runtime, network = probe.runtime, probe.network
+	} else {
+		runtime, err = newProbeRuntime(options, stderr)
+		if err != nil {
+			return exitError, err
+		}
+		defer runtime.Close()
+		if err = runtime.Start(); err != nil {
+			return exitError, err
+		}
+		if err = runtime.waitOnline(ctx); err != nil {
+			return exitNotReady, err
+		}
+	}
+	relayName := *relay
+	if relayName == "" {
+		relayName = zttransport.DefaultTCPFallbackRelay
+	}
+	result := fallbackProbeResult{
+		Node: runtime.node.Address().String(), Online: runtime.node.Online(), Transport: "tcp-fallback", Relay: relayName,
+		Peers: runtime.node.Peers(), Duration: time.Since(started).Round(time.Millisecond),
+	}
+	if networkID != 0 {
+		result.Network, result.Status = fmt.Sprintf("%016x", networkID), network.Status
+	}
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		fmt.Fprintf(stdout, "node=%s online=%t transport=tcp-fallback relay=%s duration=%s", result.Node, result.Online, result.Relay, result.Duration)
+		if result.Network != "" {
+			fmt.Fprintf(stdout, " network=%s status=%d", result.Network, result.Status)
+		}
+		fmt.Fprintln(stdout)
+		for _, peer := range result.Peers {
+			fmt.Fprintf(stdout, "peer=%s role=%s protocol=%d version=%d.%d.%d tunnel=tcp-fallback endpoints=", peer.Address, peer.Role, peer.Protocol, peer.VersionMajor, peer.VersionMinor, peer.VersionRevision)
+			for index, path := range peer.Paths {
+				if index != 0 {
+					fmt.Fprint(stdout, ",")
+				}
+				fmt.Fprint(stdout, path.Endpoint)
+			}
+			fmt.Fprintln(stdout)
+		}
+	}
+	return exitOK, nil
+}

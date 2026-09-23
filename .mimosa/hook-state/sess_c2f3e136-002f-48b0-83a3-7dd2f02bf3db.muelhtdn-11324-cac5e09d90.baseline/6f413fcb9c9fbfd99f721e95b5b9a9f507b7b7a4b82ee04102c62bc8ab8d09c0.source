@@ -1,0 +1,263 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+// TestTCPSubcommandValidatesPort verifies rejection of an invalid target port.
+func TestTCPSubcommandValidatesPort(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"tcp", "-network", "1234567890abcdef", "-target", "192.0.2.2", "-port", "0"}, &stdout, &stderr)
+	if code != exitUsage || !strings.Contains(stderr.String(), "-port") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestTCPProbePacketIPv4AndIPv6 verifies SYN construction for both IP
+// families.
+func TestTCPProbePacketIPv4AndIPv6(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		source netip.Addr
+		target netip.Addr
+	}{
+		{name: "IPv4", source: netip.MustParseAddr("192.0.2.1"), target: netip.MustParseAddr("192.0.2.2")},
+		{name: "IPv6", source: netip.MustParseAddr("fd00::1"), target: netip.MustParseAddr("fd00::2")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := tcpProbePacket(test.source, test.target, 55000, 443, 0x10203040, 0, tcpFlagSYN)
+			source, target, tcp, ok := ipProtocolPayload(packet, tcpProtocol)
+			if !ok || source != test.source || target != test.target {
+				t.Fatalf("source=%s target=%s ok=%t", source, target, ok)
+			}
+			if len(tcp) != tcpHeaderSize || binary.BigEndian.Uint16(tcp[0:2]) != 55000 || binary.BigEndian.Uint16(tcp[2:4]) != 443 ||
+				binary.BigEndian.Uint32(tcp[4:8]) != 0x10203040 || tcp[12]>>4 != tcpHeaderSize/4 || tcp[13] != tcpFlagSYN ||
+				transportChecksum(source, target, tcpProtocol, tcp) != 0 {
+				t.Fatalf("invalid TCP SYN: %x", tcp)
+			}
+		})
+	}
+	if packet := tcpProbePacket(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("fd00::2"), 1, 2, 3, 4, tcpFlagSYN); packet != nil {
+		t.Fatalf("mixed-family packet = %x", packet)
+	}
+}
+
+// TestTCPProbeReplyParsingIPv4AndIPv6 verifies matching and rejection of TCP
+// probe replies.
+func TestTCPProbeReplyParsingIPv4AndIPv6(t *testing.T) {
+	const (
+		sourcePort = uint16(55000)
+		targetPort = uint16(443)
+		clientISN  = uint32(0x10203040)
+		serverISN  = uint32(0x50607080)
+	)
+	for _, test := range []struct {
+		name   string
+		source netip.Addr
+		target netip.Addr
+	}{
+		{name: "IPv4", source: netip.MustParseAddr("192.0.2.1"), target: netip.MustParseAddr("192.0.2.2")},
+		{name: "IPv6", source: netip.MustParseAddr("fd00::1"), target: netip.MustParseAddr("fd00::2")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			open := tcpProbePacket(test.target, test.source, targetPort, sourcePort, serverISN, clientISN+1, tcpFlagSYN|tcpFlagACK)
+			status, serverNext, ok := parseTCPProbeReply(open, test.source, test.target, sourcePort, targetPort, clientISN)
+			if !ok || status != tcpProbeStatusOpen || serverNext != serverISN+1 {
+				t.Fatalf("status=%q serverNext=%08x ok=%t", status, serverNext, ok)
+			}
+
+			closed := tcpProbePacket(test.target, test.source, targetPort, sourcePort, 0, clientISN+1, tcpFlagRST|tcpFlagACK)
+			status, _, ok = parseTCPProbeReply(closed, test.source, test.target, sourcePort, targetPort, clientISN)
+			if !ok || status != tcpProbeStatusClosed {
+				t.Fatalf("closed status=%q ok=%t", status, ok)
+			}
+
+			wrongACK := append([]byte(nil), open...)
+			_, _, tcp, ok := ipProtocolPayload(wrongACK, tcpProtocol)
+			if !ok {
+				t.Fatal("generated reply did not parse")
+			}
+			binary.BigEndian.PutUint32(tcp[8:12], clientISN+2)
+			updateTCPChecksum(wrongACK)
+			if _, _, ok = parseTCPProbeReply(wrongACK, test.source, test.target, sourcePort, targetPort, clientISN); ok {
+				t.Fatal("reply with wrong acknowledgement was accepted")
+			}
+
+			corrupt := append([]byte(nil), open...)
+			corrupt[len(corrupt)-1] ^= 1
+			if _, _, ok = parseTCPProbeReply(corrupt, test.source, test.target, sourcePort, targetPort, clientISN); ok {
+				t.Fatal("reply with invalid checksum was accepted")
+			}
+
+			if test.source.Is6() {
+				withExtension := addIPv6DestinationOptions(open)
+				status, serverNext, ok = parseTCPProbeReply(withExtension, test.source, test.target, sourcePort, targetPort, clientISN)
+				if !ok || status != tcpProbeStatusOpen || serverNext != serverISN+1 {
+					t.Fatalf("extension status=%q serverNext=%08x ok=%t", status, serverNext, ok)
+				}
+			} else {
+				fragmented := append([]byte(nil), open...)
+				binary.BigEndian.PutUint16(fragmented[6:8], 0x6000)
+				binary.BigEndian.PutUint16(fragmented[10:12], 0)
+				binary.BigEndian.PutUint16(fragmented[10:12], checksum(fragmented[:20]))
+				if _, _, ok = parseTCPProbeReply(fragmented, test.source, test.target, sourcePort, targetPort, clientISN); ok {
+					t.Fatal("fragmented IPv4 reply was accepted")
+				}
+			}
+		})
+	}
+}
+
+// TestTCPProbeThroughIPLink exercises open and closed replies through iplink.
+func TestTCPProbeThroughIPLink(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	for _, test := range []struct {
+		name   string
+		status tcpProbeStatus
+	}{
+		{name: "Open", status: tcpProbeStatusOpen},
+		{name: "Closed", status: tcpProbeStatusClosed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packets := make(chan []byte, 4)
+			linkErrs := make(chan error, 1)
+			resets := make(chan struct{}, 1)
+			sender := &tcpProbeTestSender{networkID: networkID, address: zerotier.NewAddress(0x12345), status: test.status, packets: packets, errs: linkErrs, resets: resets}
+			link, err := iplink.New(networkID, sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sender.link = link
+			config := zerotier.NetworkConfigData{
+				NetworkID: networkID, MTU: zerotier.DefaultNetworkMTU,
+				Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+			}
+			if err = link.ApplyNetworkConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &probeRuntime{node: &zerotier.Node{}, link: link, packets: packets, linkErrs: linkErrs}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			result, probeErr := runtime.probeTCP(ctx, config, netip.MustParseAddr("192.0.2.2"), 443, 1)
+			if result.Status != test.status || (test.status == tcpProbeStatusOpen) != (probeErr == nil) {
+				t.Fatalf("result=%+v err=%v", result, probeErr)
+			}
+			if test.status == tcpProbeStatusOpen {
+				select {
+				case <-resets:
+				case <-time.After(time.Second):
+					t.Fatal("open probe did not reset the remote half-connection")
+				}
+			}
+		})
+	}
+}
+
+// tcpProbeTestSender emulates the remote Ethernet and TCP endpoint used by the
+// iplink integration test.
+type tcpProbeTestSender struct {
+	networkID uint64
+	address   zerotier.Address
+	status    tcpProbeStatus
+	link      *iplink.Link
+	packets   chan<- []byte
+	errs      chan<- error
+	resets    chan<- struct{}
+}
+
+// Address returns the local ZeroTier address used by the test link.
+func (s *tcpProbeTestSender) Address() zerotier.Address { return s.address }
+
+// SendFrame replies to ARP and TCP probe frames emitted by the test link.
+func (s *tcpProbeTestSender) SendFrame(networkID uint64, destination zerotier.MAC, etherType uint16, payload []byte) error {
+	if networkID != s.networkID {
+		return nil
+	}
+	switch etherType {
+	case zerotier.EtherTypeARP:
+		if len(payload) < 28 || binary.BigEndian.Uint16(payload[6:8]) != 1 {
+			return nil
+		}
+		remoteMAC := zerotier.NewMAC(0x020000000002)
+		reply := append([]byte(nil), payload[:28]...)
+		binary.BigEndian.PutUint16(reply[6:8], 2)
+		remoteMACBytes := remoteMAC.Bytes()
+		copy(reply[8:14], remoteMACBytes[:])
+		copy(reply[14:18], payload[24:28])
+		copy(reply[18:24], payload[8:14])
+		copy(reply[24:28], payload[14:18])
+		go s.deliver(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: destination, EtherType: etherType, Payload: reply})
+	case zerotier.EtherTypeIPv4:
+		source, target, tcp, ok := ipProtocolPayload(payload, tcpProtocol)
+		if !ok || len(tcp) < tcpHeaderSize {
+			return nil
+		}
+		flags := tcp[13]
+		if flags&tcpFlagRST != 0 {
+			select {
+			case s.resets <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+		if flags&tcpFlagSYN == 0 {
+			return nil
+		}
+		replyFlags := tcpFlagSYN | tcpFlagACK
+		serverSequence := uint32(0x50607080)
+		if s.status == tcpProbeStatusClosed {
+			replyFlags = tcpFlagRST | tcpFlagACK
+			serverSequence = 0
+		}
+		reply := tcpProbePacket(target, source, binary.BigEndian.Uint16(tcp[2:4]), binary.BigEndian.Uint16(tcp[0:2]), serverSequence, binary.BigEndian.Uint32(tcp[4:8])+1, replyFlags)
+		remoteMAC := zerotier.NewMAC(0x020000000002)
+		go s.deliver(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: destination, EtherType: etherType, Payload: reply})
+	}
+	return nil
+}
+
+// deliver passes one emulated inbound frame through iplink.
+func (s *tcpProbeTestSender) deliver(frame zerotier.Frame) {
+	packet, err := s.link.HandleFrame(frame)
+	if err != nil {
+		select {
+		case s.errs <- err:
+		default:
+		}
+		return
+	}
+	if packet != nil {
+		s.packets <- append([]byte(nil), packet...)
+	}
+}
+
+// updateTCPChecksum recalculates the TCP checksum in a test packet.
+func updateTCPChecksum(packet []byte) {
+	source, target, tcp, ok := ipProtocolPayload(packet, tcpProtocol)
+	if !ok {
+		panic("invalid test TCP packet")
+	}
+	binary.BigEndian.PutUint16(tcp[16:18], 0)
+	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(source, target, tcpProtocol, tcp))
+}
+
+// addIPv6DestinationOptions inserts a destination-options extension header in
+// a generated test packet.
+func addIPv6DestinationOptions(packet []byte) []byte {
+	result := make([]byte, len(packet)+8)
+	copy(result[:40], packet[:40])
+	result[6] = 60
+	binary.BigEndian.PutUint16(result[4:6], binary.BigEndian.Uint16(packet[4:6])+8)
+	result[40] = tcpProtocol
+	copy(result[48:], packet[40:])
+	return result
+}

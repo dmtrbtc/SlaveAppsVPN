@@ -1,0 +1,24 @@
+stages:
+  - test
+
+test:
+  stage: test
+  image: golang:latest
+  variables:
+    GOPATH: ${CI_PROJECT_DIR}/.go
+    GIT_SUBMODULE_STRATEGY: recursive
+    GIT_DEPTH: 0
+    GIT_SUBMODULE_DEPTH: 0
+  cache:
+    key: go-cache-${CI_PROJECT_PATH_SLUG}
+    paths:
+      - .go
+  only:
+    refs:
+      - pushes
+  before_script:
+    - mkdir -p .go
+  script:
+    - go mod tidy -v
+    - go test -v
+    - go build -v

@@ -1,0 +1,166 @@
+package zerotier
+
+import (
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestCertificateOfOwnershipRoundTrip(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	mac := NewMAC(0x7a1122334455)
+	ip := netip.MustParseAddr("192.0.2.10")
+	certificate := makeTestOwnership(t, controller, member.Address(), networkID, 7, mac, ip)
+	encoded := certificate.appendBinary(nil)
+	parsed, consumed, err := ParseCertificateOfOwnership(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed != len(encoded) || !parsed.Verify(controller) {
+		t.Fatal("controller-signed ownership certificate did not verify")
+	}
+	if !parsed.OwnsMAC(mac) || !parsed.OwnsIP(ip) || parsed.OwnsIP(netip.MustParseAddr("192.0.2.11")) {
+		t.Fatal("ownership certificate resource matching failed")
+	}
+
+	dictionary, err := appendDictionaryUint(nil, "nwid", networkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dictionary, _ = appendDictionaryUint(dictionary, "v", networkConfigVersion)
+	dictionary, _ = appendDictionaryUint(dictionary, "id", member.Address().Uint64())
+	dictionary, _ = appendDictionaryUint(dictionary, "t", uint64(NetworkTypePublic))
+	dictionary, err = appendDictionaryEntry(dictionary, "COO", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseNetworkConfig(dictionary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Ownership) != 1 || !config.Ownership[0].Verify(controller) {
+		t.Fatal("network config did not retain ownership certificate")
+	}
+}
+
+func TestOwnershipCharacteristicRule(t *testing.T) {
+	mac := NewMAC(0x7a1122334455)
+	ip := netip.MustParseAddr("192.0.2.10")
+	certificate := CertificateOfOwnership{Things: ownershipThings(mac, ip)}
+	frame := Frame{Source: mac, EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	ipBytes := ip.As4()
+	copy(frame.Payload[12:16], ipBytes[:])
+	config := NetworkConfigData{Rules: []NetworkRule{
+		{Type: ruleMatchCharacteristics, Value: []byte{0x18, 0, 0, 0, 0, 0, 0, 0}},
+		{Type: ruleActionAccept},
+		{Type: ruleActionDrop},
+	}}
+	if !config.allowsFrame(frame, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2), ownership: []CertificateOfOwnership{certificate}}) {
+		t.Fatal("ownership-authenticated frame was rejected")
+	}
+	if config.allowsFrame(frame, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2)}) {
+		t.Fatal("frame without an ownership certificate was accepted")
+	}
+}
+
+func TestNetworkCredentialsAcceptOwnershipCertificate(t *testing.T) {
+	receiver, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{
+		Identity: receiver,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(sender, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+
+	certificate := makeTestOwnership(t, controller, sender.Address(), networkID, 9, NewMAC(0x7a1122334455), netip.MustParseAddr("192.0.2.20"))
+	packet, _ := NewPacket(receiver.Address(), sender.Address(), VerbNetworkCredentials)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(certificate.appendBinary(nil)...)
+	key, err := sender.Agree(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, netip.MustParseAddrPort("203.0.113.40:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	certificates := node.networks[networkID].ownership[sender.Address()]
+	node.mu.Unlock()
+	if len(certificates) != 1 || !certificates[0].Verify(controller) || !certificates[0].OwnsIP(netip.MustParseAddr("192.0.2.20")) {
+		t.Fatal("received ownership certificate was not stored")
+	}
+}
+
+func makeTestOwnership(t *testing.T, controller Identity, member Address, networkID uint64, id uint32, mac MAC, ip netip.Addr) CertificateOfOwnership {
+	t.Helper()
+	certificate := CertificateOfOwnership{
+		NetworkID: networkID,
+		Timestamp: uint64(time.Now().UnixMilli()),
+		ID:        id,
+		Things:    ownershipThings(mac, ip),
+		IssuedTo:  member,
+		SignedBy:  controller.Address(),
+	}
+	signature, err := controller.Sign(certificate.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate.Signature = signature
+	return certificate
+}
+
+func ownershipThings(mac MAC, ip netip.Addr) []OwnershipThing {
+	var macThing, ipThing OwnershipThing
+	macThing.Type = OwnershipThingMAC
+	macBytes := mac.Bytes()
+	copy(macThing.Value[:], macBytes[:])
+	if ip.Is4() {
+		ipThing.Type = OwnershipThingIPv4
+		ipBytes := ip.As4()
+		copy(ipThing.Value[:], ipBytes[:])
+	} else {
+		ipThing.Type = OwnershipThingIPv6
+		ipBytes := ip.As16()
+		copy(ipThing.Value[:], ipBytes[:])
+	}
+	return []OwnershipThing{macThing, ipThing}
+}

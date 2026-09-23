@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+
+  lint:
+    name: Golang-CI Lint
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v8
+  cross:
+    name: Cross
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        go-version: [stable]
+        platform: [ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Cross
+        working-directory: ci
+        run: go run mage.go -v -w ../ crossBuild
+
+  test:
+    name: Unit test
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        go-version: [stable, oldstable, 1.17.x]
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Test
+      run: go test -race -v ./...

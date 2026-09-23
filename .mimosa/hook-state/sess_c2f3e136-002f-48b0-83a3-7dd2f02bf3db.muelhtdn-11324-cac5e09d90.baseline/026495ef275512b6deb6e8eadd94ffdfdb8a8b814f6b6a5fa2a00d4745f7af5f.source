@@ -1,0 +1,331 @@
+package zerotier
+
+import (
+	"bytes"
+	"errors"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestParseOrbit(t *testing.T) {
+	world, seed, err := ParseOrbit("8056c2e21c000001", "0f1b56d269")
+	if err != nil || world != 0x8056c2e21c000001 || seed.String() != "0f1b56d269" {
+		t.Fatalf("world=%x seed=%s err=%v", world, seed, err)
+	}
+	for _, test := range [][2]string{{"bad", "0f1b56d269"}, {"0000000000000000", "0f1b56d269"}, {"8056c2e21c000001", "bad"}, {"8056c2e21c000001", "ff00000001"}} {
+		if _, _, err = ParseOrbit(test[0], test[1]); err == nil {
+			t.Fatalf("invalid orbit %q,%q accepted", test[0], test[1])
+		}
+	}
+}
+
+func TestDefaultPlanet(t *testing.T) {
+	world, err := DefaultPlanet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if world.ID != WorldIDearth || len(world.Roots) == 0 {
+		t.Fatalf("unexpected planet: id=%d roots=%d", world.ID, len(world.Roots))
+	}
+	for _, root := range world.Roots {
+		if root.Identity.Address().IsReserved() || len(root.Endpoints) == 0 {
+			t.Fatalf("invalid root %s: endpoints=%v", root.Identity.Address(), root.Endpoints)
+		}
+	}
+	serialized, err := world.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(serialized, defaultPlanetData) {
+		t.Fatal("default planet did not round trip byte-for-byte")
+	}
+}
+
+func TestPrivatePlanetReplacesDefaultRoots(t *testing.T) {
+	root, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootEndpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	planet := World{
+		Type:                  WorldTypePlanet,
+		ID:                    0x0123456789abcdef,
+		Timestamp:             1,
+		UpdatesMustBeSignedBy: root.PublicKey(),
+		Roots:                 []WorldRoot{{Identity: root, Endpoints: []netip.AddrPort{rootEndpoint}}},
+	}
+	var sent []sentWirePacket
+	store := NewMemoryStore()
+	node, err := NewNode(NodeConfig{
+		Store:  store,
+		Planet: &planet,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planet.Roots[0].Endpoints[0] = netip.MustParseAddrPort("192.0.2.99:9993")
+	node.ProcessBackgroundTasks(time.Unix(1700000000, 0))
+	if len(sent) == 0 || sent[0].remote != rootEndpoint {
+		t.Fatalf("private planet root was not contacted: %+v", sent)
+	}
+	snapshot := node.Planet()
+	if snapshot.ID != 0x0123456789abcdef || len(snapshot.Roots) != 1 {
+		t.Fatalf("unexpected private planet: %+v", snapshot)
+	}
+	snapshot.Roots[0].Endpoints[0] = netip.MustParseAddrPort("192.0.2.98:9993")
+	if node.Planet().Roots[0].Endpoints[0] != rootEndpoint {
+		t.Fatal("mutating a planet snapshot changed node topology")
+	}
+	updatedEndpoint := netip.MustParseAddrPort("192.0.2.11:9993")
+	update := node.Planet()
+	update.Timestamp++
+	update.Roots[0].Endpoints[0] = updatedEndpoint
+	message, err := update.AppendTo(nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update.Signature, err = root.Sign(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	err = node.addWorldLocked(update, false)
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewNode(NodeConfig{
+		Store:    store,
+		Planet:   &planet,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		Identity: node.Identity(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := restarted.Planet()
+	if restored.Timestamp != update.Timestamp || restored.Roots[0].Endpoints[0] != updatedEndpoint {
+		t.Fatalf("private planet update was not restored: %+v", restored)
+	}
+}
+
+func TestParsePlanetRequiresCompletePlanet(t *testing.T) {
+	planet, err := DefaultPlanet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := planet.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ParsePlanet(serialized); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ParsePlanet(append(serialized, 0)); !errors.Is(err, ErrInvalidWorld) {
+		t.Fatalf("planet with trailing data: %v", err)
+	}
+	planet.Type = WorldTypeMoon
+	serialized, err = planet.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ParsePlanet(serialized); !errors.Is(err, ErrInvalidWorld) {
+		t.Fatalf("moon accepted as planet: %v", err)
+	}
+}
+
+func TestWorldUpdateSignature(t *testing.T) {
+	signer, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := World{
+		Type:                  WorldTypeMoon,
+		ID:                    0x123456789abcdef0,
+		Timestamp:             1,
+		UpdatesMustBeSignedBy: signer.PublicKey(),
+		Roots:                 []WorldRoot{{Identity: signer, Endpoints: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.1:9993")}}},
+	}
+	update := current
+	update.Timestamp = 2
+	message, err := update.AppendTo(nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update.Signature, err = signer.Sign(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.ShouldBeReplacedBy(update) {
+		t.Fatal("valid world update signature was rejected")
+	}
+	update.Roots[0].Endpoints[0] = netip.MustParseAddrPort("192.0.2.2:9993")
+	if current.ShouldBeReplacedBy(update) {
+		t.Fatal("modified world update was accepted")
+	}
+}
+
+func TestOrbitLearnsMoonThroughHello(t *testing.T) {
+	requesterIdentity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const worldID = uint64(0x123456789abcdef0)
+	seedEndpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	moon := World{
+		Type:                  WorldTypeMoon,
+		ID:                    worldID,
+		Timestamp:             7,
+		UpdatesMustBeSignedBy: seedIdentity.PublicKey(),
+		Roots:                 []WorldRoot{{Identity: seedIdentity, Endpoints: []netip.AddrPort{seedEndpoint}}},
+	}
+
+	var requesterSent, seedSent []sentWirePacket
+	requester, err := NewNode(NodeConfig{
+		Identity: requesterIdentity,
+		Store:    NewMemoryStore(),
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			requesterSent = append(requesterSent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := NewNode(NodeConfig{
+		Identity: seedIdentity,
+		Store:    NewMemoryStore(),
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			seedSent = append(seedSent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.mu.Lock()
+	if err := seed.addWorldLocked(moon, true); err != nil {
+		seed.mu.Unlock()
+		t.Fatal(err)
+	}
+	seed.mu.Unlock()
+	if err := requester.Orbit(worldID, seedIdentity.Address()); err != nil {
+		t.Fatal(err)
+	}
+	requester.mu.Lock()
+	if err := requester.addPeerLocked(seedIdentity, false); err != nil {
+		requester.mu.Unlock()
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	if err := requester.sendHelloLocked(seedIdentity.Address(), seedEndpoint, now); err != nil {
+		requester.mu.Unlock()
+		t.Fatal(err)
+	}
+	requester.mu.Unlock()
+	if len(requesterSent) == 0 {
+		t.Fatal("orbit did not send HELLO to moon seed")
+	}
+	requesterEndpoint := netip.MustParseAddrPort("198.51.100.2:43210")
+	if err := seed.ProcessWirePacket(0, requesterEndpoint, requesterSent[len(requesterSent)-1].data, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(seedSent) == 0 {
+		t.Fatal("moon seed did not answer HELLO")
+	}
+	key, err := requesterIdentity.Agree(seedIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var helloOK []byte
+	for _, sent := range seedSent {
+		packet, err := ParsePacket(sent.data)
+		if err == nil && packet.Dearmor(key[:]) == nil && packet.Verb() == VerbOK {
+			helloOK = sent.data
+			break
+		}
+	}
+	if len(helloOK) == 0 {
+		t.Fatal("moon seed HELLO response was not found")
+	}
+	if err := requester.ProcessWirePacket(0, seedEndpoint, helloOK, now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	moons := requester.Moons()
+	if len(moons) != 1 || moons[0].ID != worldID || moons[0].Timestamp != moon.Timestamp {
+		t.Fatalf("unexpected learned moons: %+v", moons)
+	}
+	moons[0].Roots[0].Endpoints[0] = netip.MustParseAddrPort("203.0.113.99:9993")
+	if snapshot := requester.Moons(); snapshot[0].Roots[0].Endpoints[0] != seedEndpoint {
+		t.Fatal("mutating a moon snapshot changed node topology")
+	}
+	if peer, ok := requester.PeerIdentity(seedIdentity.Address()); !ok || peer.PublicString() != seedIdentity.PublicString() {
+		t.Fatal("moon root identity was not retained")
+	}
+	var moonRole PeerRole
+	for _, peer := range requester.Peers() {
+		if peer.Address == seedIdentity.Address() {
+			moonRole = peer.Role
+			break
+		}
+	}
+	if moonRole != PeerRoleMoon {
+		t.Fatalf("moon root role = %s", moonRole)
+	}
+}
+
+func TestOrbitEventCallbackCanReenterNode(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	var node *Node
+	var reentered bool
+	node, err = NewNode(NodeConfig{
+		Identity: identity,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			if event.Type == EventPeerIdentityLearned && event.PeerAddress == seed.Address() {
+				reentered = len(node.Peers()) != 0
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	world := World{
+		Type:                  WorldTypeMoon,
+		ID:                    0x0102030405060708,
+		Timestamp:             1,
+		UpdatesMustBeSignedBy: seed.PublicKey(),
+		Roots:                 []WorldRoot{{Identity: seed, Endpoints: []netip.AddrPort{netip.MustParseAddrPort("192.0.2.10:9993")}}},
+	}
+	serialized, err := world.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Put(moonStateName(world.ID), serialized); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Orbit(world.ID, seed.Address()); err != nil {
+		t.Fatal(err)
+	}
+	if !reentered {
+		t.Fatal("orbit event callback could not reenter the node")
+	}
+}

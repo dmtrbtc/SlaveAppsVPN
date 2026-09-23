@@ -1,0 +1,211 @@
+package zerotier
+
+import (
+	"net/netip"
+	"testing"
+	"time"
+)
+
+func TestTagRoundTripAndNetworkConfig(t *testing.T) {
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	tag := makeTestTag(t, controller, member.Address(), networkID, 11, 42, 1000)
+	encoded := tag.appendBinary(nil)
+	parsed, consumed, err := ParseTag(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed != len(encoded) || parsed.ID != 11 || parsed.Value != 42 || !parsed.Verify(controller) {
+		t.Fatal("controller-signed tag did not round trip")
+	}
+
+	dictionary, _ := appendDictionaryUint(nil, "nwid", networkID)
+	dictionary, _ = appendDictionaryUint(dictionary, "v", networkConfigVersion)
+	dictionary, _ = appendDictionaryUint(dictionary, "id", member.Address().Uint64())
+	dictionary, _ = appendDictionaryUint(dictionary, "t", uint64(NetworkTypePublic))
+	dictionary, err = appendDictionaryEntry(dictionary, "TAG", encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseNetworkConfig(dictionary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Tags) != 1 || !config.Tags[0].Verify(controller) {
+		t.Fatal("network config did not retain its tag")
+	}
+}
+
+func TestTagRules(t *testing.T) {
+	local := Tag{ID: 7, Value: 42, Timestamp: 1000}
+	remote := Tag{ID: 7, Value: 42, Timestamp: 1005}
+	config := NetworkConfigData{
+		Timestamp:              1000,
+		CredentialTimeMaxDelta: 10,
+		Rules: []NetworkRule{
+			{Type: ruleMatchTagsEqual, Value: []byte{0, 0, 0, 7, 0, 0, 0, 42}},
+			{Type: ruleActionAccept},
+			{Type: ruleActionDrop},
+		},
+	}
+	frame := Frame{EtherType: EtherTypeIPv4, Payload: make([]byte, 20)}
+	if !config.allowsFrame(frame, frameRuleContext{inbound: true, sourceZT: Address(1), destinationZT: Address(2), localTags: []Tag{local}, remoteTags: []Tag{remote}}) {
+		t.Fatal("matching local and remote tags were rejected")
+	}
+	remote.Timestamp = 1011
+	if config.allowsFrame(frame, frameRuleContext{inbound: true, sourceZT: Address(1), destinationZT: Address(2), localTags: []Tag{local}, remoteTags: []Tag{remote}}) {
+		t.Fatal("expired remote tag was accepted")
+	}
+	if !config.allowsFrame(frame, frameRuleContext{sourceZT: Address(1), destinationZT: Address(2), localTags: []Tag{local}}) {
+		t.Fatal("outbound first packet was rejected before the remote tag could be learned")
+	}
+}
+
+func TestNetworkCredentialsAcceptTag(t *testing.T) {
+	receiver, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{
+		Identity: receiver,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(sender, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+
+	tag := makeTestTag(t, controller, sender.Address(), networkID, 7, 42, uint64(time.Now().UnixMilli()))
+	packet, _ := NewPacket(receiver.Address(), sender.Address(), VerbNetworkCredentials)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(tag.appendBinary(nil)...)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	key, err := sender.Agree(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, netip.MustParseAddrPort("203.0.113.50:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	tags := node.networks[networkID].tags[sender.Address()]
+	node.mu.Unlock()
+	if len(tags) != 1 || tags[0].Value != 42 || !tags[0].Verify(controller) {
+		t.Fatal("received tag was not stored")
+	}
+}
+
+func TestNetworkCredentialsAcceptForwardedTag(t *testing.T) {
+	controller, _ := GenerateIdentity()
+	relay, _ := GenerateIdentity()
+	target, _ := GenerateIdentity()
+	local, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0xabcdef
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := makeTestTag(t, controller, target.Address(), networkID, 7, 42, 100)
+	node.mu.Lock()
+	_ = node.addPeerLocked(controller, false)
+	_ = node.addPeerLocked(relay, false)
+	network := newNetwork(networkID)
+	node.networks[networkID] = network
+	packet, _ := NewPacket(local.Address(), relay.Address(), VerbNetworkCredentials)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(tag.appendBinary(nil)...)
+	_ = packet.AppendUint16(0)
+	_ = packet.AppendUint16(0)
+	err = node.handleNetworkCredentialsLocked(node.peers[relay.Address()], packet, time.Now())
+	stored := network.tags[target.Address()]
+	node.mu.Unlock()
+	if err != nil || len(stored) != 1 || stored[0].ID != tag.ID {
+		t.Fatalf("forwarded tag was not accepted: err=%v tags=%v", err, stored)
+	}
+}
+
+func TestCredentialPacketRetriesAfterControllerWhois(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	sender, _ := GenerateIdentity()
+	controller, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := makeTestTag(t, controller, sender.Address(), networkID, 17, 99, uint64(time.Now().UnixMilli()))
+	payload := []byte{0, 0, 0, 0, 1}
+	payload = append(payload, tag.appendBinary(nil)...)
+	payload = append(payload, 0, 0, 0, 0)
+	now := time.Now()
+	node.mu.Lock()
+	_ = node.addPeerLocked(sender, false)
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	node.networks[networkID] = network
+	err = node.handleNetworkCredentialsPayloadLocked(node.peers[sender.Address()], payload, now)
+	if err != errPacketRetry {
+		node.mu.Unlock()
+		t.Fatalf("deferred credential result = %v", err)
+	}
+	if len(node.deferredCredentials[controller.Address()]) != 1 || len(network.tags[sender.Address()]) != 0 {
+		node.mu.Unlock()
+		t.Fatal("credential packet was not deferred for the missing controller")
+	}
+	if err = node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	stored := network.tags[sender.Address()]
+	trusted := !node.peers[sender.Address()].lastTrustEstablished.IsZero()
+	node.mu.Unlock()
+	if len(stored) != 1 || stored[0].ID != tag.ID || !trusted {
+		t.Fatalf("deferred credential retry: tags=%v trusted=%t", stored, trusted)
+	}
+}
+
+func makeTestTag(t *testing.T, controller Identity, member Address, networkID uint64, id, value uint32, timestamp uint64) Tag {
+	t.Helper()
+	tag := Tag{NetworkID: networkID, Timestamp: timestamp, ID: id, Value: value, IssuedTo: member, SignedBy: controller.Address()}
+	signature, err := controller.Sign(tag.signedData())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag.Signature = signature
+	return tag
+}

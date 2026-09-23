@@ -1,0 +1,134 @@
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"net/netip"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+// TestEchoReplyParsingIPv4AndIPv6 verifies ICMP reply validation for both IP
+// families.
+func TestEchoReplyParsingIPv4AndIPv6(t *testing.T) {
+	const identifier = uint16(0x5a54)
+	for _, test := range []struct {
+		name   string
+		source netip.Addr
+		target netip.Addr
+	}{
+		{name: "IPv4", source: netip.MustParseAddr("192.0.2.1"), target: netip.MustParseAddr("192.0.2.2")},
+		{name: "IPv6", source: netip.MustParseAddr("fd00::1"), target: netip.MustParseAddr("fd00::2")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			packet := makeEchoReply(test.source, test.target, identifier, 7)
+			sequence, ok := echoReplySequence(packet, test.source, test.target, identifier)
+			if !ok || sequence != 7 {
+				t.Fatalf("sequence=%d ok=%t", sequence, ok)
+			}
+
+			wrongSource := append([]byte(nil), packet...)
+			if test.target.Is4() {
+				copy(wrongSource[12:16], netip.MustParseAddr("192.0.2.3").AsSlice())
+			} else {
+				copy(wrongSource[8:24], netip.MustParseAddr("fd00::3").AsSlice())
+			}
+			updateEchoReplyChecksums(wrongSource)
+			if _, ok = echoReplySequence(wrongSource, test.source, test.target, identifier); ok {
+				t.Fatal("reply from the wrong source was accepted")
+			}
+
+			corrupt := append([]byte(nil), packet...)
+			corrupt[len(corrupt)-1] ^= 1
+			if _, _, state := parseEchoReply(corrupt, test.source, test.target, identifier); state != echoReplyCorrupt {
+				t.Fatalf("corrupt reply state = %d", state)
+			}
+			if _, ok = echoReplySequence(corrupt, test.source, test.target, identifier); ok {
+				t.Fatal("reply with an invalid checksum was accepted")
+			}
+		})
+	}
+}
+
+// TestPingPayloadAndStatistics verifies payload variation and aggregate loss,
+// timing, jitter, duplicate, and corruption fields.
+func TestPingPayloadAndStatistics(t *testing.T) {
+	token := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	first := pingPayload(token, 1, 1300)
+	second := pingPayload(token, 2, 1300)
+	if len(first) != 1300 || string(first) == string(second) {
+		t.Fatal("ping payloads do not carry per-sequence integrity data")
+	}
+	result := pingResult{
+		Sent: 4, Received: 3, Duplicates: 1, Corrupt: 2,
+		Replies: []pingReply{{RTT: time.Millisecond}, {RTT: 3 * time.Millisecond}, {RTT: 2 * time.Millisecond}},
+	}
+	result.finish()
+	if result.Lost != 1 || result.Minimum != time.Millisecond || result.Average != 2*time.Millisecond || result.Maximum != 3*time.Millisecond || result.Jitter != 1500*time.Microsecond {
+		t.Fatalf("ping statistics = %+v", result)
+	}
+}
+
+// TestLargePingThroughIPLink verifies payload integrity and large overlay frame
+// delivery through ARP and iplink.
+func TestLargePingThroughIPLink(t *testing.T) {
+	const networkID = uint64(0x1234567890abcdef)
+	packets := make(chan []byte, 16)
+	linkErrs := make(chan error, 1)
+	sender := &udpProbeTestSender{networkID: networkID, address: zerotier.NewAddress(0x12345), packets: packets, errs: linkErrs}
+	link, err := iplink.New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.link = link
+	config := zerotier.NetworkConfigData{
+		NetworkID: networkID, MTU: zerotier.DefaultNetworkMTU,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &probeRuntime{node: &zerotier.Node{}, link: link, packets: packets, linkErrs: linkErrs}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := runtime.ping(ctx, config, netip.MustParseAddr("192.0.2.2"), 3, 1300, 10*time.Millisecond)
+	if err != nil || result.Sent != 3 || result.Received != 3 || result.Lost != 0 || result.PacketSize != 1328 {
+		t.Fatalf("ping result=%+v err=%v", result, err)
+	}
+}
+
+// makeEchoReply converts an echo request into a matching test reply.
+func makeEchoReply(source, target netip.Addr, identifier, sequence uint16) []byte {
+	packet := echoRequest(source, target, identifier, sequence)
+	if target.Is4() {
+		copy(packet[12:16], target.AsSlice())
+		copy(packet[16:20], source.AsSlice())
+		packet[20] = 0
+	} else {
+		copy(packet[8:24], target.AsSlice())
+		copy(packet[24:40], source.AsSlice())
+		packet[40] = 129
+	}
+	updateEchoReplyChecksums(packet)
+	return packet
+}
+
+// updateEchoReplyChecksums recalculates the IP and ICMP checksums in a test
+// reply.
+func updateEchoReplyChecksums(packet []byte) {
+	if packet[0]>>4 == 4 {
+		headerLength := int(packet[0]&0x0f) * 4
+		binary.BigEndian.PutUint16(packet[10:12], 0)
+		binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:headerLength]))
+		binary.BigEndian.PutUint16(packet[headerLength+2:headerLength+4], 0)
+		binary.BigEndian.PutUint16(packet[headerLength+2:headerLength+4], checksum(packet[headerLength:]))
+		return
+	}
+	source := netip.AddrFrom16([16]byte(packet[8:24]))
+	target := netip.AddrFrom16([16]byte(packet[24:40]))
+	binary.BigEndian.PutUint16(packet[42:44], 0)
+	binary.BigEndian.PutUint16(packet[42:44], icmpv6Checksum(source, target, packet[40:]))
+}

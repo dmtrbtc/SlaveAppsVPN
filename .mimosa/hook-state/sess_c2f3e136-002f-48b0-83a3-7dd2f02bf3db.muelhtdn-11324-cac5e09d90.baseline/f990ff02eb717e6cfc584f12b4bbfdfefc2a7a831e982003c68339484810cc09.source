@@ -1,0 +1,102 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/netip"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+// restartCycleResult reports one complete state-backed node lifetime.
+type restartCycleResult struct {
+	Cycle          int           `json:"cycle"`
+	Node           string        `json:"node"`
+	CachedReady    bool          `json:"cached_ready"`
+	ConfigReceive  time.Time     `json:"config_receive"`
+	ConfigRevision uint64        `json:"config_revision"`
+	Duration       time.Duration `json:"duration"`
+}
+
+// restartProbeResult reports repeated identity, cache, and controller recovery.
+type restartProbeResult struct {
+	Network string               `json:"network"`
+	Cycles  []restartCycleResult `json:"cycles"`
+}
+
+// runRestart repeatedly recreates the full node and transport from one state
+// directory, requiring later cycles to load cached configuration before a
+// fresh controller response.
+func runRestart(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("restart", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "16-digit network ID")
+	cycles := flags.Int("cycles", 3, "node lifetimes to verify")
+	pause := flags.Duration("pause", 250*time.Millisecond, "delay between lifetimes")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	if *cycles < 2 || *cycles > 100 || *pause < 0 {
+		return exitUsage, errors.New("restart requires -cycles from 2 to 100 and a non-negative -pause")
+	}
+	result := restartProbeResult{Network: fmt.Sprintf("%016x", networkID), Cycles: make([]restartCycleResult, 0, *cycles)}
+	var identity string
+	for cycle := 1; cycle <= *cycles; cycle++ {
+		started := time.Now()
+		probe, startErr := startNetworkRuntime(options, networkID, stderr)
+		if startErr != nil {
+			return exitError, fmt.Errorf("restart cycle %d: %w", cycle, startErr)
+		}
+		currentIdentity := probe.runtime.node.Address().String()
+		if identity == "" {
+			identity = currentIdentity
+		} else if currentIdentity != identity {
+			probe.Close()
+			return exitProbeFailed, fmt.Errorf("restart cycle %d changed identity from %s to %s", cycle, identity, currentIdentity)
+		}
+		cachedNetwork, cached := probe.runtime.node.Network(networkID)
+		cached = cached && cachedNetwork.Status == zerotier.NetworkStatusOK && cachedNetwork.LastConfigReceive.IsZero()
+		if cycle > 1 && !cached {
+			probe.Close()
+			return exitProbeFailed, fmt.Errorf("restart cycle %d did not load cached network configuration", cycle)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+		code, readyErr := probe.waitReady(ctx, networkID, netip.Addr{}, stdout, options.json)
+		cancel()
+		if readyErr != nil {
+			probe.Close()
+			return code, fmt.Errorf("restart cycle %d: %w", cycle, readyErr)
+		}
+		cycleResult := restartCycleResult{
+			Cycle: cycle, Node: currentIdentity, CachedReady: cached,
+			ConfigReceive: probe.network.LastConfigReceive, ConfigRevision: probe.network.Config.Revision,
+			Duration: time.Since(started).Round(time.Millisecond),
+		}
+		result.Cycles = append(result.Cycles, cycleResult)
+		probe.Close()
+		if cycle != *cycles && *pause != 0 {
+			time.Sleep(*pause)
+		}
+	}
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		fmt.Fprintf(stdout, "network=%s cycles=%d identity=%s\n", result.Network, len(result.Cycles), identity)
+		for _, cycle := range result.Cycles {
+			fmt.Fprintf(stdout, "cycle=%d node=%s cached=%t config-received=%s revision=%d duration=%s\n",
+				cycle.Cycle, cycle.Node, cycle.CachedReady, cycle.ConfigReceive.Format(time.RFC3339Nano), cycle.ConfigRevision, cycle.Duration)
+		}
+	}
+	return exitOK, nil
+}

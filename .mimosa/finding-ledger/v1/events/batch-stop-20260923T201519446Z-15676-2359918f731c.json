@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260923T201519446Z-15676-2359918f731c",
+  "runId": "20260923T201519446Z-15676-2359918f731c",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "bash_discovery_incomplete",
+        "stage": "bash-discovery",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": ".worktrees/windows-regression/tmp/gomodcache-modern-reality/github.com/metacubex/tailscale@v0.0.0-20260807072706-a4fb5feabcbb/wgengine/router/router_test.go",
+        "detail": "baseline_partial: baseline exceeded 5000 candidate files",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "f3277ffcebe462702f744d4585e02413488cda95",
+  "diffHash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "rulesVersion": "unavailable",
+  "sessionHash": "40d59d11c1d1dc21eebf5b7bf8569d7155f618659eabcf4ef76c851230027d32",
+  "reportRef": ".mimosa/reports/task-review-sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db-20260923T201519446Z-15676-2359918f731c.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-09-23T20:15:20.058Z"
+}

@@ -1,0 +1,2744 @@
+package iplink
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+type recordedFrame struct {
+	networkID   uint64
+	destination zerotier.MAC
+	etherType   uint16
+	payload     []byte
+}
+
+type recordingSender struct {
+	address           zerotier.Address
+	frames            []recordedFrame
+	subscriptions     map[zerotier.MulticastGroup]bool
+	subscribeErr      error
+	unsubscribeErr    error
+	subscribeErrors   map[zerotier.MulticastGroup]error
+	unsubscribeErrors map[zerotier.MulticastGroup]error
+}
+
+type blockingSender struct {
+	address zerotier.Address
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+// frameOnlySender models an L3 embedding whose frame path has no optional
+// ZeroTier multicast subscription support.
+type frameOnlySender struct {
+	address zerotier.Address
+	frames  []recordedFrame
+}
+
+func (s *frameOnlySender) Address() zerotier.Address { return s.address }
+
+func (s *frameOnlySender) SendFrame(networkID uint64, destination zerotier.MAC, etherType uint16, payload []byte) error {
+	s.frames = append(s.frames, recordedFrame{
+		networkID: networkID, destination: destination, etherType: etherType,
+		payload: append([]byte(nil), payload...),
+	})
+	return nil
+}
+
+func (s *blockingSender) Address() zerotier.Address { return s.address }
+
+func (s *blockingSender) SendFrame(uint64, zerotier.MAC, uint16, []byte) error {
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
+}
+
+func (s *recordingSender) SubscribeMulticast(_ uint64, group zerotier.MulticastGroup) error {
+	if s.subscribeErr != nil {
+		return s.subscribeErr
+	}
+	if err := s.subscribeErrors[group]; err != nil {
+		return err
+	}
+	if s.subscriptions == nil {
+		s.subscriptions = make(map[zerotier.MulticastGroup]bool)
+	}
+	s.subscriptions[group] = true
+	return nil
+}
+
+func (s *recordingSender) UnsubscribeMulticast(_ uint64, group zerotier.MulticastGroup) error {
+	if s.unsubscribeErr != nil {
+		return s.unsubscribeErr
+	}
+	if err := s.unsubscribeErrors[group]; err != nil {
+		return err
+	}
+	delete(s.subscriptions, group)
+	return nil
+}
+
+func (s *recordingSender) Address() zerotier.Address { return s.address }
+
+func (s *recordingSender) SendFrame(networkID uint64, destination zerotier.MAC, etherType uint16, payload []byte) error {
+	s.frames = append(s.frames, recordedFrame{
+		networkID:   networkID,
+		destination: destination,
+		etherType:   etherType,
+		payload:     append([]byte(nil), payload...),
+	})
+	return nil
+}
+
+func TestRouteSelection(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.168.192.7/24")},
+		Routes: []zerotier.NetworkRoute{
+			{Target: netip.MustParsePrefix("0.0.0.0/0"), Via: netip.MustParseAddr("192.168.192.254"), Metric: 100},
+			{Target: netip.MustParsePrefix("10.0.0.0/8"), Via: netip.MustParseAddr("192.168.192.1"), Metric: 10},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if nextHop, ok := link.routeFor(netip.MustParseAddr("10.20.30.40")); !ok || nextHop != netip.MustParseAddr("192.168.192.1") {
+		t.Fatalf("specific route next hop = %s, valid=%t", nextHop, ok)
+	}
+	if nextHop, ok := link.routeFor(netip.MustParseAddr("192.168.192.8")); !ok || nextHop != netip.MustParseAddr("192.168.192.8") {
+		t.Fatalf("managed subnet next hop = %s, valid=%t", nextHop, ok)
+	}
+}
+
+func TestSourceForUsesRouteNextHop(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned: []netip.Prefix{
+			netip.MustParsePrefix("192.0.2.10/24"),
+			netip.MustParsePrefix("198.51.100.10/24"),
+		},
+		Routes: []zerotier.NetworkRoute{{
+			Target: netip.MustParsePrefix("203.0.113.0/24"),
+			Via:    netip.MustParseAddr("198.51.100.1"),
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source, err := link.SourceFor(netip.MustParseAddr("203.0.113.8"))
+	if err != nil || source != netip.MustParseAddr("198.51.100.10") {
+		t.Fatalf("source = %s, err = %v", source, err)
+	}
+}
+
+func TestApplyNetworkConfigWaitsForActiveWrite(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &blockingSender{
+		address: zerotier.NewAddress(0x0f1b56d269),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- link.WritePacket(ipv4Packet(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), 17))
+	}()
+	select {
+	case <-sender.started:
+	case <-time.After(time.Second):
+		t.Fatal("packet write did not reach frame sender")
+	}
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+			NetworkID: networkID,
+			Assigned:  []netip.Prefix{netip.MustParsePrefix("198.51.100.1/24")},
+		})
+	}()
+	select {
+	case err = <-applyDone:
+		t.Fatalf("configuration changed during an active write: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(sender.release)
+	if err = <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err = <-applyDone; err != nil {
+		t.Fatal(err)
+	}
+	link.mu.Lock()
+	pendingCount, pendingPackets, pendingBytes := len(link.neighborPending), link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.Unlock()
+	if pendingCount != 0 || pendingPackets != 0 || pendingBytes != 0 {
+		t.Fatalf("old neighbor state survived configuration change: destinations=%d packets=%d bytes=%d", pendingCount, pendingPackets, pendingBytes)
+	}
+}
+
+func TestManagedRouteNormalization(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+		Routes: []zerotier.NetworkRoute{
+			{Target: netip.MustParsePrefix("192.0.2.0/24"), Via: netip.MustParseAddr("192.0.2.1")},
+			{Target: netip.MustParsePrefix("198.51.100.0/24"), Via: netip.MustParseAddr("192.0.2.10")},
+			{Target: netip.MustParsePrefix("203.0.113.0/24"), Via: netip.MustParseAddr("fd00::1")},
+			{Target: netip.MustParsePrefix("10.0.0.0/8"), Via: netip.MustParseAddr("224.0.0.1")},
+			{Target: netip.MustParsePrefix("172.16.0.0/12"), Via: netip.IPv4Unspecified()},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if nextHop, ok := link.routeFor(netip.MustParseAddr("192.0.2.20")); !ok || nextHop != netip.MustParseAddr("192.0.2.20") {
+		t.Fatalf("assigned prefix was not kept on-link: nextHop=%s valid=%t", nextHop, ok)
+	}
+	for _, destination := range []string{"198.51.100.1", "203.0.113.1", "10.0.0.1"} {
+		if nextHop, ok := link.routeFor(netip.MustParseAddr(destination)); ok {
+			t.Fatalf("invalid route for %s was retained with next hop %s", destination, nextHop)
+		}
+	}
+	if nextHop, ok := link.routeFor(netip.MustParseAddr("172.16.1.1")); !ok || nextHop != netip.MustParseAddr("172.16.1.1") {
+		t.Fatalf("unspecified gateway was not normalized to on-link: nextHop=%s valid=%t", nextHop, ok)
+	}
+}
+
+func TestManagedIPv6UsesDirectMappingWhenEnabled(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localAddress := zerotier.NewAddress(0x0f1b56d269)
+	remoteAddress := zerotier.NewAddress(0x46a9a1d071)
+	tests := []struct {
+		name        string
+		local       netip.Prefix
+		destination netip.Addr
+	}{
+		{
+			name:        "RFC4193",
+			local:       zerotier.RFC4193Address(networkID, localAddress),
+			destination: zerotier.RFC4193Address(networkID, remoteAddress).Addr(),
+		},
+		{
+			name:        "6plane",
+			local:       zerotier.SixPlaneAddress(networkID, localAddress),
+			destination: zerotier.SixPlaneAddress(networkID, remoteAddress).Addr(),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			link, err := New(networkID, &recordingSender{address: localAddress})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{test.local}}
+			if err = link.ApplyNetworkConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			if err = link.ValidateDestination(test.destination); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := link.managedIPv6MAC(test.destination); ok {
+				t.Fatal("managed IPv6 destination used direct mapping with NDP emulation disabled")
+			}
+			config.Flags = zerotier.NetworkConfigFlagEnableIPv6NDPEmulation
+			if err = link.ApplyNetworkConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			if err = link.ValidateDestination(test.destination); err != nil {
+				t.Fatal(err)
+			}
+			mac, ok := link.managedIPv6MAC(test.destination)
+			if !ok || mac != zerotier.MACForAddress(remoteAddress, networkID) {
+				t.Fatalf("managed IPv6 MAC = %s, valid=%t", mac, ok)
+			}
+		})
+	}
+}
+
+func TestIPv4ARPResolution(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localAddress := zerotier.NewAddress(0x0f1b56d269)
+	remoteAddress := zerotier.NewAddress(0x46a9a1d071)
+	sender := &recordingSender{address: localAddress}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return time.Unix(1700000000, 0) }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.168.192.7/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	packet := ipv4Packet(netip.MustParseAddr("192.168.192.7"), netip.MustParseAddr("192.168.192.8"), 17)
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].etherType != zerotier.EtherTypeARP || sender.frames[0].destination != zerotier.NewMAC(0xffffffffffff) {
+		t.Fatalf("unexpected ARP request: %+v", sender.frames)
+	}
+	if target := netip.AddrFrom4([4]byte(sender.frames[0].payload[24:28])); target != netip.MustParseAddr("192.168.192.8") {
+		t.Fatalf("ARP target = %s", target)
+	}
+
+	remoteMAC := zerotier.MACForAddress(remoteAddress, networkID)
+	reply := arpPacket(2, remoteMAC, netip.MustParseAddr("192.168.192.8"), zerotier.MACForAddress(localAddress, networkID), netip.MustParseAddr("192.168.192.7"))
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: zerotier.MACForAddress(localAddress, networkID), EtherType: zerotier.EtherTypeARP, Payload: reply}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 2 || sender.frames[1].etherType != zerotier.EtherTypeIPv4 || sender.frames[1].destination != remoteMAC || !bytes.Equal(sender.frames[1].payload, packet) {
+		t.Fatalf("pending IPv4 packet was not flushed: %+v", sender.frames)
+	}
+
+	request := arpPacket(1, remoteMAC, netip.MustParseAddr("192.168.192.8"), 0, netip.MustParseAddr("192.168.192.7"))
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: zerotier.NewMAC(0xffffffffffff), EtherType: zerotier.EtherTypeARP, Payload: request}); err != nil {
+		t.Fatal(err)
+	}
+	last := sender.frames[len(sender.frames)-1]
+	if last.etherType != zerotier.EtherTypeARP || last.destination != remoteMAC || binary.BigEndian.Uint16(last.payload[6:8]) != 2 {
+		t.Fatalf("unexpected ARP reply: %+v", last)
+	}
+}
+
+func TestIPv4UsesPacketSourceForARPAndMapsBroadcastMulticast(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return time.Unix(1700000000, 0) }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32, Flags: zerotier.NetworkConfigFlagEnableBroadcast,
+		Assigned: []netip.Prefix{
+			netip.MustParsePrefix("10.0.0.1/24"),
+			netip.MustParsePrefix("192.168.1.1/24"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := ipv4Packet(netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("192.168.1.20"), 17)
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if got := netip.AddrFrom4([4]byte(sender.frames[0].payload[14:18])); got != netip.MustParseAddr("192.168.1.1") {
+		t.Fatalf("ARP sender address = %s", got)
+	}
+
+	sender.frames = nil
+	broadcast := ipv4Packet(netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("192.168.1.255"), 17)
+	if err = link.WritePacket(broadcast); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || !sender.frames[0].destination.IsBroadcast() {
+		t.Fatalf("subnet broadcast frame = %+v", sender.frames)
+	}
+
+	sender.frames = nil
+	multicastAddress := netip.MustParseAddr("239.1.2.3")
+	multicast := ipv4Packet(netip.MustParseAddr("192.168.1.1"), multicastAddress, 17)
+	if err = link.WritePacket(multicast); err != nil {
+		t.Fatal(err)
+	}
+	wantMAC := zerotier.NewMAC(0x01005e010203)
+	if len(sender.frames) != 1 || sender.frames[0].destination != wantMAC {
+		t.Fatalf("IPv4 multicast destination = %v", sender.frames)
+	}
+	if sender.subscriptions[zerotier.MulticastGroup{MAC: wantMAC}] {
+		t.Fatal("sending multicast data created a persistent subscription")
+	}
+}
+
+func TestNeighborResolutionBackgroundRetryAndExpiration(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	base := time.Unix(1700000000, 0)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return base }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := ipv4Packet(netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("192.0.2.20"), 17)
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].etherType != zerotier.EtherTypeARP {
+		t.Fatalf("initial resolution frames = %+v", sender.frames)
+	}
+	if err = link.ProcessBackgroundTasks(base.Add(neighborRequestPeriod)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 2 || sender.frames[1].etherType != zerotier.EtherTypeARP {
+		t.Fatalf("neighbor resolution was not retried: %+v", sender.frames)
+	}
+	if err = link.ProcessBackgroundTasks(base.Add(pendingNeighborExpiration)); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	pending := len(link.neighborPending)
+	link.mu.RUnlock()
+	if pending != 0 || len(sender.frames) != 2 {
+		t.Fatalf("expired resolution pending=%d frames=%d", pending, len(sender.frames))
+	}
+}
+
+func TestStaleIPv4NeighborRemainsUsableWhileRefreshing(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	base := time.Unix(1700000000, 0)
+	now := base.Add(neighborCacheRefreshAfter)
+	localIP := netip.MustParseAddr("192.0.2.10")
+	remoteIP := netip.MustParseAddr("192.0.2.20")
+	remoteMAC := zerotier.NewMAC(0x020000000020)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.PrefixFrom(localIP, 24)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	link.neighborCache[remoteIP] = neighborEntry{mac: remoteMAC, deadline: now}
+	packet := ipv4Packet(localIP, remoteIP, 17)
+
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != remoteMAC || sender.frames[0].etherType != zerotier.EtherTypeIPv4 {
+		t.Fatalf("stale neighbor send frames = %+v", sender.frames)
+	}
+	entry := link.neighborCache[remoteIP]
+	if entry.state != neighborDelay || entry.deadline != now.Add(neighborDelayProbeTime) || entry.probes != 0 || len(link.neighborPending) != 0 {
+		t.Fatalf("stale neighbor state = %+v, pending=%d", entry, len(link.neighborPending))
+	}
+
+	if err = link.ProcessBackgroundTasks(now.Add(neighborDelayProbeTime - time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 {
+		t.Fatalf("probe sent before delay expired: %+v", sender.frames)
+	}
+	now = now.Add(neighborDelayProbeTime)
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 2 || sender.frames[1].destination != remoteMAC || sender.frames[1].etherType != zerotier.EtherTypeARP {
+		t.Fatalf("unicast ARP probe frames = %+v", sender.frames)
+	}
+	entry = link.neighborCache[remoteIP]
+	if entry.state != neighborProbe || entry.probes != 1 || entry.deadline != now.Add(neighborRequestPeriod) {
+		t.Fatalf("probed neighbor state = %+v", entry)
+	}
+
+	if err = link.learnNeighbor(remoteIP, remoteMAC, true); err != nil {
+		t.Fatal(err)
+	}
+	entry = link.neighborCache[remoteIP]
+	if entry.state != neighborReachable || entry.probes != 0 || entry.deadline != now.Add(neighborCacheRefreshAfter) {
+		t.Fatalf("refreshed neighbor state = %+v", entry)
+	}
+	now = now.Add(neighborCacheRefreshAfter - time.Second)
+	framesBefore := len(sender.frames)
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != framesBefore+1 || sender.frames[framesBefore].etherType != zerotier.EtherTypeIPv4 {
+		t.Fatalf("fresh neighbor unexpectedly refreshed: %+v", sender.frames[framesBefore:])
+	}
+}
+
+func TestStaleIPv6NeighborRemainsUsableWhileRefreshing(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	base := time.Unix(1700000000, 0)
+	now := base.Add(neighborCacheRefreshAfter)
+	localIP := netip.MustParseAddr("fd00::10")
+	remoteIP := netip.MustParseAddr("fd00::20")
+	remoteMAC := zerotier.NewMAC(0x020000000020)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.PrefixFrom(localIP, 64)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	link.neighborCache[remoteIP] = neighborEntry{mac: remoteMAC, deadline: now}
+	packet := ipv6Packet(localIP, remoteIP, 17, []byte{1})
+
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != remoteMAC || sender.frames[0].etherType != zerotier.EtherTypeIPv6 {
+		t.Fatalf("stale neighbor send frames = %+v", sender.frames)
+	}
+	if len(link.neighborPending) != 0 {
+		t.Fatalf("stale neighbor created %d pending resolutions", len(link.neighborPending))
+	}
+
+	now = now.Add(neighborDelayProbeTime)
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 2 || sender.frames[1].destination != remoteMAC || sender.frames[1].etherType != zerotier.EtherTypeIPv6 || len(sender.frames[1].payload) < 41 || sender.frames[1].payload[6] != 58 || sender.frames[1].payload[40] != 135 || !bytes.Equal(sender.frames[1].payload[24:40], remoteIP.AsSlice()) {
+		t.Fatalf("unicast NDP probe frames = %+v", sender.frames)
+	}
+	if err = link.learnNeighbor(remoteIP, remoteMAC, true); err != nil {
+		t.Fatal(err)
+	}
+	entry := link.neighborCache[remoteIP]
+	if entry.state != neighborReachable || entry.probes != 0 || entry.deadline != now.Add(neighborCacheRefreshAfter) {
+		t.Fatalf("refreshed IPv6 neighbor state = %+v", entry)
+	}
+}
+
+func TestStaleNeighborProbeFailureRestartsResolution(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	now := time.Unix(1700000000, 0)
+	localIP := netip.MustParseAddr("192.0.2.10")
+	remoteIP := netip.MustParseAddr("192.0.2.20")
+	remoteMAC := zerotier.NewMAC(0x020000000020)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.PrefixFrom(localIP, 24)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	link.neighborCache[remoteIP] = neighborEntry{mac: remoteMAC, deadline: now}
+	packet := ipv4Packet(localIP, remoteIP, 17)
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(neighborDelayProbeTime)
+	for probe := 0; probe < neighborMaximumProbes; probe++ {
+		if err = link.ProcessBackgroundTasks(now); err != nil {
+			t.Fatal(err)
+		}
+		if len(sender.frames) != probe+2 || sender.frames[probe+1].destination != remoteMAC || sender.frames[probe+1].etherType != zerotier.EtherTypeARP {
+			t.Fatalf("probe %d frames = %+v", probe+1, sender.frames)
+		}
+		now = now.Add(neighborRequestPeriod)
+	}
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := link.neighborCache[remoteIP]; exists {
+		t.Fatal("failed neighbor mapping remains cached")
+	}
+	if len(sender.frames) != neighborMaximumProbes+1 {
+		t.Fatalf("failure emitted an extra probe: %+v", sender.frames)
+	}
+
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	pending := link.neighborPending[remoteIP]
+	last := sender.frames[len(sender.frames)-1]
+	if len(pending.packets) != 1 || pending.requestedAt != now || last.etherType != zerotier.EtherTypeARP || !last.destination.IsBroadcast() {
+		t.Fatalf("restarted resolution pending=%+v frame=%+v", pending, last)
+	}
+}
+
+func TestRunBackgroundTasksStopsWithContext(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		link.RunBackgroundTasks(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("background tasks did not stop after cancellation")
+	}
+}
+
+func TestPendingNeighborQueueHasGlobalByteLimit(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	base := time.Unix(1700000000, 0)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return base }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		MTU:       zerotier.MaxNetworkMTU,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("10.0.0.1/8")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, zerotier.MaxNetworkMTU)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	copy(packet[12:16], netip.MustParseAddr("10.0.0.1").AsSlice())
+	packet[16] = 10
+	var queueErr error
+	for destination := 2; destination < 256 && queueErr == nil; destination++ {
+		packet[19] = byte(destination)
+		for count := 0; count < 64; count++ {
+			queueErr = link.WritePacket(packet)
+			if queueErr != nil {
+				break
+			}
+		}
+	}
+	if queueErr == nil {
+		t.Fatal("unresolved neighbor queue exceeded its byte limit")
+	}
+	link.mu.RLock()
+	queuedPackets, queuedBytes := link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if queuedBytes > maxPendingNeighborBytes || queuedBytes <= maxPendingNeighborBytes-len(packet) {
+		t.Fatalf("unresolved neighbor queue bytes = %d", queuedBytes)
+	}
+	if queuedPackets == 0 || queuedPackets > maxPendingNeighborPackets {
+		t.Fatalf("unresolved neighbor queue packets = %d", queuedPackets)
+	}
+	if err = link.ProcessBackgroundTasks(base.Add(pendingNeighborExpiration)); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	queuedPackets, queuedBytes, pendingCount := link.pendingNeighborPackets, link.pendingNeighborBytes, len(link.neighborPending)
+	link.mu.RUnlock()
+	if queuedPackets != 0 || queuedBytes != 0 || pendingCount != 0 {
+		t.Fatalf("expired neighbor queue retained destinations=%d packets=%d bytes=%d", pendingCount, queuedPackets, queuedBytes)
+	}
+}
+
+func TestPendingNeighborQueueHasPerDestinationByteLimit(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		MTU:       zerotier.MaxNetworkMTU,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("10.0.0.1/8")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, zerotier.MaxNetworkMTU)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	copy(packet[12:16], netip.MustParseAddr("10.0.0.1").AsSlice())
+	copy(packet[16:20], netip.MustParseAddr("10.0.0.2").AsSlice())
+	for err == nil {
+		err = link.WritePacket(packet)
+	}
+	link.mu.RLock()
+	pending := link.neighborPending[netip.MustParseAddr("10.0.0.2")]
+	queuedPackets, queuedBytes := link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if pending.bytes > maxPendingNeighborBytesPerDestination || pending.bytes <= maxPendingNeighborBytesPerDestination-len(packet) {
+		t.Fatalf("destination queue bytes = %d", pending.bytes)
+	}
+	if queuedPackets != len(pending.packets) || queuedBytes != pending.bytes {
+		t.Fatalf("queue accounting: destination=%d packets=%d bytes=%d/%d", len(pending.packets), queuedPackets, queuedBytes, pending.bytes)
+	}
+}
+
+func TestPendingNeighborQueuePreservesLargeBurstWithinPacketLimit(t *testing.T) {
+	const (
+		networkID   = uint64(0x17d709436c04d6bc)
+		packetCount = 12288
+	)
+	base := time.Unix(1700000000, 0)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return base }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := ipv4Packet(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), 6)
+	for index := 0; index < packetCount; index++ {
+		if err = link.WritePacket(packet); err != nil {
+			t.Fatalf("WritePacket %d: %v", index, err)
+		}
+	}
+	link.mu.RLock()
+	pending := link.neighborPending[netip.MustParseAddr("192.0.2.2")]
+	queuedPackets, queuedBytes := link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if len(pending.packets) != packetCount {
+		t.Fatalf("queued packets = %d, want %d", len(pending.packets), packetCount)
+	}
+	if queuedPackets != packetCount {
+		t.Fatalf("global queued packets = %d, want %d", queuedPackets, packetCount)
+	}
+	if queuedBytes != packetCount*len(packet) {
+		t.Fatalf("queued bytes = %d, want %d", queuedBytes, packetCount*len(packet))
+	}
+	for index := packetCount; index < maxPendingPacketsPerDestination; index++ {
+		if err = link.WritePacket(packet); err != nil {
+			t.Fatalf("WritePacket %d: %v", index, err)
+		}
+	}
+	if err = link.WritePacket(packet); err == nil {
+		t.Fatal("unresolved destination accepted a packet beyond its limit")
+	}
+	link.mu.RLock()
+	pending = link.neighborPending[netip.MustParseAddr("192.0.2.2")]
+	queuedPackets, queuedBytes = link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if len(pending.packets) != maxPendingPacketsPerDestination || queuedPackets != maxPendingPacketsPerDestination || queuedBytes != maxPendingPacketsPerDestination*len(packet) {
+		t.Fatalf("bounded queue: destination=%d packets=%d bytes=%d", len(pending.packets), queuedPackets, queuedBytes)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].etherType != zerotier.EtherTypeARP {
+		t.Fatalf("resolution frames = %+v", sender.frames)
+	}
+}
+
+func TestPendingNeighborQueueHasGlobalPacketLimit(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	base := time.Unix(1700000000, 0)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return base }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	source := netip.MustParseAddr("192.0.2.1")
+	destinations := []netip.Addr{
+		netip.MustParseAddr("192.0.2.2"),
+		netip.MustParseAddr("192.0.2.3"),
+		netip.MustParseAddr("192.0.2.4"),
+	}
+	for index := 0; index < maxPendingNeighborPackets; index++ {
+		packet := ipv4Packet(source, destinations[index%len(destinations)], 17)
+		if err = link.WritePacket(packet); err != nil {
+			t.Fatalf("WritePacket %d: %v", index, err)
+		}
+	}
+	if err = link.WritePacket(ipv4Packet(source, destinations[0], 17)); err == nil {
+		t.Fatal("unresolved neighbor queue accepted a packet beyond its global limit")
+	}
+	link.mu.RLock()
+	queuedPackets, queuedBytes := link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if queuedPackets != maxPendingNeighborPackets || queuedBytes != maxPendingNeighborPackets*20 {
+		t.Fatalf("global packet limit: packets=%d bytes=%d", queuedPackets, queuedBytes)
+	}
+}
+
+func TestApplyNetworkConfigRollsBackOnMulticastFailure(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	wantErr := errors.New("automatic subscribe failed")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269), subscribeErr: wantErr}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyNetworkConfig error = %v", err)
+	}
+	link.mu.RLock()
+	configured := link.configured
+	assigned := len(link.assigned)
+	automatic := len(link.automaticSubscriptions)
+	link.mu.RUnlock()
+	if configured || assigned != 0 || automatic != 0 {
+		t.Fatalf("failed config retained configured=%t assigned=%d automatic=%d", configured, assigned, automatic)
+	}
+}
+
+func TestApplyNetworkConfigRollsBackInterfaceGenerationOnMulticastFailure(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	oldAddress := netip.MustParsePrefix("192.0.2.10/24")
+	newAddress := netip.MustParsePrefix("198.51.100.10/24")
+	dynamicAddress := netip.MustParseAddr("239.22.23.24")
+	dynamicGroup, _ := multicastGroupForIP(dynamicAddress)
+	wantErr := errors.New("dynamic unsubscribe failed")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldConfig := zerotier.NetworkConfigData{
+		NetworkID: networkID, MTU: 1400, MulticastLimit: 32,
+		Assigned: []netip.Prefix{oldAddress},
+	}
+	if err = link.ApplyNetworkConfig(oldConfig); err != nil {
+		t.Fatal(err)
+	}
+	link.applyLegacyMembership(dynamicAddress, true)
+	if !sender.subscriptions[dynamicGroup] {
+		t.Fatal("dynamic membership was not subscribed before the update")
+	}
+	sender.unsubscribeErrors = map[zerotier.MulticastGroup]error{dynamicGroup: wantErr}
+	newConfig := oldConfig
+	newConfig.Assigned = []netip.Prefix{newAddress}
+	if err = link.ApplyNetworkConfig(newConfig); !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyNetworkConfig error = %v, want %v", err, wantErr)
+	}
+	link.configMu.RLock()
+	configuredAddress := link.assigned[0]
+	link.configMu.RUnlock()
+	link.mu.RLock()
+	_, membershipRetained := link.reportedMemberships[dynamicAddress]
+	_, activeRetained := link.activeMulticast[dynamicGroup]
+	link.mu.RUnlock()
+	if configuredAddress != oldAddress || !membershipRetained || !activeRetained || !sender.subscriptions[dynamicGroup] {
+		t.Fatalf("failed update retained address=%s membership=%t active=%t subscribed=%t",
+			configuredAddress, membershipRetained, activeRetained, sender.subscriptions[dynamicGroup])
+	}
+	delete(sender.unsubscribeErrors, dynamicGroup)
+	if err = link.ApplyNetworkConfig(newConfig); err != nil {
+		t.Fatalf("retry ApplyNetworkConfig: %v", err)
+	}
+	link.mu.RLock()
+	_, membershipRetained = link.reportedMemberships[dynamicAddress]
+	_, activeRetained = link.activeMulticast[dynamicGroup]
+	link.mu.RUnlock()
+	if membershipRetained || activeRetained || sender.subscriptions[dynamicGroup] {
+		t.Fatalf("successful update retained membership=%t active=%t subscribed=%t",
+			membershipRetained, activeRetained, sender.subscriptions[dynamicGroup])
+	}
+}
+
+func TestApplyNetworkConfigRollsBackNewAutomaticSubscriptionFailure(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	oldAddress := netip.MustParsePrefix("fe80::10/64")
+	newAddress := netip.MustParsePrefix("fe80::20/64")
+	oldSolicited := solicitedNodeMulticast(oldAddress.Addr())
+	newSolicited := solicitedNodeMulticast(newAddress.Addr())
+	oldGroup, _ := multicastGroupForIP(oldSolicited)
+	newGroup, _ := multicastGroupForIP(newSolicited)
+	wantErr := errors.New("new solicited-node subscribe failed")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldConfig := zerotier.NetworkConfigData{
+		NetworkID: networkID, MTU: 1400, MulticastLimit: 32,
+		Assigned: []netip.Prefix{oldAddress},
+	}
+	if err = link.ApplyNetworkConfig(oldConfig); err != nil {
+		t.Fatal(err)
+	}
+	sender.subscribeErrors = map[zerotier.MulticastGroup]error{newGroup: wantErr}
+	newConfig := oldConfig
+	newConfig.Assigned = []netip.Prefix{newAddress}
+	if err = link.ApplyNetworkConfig(newConfig); !errors.Is(err, wantErr) {
+		t.Fatalf("ApplyNetworkConfig error = %v, want %v", err, wantErr)
+	}
+	link.configMu.RLock()
+	configuredAddress := link.assigned[0]
+	link.configMu.RUnlock()
+	link.mu.RLock()
+	_, oldActive := link.activeMulticast[oldGroup]
+	_, newActive := link.activeMulticast[newGroup]
+	link.mu.RUnlock()
+	if configuredAddress != oldAddress || !oldActive || newActive || !sender.subscriptions[oldGroup] || sender.subscriptions[newGroup] {
+		t.Fatalf("failed update retained address=%s old=%t/%t new=%t/%t",
+			configuredAddress, oldActive, sender.subscriptions[oldGroup], newActive, sender.subscriptions[newGroup])
+	}
+	delete(sender.subscribeErrors, newGroup)
+	if err = link.ApplyNetworkConfig(newConfig); err != nil {
+		t.Fatalf("retry ApplyNetworkConfig: %v", err)
+	}
+	if sender.subscriptions[oldGroup] || !sender.subscriptions[newGroup] {
+		t.Fatalf("successful update subscriptions old=%t new=%t", sender.subscriptions[oldGroup], sender.subscriptions[newGroup])
+	}
+}
+
+func TestFrameSenderWithoutMulticastSubscriptionSupport(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &frameOnlySender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{
+			netip.MustParsePrefix("192.0.2.10/24"),
+			netip.MustParsePrefix("fe80::10/64"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.32.33.34")
+	report := legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), group, group, 0x16, 0, true)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != zerotier.NewMAC(0x01005e202122) || !bytes.Equal(sender.frames[0].payload, report) {
+		t.Fatalf("frame-only multicast output = %+v", sender.frames)
+	}
+	if err = link.ProcessBackgroundTasks(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReportedMulticastSubscriptionFailureIsRetried(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("temporary multicast failure")
+	sender.subscribeErr = wantErr
+	group := netip.MustParseAddr("239.1.2.3")
+	link.applyLegacyMembership(group, true)
+	zeroTierGroup, _ := multicastGroupForIP(group)
+	if sender.subscriptions[zeroTierGroup] {
+		t.Fatal("failed reported membership was marked subscribed")
+	}
+	sender.subscribeErr = nil
+	if err = link.ProcessBackgroundTasks(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[zeroTierGroup] {
+		t.Fatal("background maintenance did not retry the reported membership")
+	}
+}
+
+func TestIPv6NeighborDiscovery(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	remoteIP := netip.MustParseAddr("fd00::2")
+	localAddress := zerotier.NewAddress(0x0f1b56d269)
+	remoteAddress := zerotier.NewAddress(0x46a9a1d071)
+	sender := &recordingSender{address: localAddress}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return time.Unix(1700000000, 0) }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("fd00::1/64")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := ipv6Packet(localIP, remoteIP, 17, []byte{1, 2, 3, 4})
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != zerotier.NewMAC(0x3333ff000002) || sender.frames[0].payload[40] != 135 {
+		t.Fatalf("neighbor solicitation = %+v", sender.frames)
+	}
+
+	remoteMAC := zerotier.MACForAddress(remoteAddress, networkID)
+	icmp := make([]byte, 32)
+	icmp[0] = 136
+	binary.BigEndian.PutUint32(icmp[4:8], 0x60000000)
+	copy(icmp[8:24], remoteIP.AsSlice())
+	icmp[24], icmp[25] = 2, 1
+	remoteMACBytes := remoteMAC.Bytes()
+	copy(icmp[26:32], remoteMACBytes[:])
+	advertisement := makeIPv6ICMPPacket(remoteIP, localIP, icmp)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: zerotier.MACForAddress(localAddress, networkID), EtherType: zerotier.EtherTypeIPv6, Payload: advertisement}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 2 || sender.frames[1].destination != remoteMAC || !bytes.Equal(sender.frames[1].payload, packet) {
+		t.Fatalf("pending IPv6 packet was not flushed: %+v", sender.frames)
+	}
+}
+
+func TestIPv6NeighborSolicitationGetsAdvertisement(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	remoteIP := netip.MustParseAddr("fd00::2")
+	localAddress := zerotier.NewAddress(0x0f1b56d269)
+	remoteAddress := zerotier.NewAddress(0x46a9a1d071)
+	sender := &recordingSender{address: localAddress}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	remoteMAC := zerotier.MACForAddress(remoteAddress, networkID)
+	icmp := make([]byte, 32)
+	icmp[0] = 135
+	copy(icmp[8:24], localIP.AsSlice())
+	icmp[24], icmp[25] = 1, 1
+	remoteMACBytes := remoteMAC.Bytes()
+	copy(icmp[26:32], remoteMACBytes[:])
+	solicitation := makeIPv6ICMPPacket(remoteIP, solicitedNodeMulticast(localIP), icmp)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: ipv6MulticastMAC(solicitedNodeMulticast(localIP)), EtherType: zerotier.EtherTypeIPv6, Payload: solicitation}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != remoteMAC || sender.frames[0].payload[40] != 136 {
+		t.Fatalf("neighbor advertisement = %+v", sender.frames)
+	}
+}
+
+func TestIPv6DuplicateAddressDetectionGetsUnsolicitedAdvertisement(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	localAddress := zerotier.NewAddress(0x0f1b56d269)
+	remoteMAC := zerotier.MACForAddress(zerotier.NewAddress(0x46a9a1d071), networkID)
+	sender := &recordingSender{address: localAddress}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	icmp := make([]byte, 24)
+	icmp[0] = 135
+	copy(icmp[8:24], localIP.AsSlice())
+	solicitation := makeIPv6ICMPPacket(netip.IPv6Unspecified(), solicitedNodeMulticast(localIP), icmp)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, Source: remoteMAC, Destination: ipv6MulticastMAC(solicitedNodeMulticast(localIP)), EtherType: zerotier.EtherTypeIPv6, Payload: solicitation}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 {
+		t.Fatalf("duplicate-address response frames = %d", len(sender.frames))
+	}
+	response := sender.frames[0]
+	if response.destination != ipv6MulticastMAC(netip.MustParseAddr("ff02::1")) || binary.BigEndian.Uint32(response.payload[44:48]) != 0x20000000 {
+		t.Fatalf("duplicate-address advertisement destination=%s flags=%08x", response.destination, binary.BigEndian.Uint32(response.payload[44:48]))
+	}
+}
+
+func TestIPv6NeighborDiscoveryBehindExtensionHeader(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	remoteIP := netip.MustParseAddr("fd00::2")
+	remoteMAC := zerotier.MACForAddress(zerotier.NewAddress(0x46a9a1d071), networkID)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	icmp := make([]byte, 32)
+	icmp[0] = 135
+	copy(icmp[8:24], localIP.AsSlice())
+	icmp[24], icmp[25] = 1, 1
+	remoteMACBytes := remoteMAC.Bytes()
+	copy(icmp[26:32], remoteMACBytes[:])
+	destination := solicitedNodeMulticast(localIP)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(remoteIP, destination, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	packet := ipv6Packet(remoteIP, destination, 0, append(hopByHop, icmp...))
+	packet[7] = 255
+	if _, err = link.HandleFrame(zerotier.Frame{
+		NetworkID: networkID, Source: remoteMAC, Destination: ipv6MulticastMAC(destination),
+		EtherType: zerotier.EtherTypeIPv6, Payload: packet,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.frames) != 1 || sender.frames[0].destination != remoteMAC || sender.frames[0].payload[40] != 136 {
+		t.Fatalf("extension-header neighbor solicitation was not answered: %+v", sender.frames)
+	}
+	sender.frames = nil
+	atomic := ipv6AtomicFragment(packet)
+	if returned, handleErr := link.HandleFrame(zerotier.Frame{
+		NetworkID: networkID, Source: remoteMAC, Destination: ipv6MulticastMAC(destination),
+		EtherType: zerotier.EtherTypeIPv6, Payload: atomic,
+	}); handleErr != nil || returned != nil {
+		t.Fatalf("atomic neighbor solicitation returned packet=%x error=%v", returned, handleErr)
+	}
+	if len(sender.frames) != 0 {
+		t.Fatalf("atomic neighbor solicitation produced %d response frames", len(sender.frames))
+	}
+}
+
+func TestNDPRejectsMalformedOptions(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	remoteIP := netip.MustParseAddr("fd00::2")
+	remoteMAC := zerotier.MACForAddress(zerotier.NewAddress(0x46a9a1d071), networkID)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	icmp := make([]byte, 32)
+	icmp[0] = 135
+	copy(icmp[8:24], localIP.AsSlice())
+	icmp[24] = 1 // A zero-length option invalidates the complete message.
+	destination := solicitedNodeMulticast(localIP)
+	packet := makeIPv6ICMPPacket(remoteIP, destination, icmp)
+	if _, err = link.HandleFrame(zerotier.Frame{
+		NetworkID: networkID, Source: remoteMAC, Destination: ipv6MulticastMAC(destination),
+		EtherType: zerotier.EtherTypeIPv6, Payload: packet,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	_, learned := link.neighborCache[remoteIP]
+	link.mu.RUnlock()
+	if len(sender.frames) != 0 || learned {
+		t.Fatalf("malformed NDP option produced frames=%d learned=%t", len(sender.frames), learned)
+	}
+}
+
+func TestNeighborAdvertisementHonorsOverride(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	localIP := netip.MustParseAddr("fd00::1")
+	remoteIP := netip.MustParseAddr("fd00::2")
+	oldMAC := zerotier.MACForAddress(zerotier.NewAddress(0x46a9a1d071), networkID)
+	newMAC := zerotier.MACForAddress(zerotier.NewAddress(0x123456789a), networkID)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.learnNeighbor(remoteIP, oldMAC, true); err != nil {
+		t.Fatal(err)
+	}
+	advertise := func(flags uint32) {
+		t.Helper()
+		icmp := make([]byte, 32)
+		icmp[0] = 136
+		binary.BigEndian.PutUint32(icmp[4:8], flags)
+		copy(icmp[8:24], remoteIP.AsSlice())
+		icmp[24], icmp[25] = 2, 1
+		newMACBytes := newMAC.Bytes()
+		copy(icmp[26:32], newMACBytes[:])
+		packet := makeIPv6ICMPPacket(remoteIP, localIP, icmp)
+		if _, handleErr := link.HandleFrame(zerotier.Frame{
+			NetworkID: networkID, Source: newMAC, Destination: zerotier.MACForAddress(zerotier.NewAddress(0x0f1b56d269), networkID),
+			EtherType: zerotier.EtherTypeIPv6, Payload: packet,
+		}); handleErr != nil {
+			t.Fatal(handleErr)
+		}
+	}
+	advertise(0)
+	link.mu.RLock()
+	entry := link.neighborCache[remoteIP]
+	link.mu.RUnlock()
+	if entry.mac != oldMAC {
+		t.Fatalf("advertisement without Override replaced %s with %s", oldMAC, entry.mac)
+	}
+	advertise(0x20000000)
+	link.mu.RLock()
+	entry = link.neighborCache[remoteIP]
+	link.mu.RUnlock()
+	if entry.mac != newMAC {
+		t.Fatalf("advertisement with Override retained %s", entry.mac)
+	}
+}
+
+func TestHandleFrameReturnsIPPacket(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{0x45, 0, 0, 20}
+	packet, err := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: payload})
+	if err != nil || !bytes.Equal(packet, payload) {
+		t.Fatalf("packet=%x err=%v", packet, err)
+	}
+	packet, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID + 1, EtherType: zerotier.EtherTypeIPv4, Payload: payload})
+	if err != nil || packet != nil {
+		t.Fatalf("foreign network frame returned packet=%x err=%v", packet, err)
+	}
+}
+
+func TestAutomaticAllHostsMulticastSubscriptions(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned: []netip.Prefix{
+			netip.MustParsePrefix("192.0.2.10/24"),
+			netip.MustParsePrefix("fd00::1/64"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []netip.Addr{
+		netip.MustParseAddr("224.0.0.1"),
+		netip.MustParseAddr("ff02::1"),
+		solicitedNodeMulticast(netip.MustParseAddr("fd00::1")),
+	} {
+		group, _ := multicastGroupForIP(address)
+		if !sender.subscriptions[group] {
+			t.Fatalf("automatic multicast group for %s was not subscribed", address)
+		}
+	}
+}
+
+func TestMulticastMACSubscriptionReferenceCounting(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := netip.MustParseAddr("224.1.2.3")
+	second := netip.MustParseAddr("225.1.2.3")
+	group, _ := multicastGroupForIP(first)
+	if secondGroup, _ := multicastGroupForIP(second); secondGroup != group {
+		t.Fatal("test addresses do not share an Ethernet multicast mapping")
+	}
+	link.applyLegacyMembership(first, true)
+	link.applyLegacyMembership(second, true)
+	link.applyLegacyMembership(first, false)
+	if !sender.subscriptions[group] {
+		t.Fatal("shared Ethernet multicast group was removed while one IP mapping remained")
+	}
+	link.applyLegacyMembership(second, false)
+	if sender.subscriptions[group] {
+		t.Fatal("Ethernet multicast group remained after its last IP mapping was removed")
+	}
+}
+
+func TestReportedMulticastSubscriptionStateIsBounded(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.mu.Lock()
+	for index := 0; index < maxMulticastGroups; index++ {
+		address := netip.AddrFrom4([4]byte{239, 0, byte(index >> 8), byte(index)})
+		link.reportedMemberships[address] = &reportedMulticastFilter{exclude: true}
+	}
+	link.mu.Unlock()
+	newGroup := netip.MustParseAddr("239.1.0.1")
+	link.applyLegacyMembership(newGroup, true)
+	link.mu.Lock()
+	_, retained := link.reportedMemberships[newGroup]
+	link.mu.Unlock()
+	if retained {
+		t.Fatal("reported multicast subscription table exceeded its bound")
+	}
+}
+
+func TestReportedMulticastSharingMACDoesNotConsumeNodeCapacity(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.mu.Lock()
+	for index := 0; index < maxMulticastGroups; index++ {
+		address := netip.AddrFrom4([4]byte{239, 0, byte(index >> 8), byte(index)})
+		group, _ := multicastGroupForIP(address)
+		link.automaticSubscriptions[address] = group
+	}
+	link.mu.Unlock()
+	// A second IP address that maps to an already active multicast MAC does
+	// not consume another Node subscription and remains independently tracked.
+	colliding := netip.MustParseAddr("239.128.0.0")
+	link.applyLegacyMembership(colliding, true)
+	link.mu.Lock()
+	_, retained := link.reportedMemberships[colliding]
+	link.mu.Unlock()
+	if !retained {
+		t.Fatal("IP multicast group sharing an active MAC was rejected")
+	}
+}
+
+func TestReportedMulticastBatchReusesReleasedCapacity(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269), subscriptions: make(map[zerotier.MulticastGroup]bool)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed netip.Addr
+	link.mu.Lock()
+	for index := 0; index < maxMulticastGroups; index++ {
+		address := netip.AddrFrom4([4]byte{239, 0, byte(index >> 8), byte(index)})
+		if index == 0 {
+			removed = address
+		}
+		group, _ := multicastGroupForIP(address)
+		link.reportedMemberships[address] = &reportedMulticastFilter{exclude: true}
+		link.activeMulticast[group] = struct{}{}
+		sender.subscriptions[group] = true
+	}
+	link.mu.Unlock()
+	added := netip.MustParseAddr("239.1.0.1")
+	source := netip.MustParseAddr("192.0.2.1")
+	link.applyMembershipRecords([]reportedMembershipRecord{
+		{group: removed, recordType: 3},
+		{group: added, recordType: 5, sources: []netip.Addr{source}},
+	})
+	removedGroup, _ := multicastGroupForIP(removed)
+	addedGroup, _ := multicastGroupForIP(added)
+	link.mu.Lock()
+	_, oldRetained := link.reportedMemberships[removed]
+	newFilter := link.reportedMemberships[added]
+	activeCount := len(link.activeMulticast)
+	link.mu.Unlock()
+	if oldRetained || newFilter == nil || !newFilter.active() {
+		t.Fatalf("batch replacement retained old=%v new=%+v", oldRetained, newFilter)
+	}
+	if activeCount != maxMulticastGroups || sender.subscriptions[removedGroup] || !sender.subscriptions[addedGroup] {
+		t.Fatalf("batch replacement active=%d removed=%v added=%v", activeCount, sender.subscriptions[removedGroup], sender.subscriptions[addedGroup])
+	}
+}
+
+func TestMulticastReconciliationIsolatesGroupFailures(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	failingAddress := netip.MustParseAddr("239.3.0.1")
+	removedAddress := netip.MustParseAddr("239.3.0.2")
+	addedAddress := netip.MustParseAddr("239.3.0.3")
+	failingGroup, _ := multicastGroupForIP(failingAddress)
+	removedGroup, _ := multicastGroupForIP(removedAddress)
+	addedGroup, _ := multicastGroupForIP(addedAddress)
+	wantErr := errors.New("one multicast group failed")
+	sender := &recordingSender{
+		address:           zerotier.NewAddress(0x0f1b56d269),
+		subscriptions:     map[zerotier.MulticastGroup]bool{failingGroup: true, removedGroup: true},
+		unsubscribeErrors: map[zerotier.MulticastGroup]error{failingGroup: wantErr},
+	}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.mu.Lock()
+	link.activeMulticast[failingGroup] = struct{}{}
+	link.activeMulticast[removedGroup] = struct{}{}
+	link.reportedMemberships[addedAddress] = &reportedMulticastFilter{exclude: true}
+	err = link.syncMulticastGroupsLocked()
+	_, failingActive := link.activeMulticast[failingGroup]
+	_, removedActive := link.activeMulticast[removedGroup]
+	_, addedActive := link.activeMulticast[addedGroup]
+	link.mu.Unlock()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("reconciliation error = %v, want %v", err, wantErr)
+	}
+	if !failingActive || removedActive || !addedActive || sender.subscriptions[removedGroup] || !sender.subscriptions[addedGroup] {
+		t.Fatalf("isolated reconciliation = failing %v removed %v added %v sender %v", failingActive, removedActive, addedActive, sender.subscriptions)
+	}
+	delete(sender.unsubscribeErrors, failingGroup)
+	link.mu.Lock()
+	err = link.syncMulticastGroupsLocked()
+	_, failingActive = link.activeMulticast[failingGroup]
+	link.mu.Unlock()
+	if err != nil || failingActive || sender.subscriptions[failingGroup] {
+		t.Fatalf("reconciliation retry = active %v sender %v error %v", failingActive, sender.subscriptions[failingGroup], err)
+	}
+}
+
+func TestMLDv2ReportBehindHopByHopHeader(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, MulticastLimit: 32, Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")}}); err != nil {
+		t.Fatal(err)
+	}
+	reported := netip.MustParseAddr("ff05::1234")
+	icmp := make([]byte, 28)
+	icmp[0] = 143
+	binary.BigEndian.PutUint16(icmp[6:8], 1)
+	icmp[8] = 4
+	copy(icmp[12:28], reported.AsSlice())
+	source := netip.IPv6Unspecified()
+	target := netip.MustParseAddr("ff02::16")
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(source, target, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	packet := ipv6Packet(source, target, 0, append(hopByHop, icmp...))
+	packet[7] = 1
+	if err = link.WritePacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	group, _ := multicastGroupForIP(reported)
+	if !sender.subscriptions[group] {
+		t.Fatalf("MLDv2 group %s was not subscribed", reported)
+	}
+}
+
+func TestMembershipSnoopingAcceptsAdditionalData(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local4 := netip.MustParseAddr("192.0.2.10")
+	local6 := netip.MustParseAddr("fe80::10")
+	group4 := netip.MustParseAddr("239.41.0.1")
+	group6 := netip.MustParseAddr("ff05::4101")
+	legacyGroup4 := netip.MustParseAddr("239.41.0.2")
+	legacyGroup6 := netip.MustParseAddr("ff05::4102")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.PrefixFrom(local4, 24), netip.PrefixFrom(local6, 64)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	report4 := igmpv3ReportPacket(local4, group4, 4, nil)
+	report4 = append(report4, 1, 2, 3, 4)
+	binary.BigEndian.PutUint16(report4[2:4], uint16(len(report4)))
+	report4[10], report4[11] = 0, 0
+	binary.BigEndian.PutUint16(report4[10:12], internetChecksum(report4[:24]))
+	igmp := report4[24:]
+	igmp[2], igmp[3] = 0, 0
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	if err = link.WritePacket(report4); err != nil {
+		t.Fatal(err)
+	}
+	want4, _ := multicastGroupForIP(group4)
+	if !sender.subscriptions[want4] {
+		t.Fatal("IGMPv3 report Additional Data prevented subscription")
+	}
+
+	icmp := make([]byte, 36)
+	icmp[0], icmp[8] = 143, 4
+	binary.BigEndian.PutUint16(icmp[6:8], 1)
+	copy(icmp[12:28], group6.AsSlice())
+	copy(icmp[28:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+	target6 := netip.MustParseAddr("ff02::16")
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(local6, target6, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	report6 := ipv6Packet(local6, target6, 0, append(hopByHop, icmp...))
+	report6[7] = 1
+	if err = link.WritePacket(report6); err != nil {
+		t.Fatal(err)
+	}
+	want6, _ := multicastGroupForIP(group6)
+	if !sender.subscriptions[want6] {
+		t.Fatal("MLDv2 report Additional Data prevented subscription")
+	}
+
+	legacy4 := legacyIGMPPacket(local4, legacyGroup4, legacyGroup4, 0x16, 0, true)
+	headerLength := int(legacy4[0]&0x0f) * 4
+	legacy4 = append(legacy4, 5, 6, 7, 8)
+	binary.BigEndian.PutUint16(legacy4[2:4], uint16(len(legacy4)))
+	legacy4[10], legacy4[11] = 0, 0
+	binary.BigEndian.PutUint16(legacy4[10:12], internetChecksum(legacy4[:headerLength]))
+	legacyIGMP := legacy4[headerLength:]
+	legacyIGMP[2], legacyIGMP[3] = 0, 0
+	binary.BigEndian.PutUint16(legacyIGMP[2:4], internetChecksum(legacyIGMP))
+	if err = link.WritePacket(legacy4); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy4, _ := multicastGroupForIP(legacyGroup4)
+	if !sender.subscriptions[wantLegacy4] {
+		t.Fatal("IGMPv2 report Additional Data prevented subscription")
+	}
+
+	legacy6 := mldV1Packet(local6, legacyGroup6, legacyGroup6, 131)
+	legacy6 = append(legacy6, 1, 2, 3, 4, 5, 6, 7, 8)
+	binary.BigEndian.PutUint16(legacy6[4:6], uint16(len(legacy6)-40))
+	legacyICMP := legacy6[48:]
+	legacyICMP[2], legacyICMP[3] = 0, 0
+	binary.BigEndian.PutUint16(legacyICMP[2:4], icmpv6Checksum(local6, legacyGroup6, legacyICMP))
+	if err = link.WritePacket(legacy6); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacy6, _ := multicastGroupForIP(legacyGroup6)
+	if !sender.subscriptions[wantLegacy6] {
+		t.Fatal("MLDv1 report Additional Data prevented subscription")
+	}
+}
+
+func TestUnknownMembershipRecordsDoNotBlockLaterRecords(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local4 := netip.MustParseAddr("192.0.2.10")
+	local6 := netip.MustParseAddr("fe80::10")
+	group4 := netip.MustParseAddr("239.42.0.1")
+	group6 := netip.MustParseAddr("ff05::4201")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.PrefixFrom(local4, 24), netip.PrefixFrom(local6, 64)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	igmp := make([]byte, 28)
+	igmp[0], igmp[8], igmp[20] = 0x22, 99, 4
+	binary.BigEndian.PutUint16(igmp[6:8], 2)
+	binary.BigEndian.PutUint16(igmp[10:12], 1)
+	copy(igmp[12:16], netip.MustParseAddr("239.42.0.9").AsSlice())
+	copy(igmp[16:20], netip.MustParseAddr("239.1.2.3").AsSlice())
+	copy(igmp[24:28], group4.AsSlice())
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	report4 := make([]byte, 24+len(igmp))
+	report4[0], report4[8], report4[9] = 0x46, 1, 2
+	copy(report4[12:16], local4.AsSlice())
+	copy(report4[16:20], netip.MustParseAddr("224.0.0.22").AsSlice())
+	copy(report4[20:24], []byte{148, 4, 0, 0})
+	copy(report4[24:], igmp)
+	binary.BigEndian.PutUint16(report4[2:4], uint16(len(report4)))
+	binary.BigEndian.PutUint16(report4[10:12], internetChecksum(report4[:24]))
+	if err = link.WritePacket(report4); err != nil {
+		t.Fatal(err)
+	}
+	want4, _ := multicastGroupForIP(group4)
+	if !sender.subscriptions[want4] {
+		t.Fatal("unknown IGMPv3 record blocked a later recognized record")
+	}
+
+	icmp := make([]byte, 64)
+	icmp[0], icmp[8], icmp[44] = 143, 99, 4
+	binary.BigEndian.PutUint16(icmp[6:8], 2)
+	binary.BigEndian.PutUint16(icmp[10:12], 1)
+	copy(icmp[12:28], netip.MustParseAddr("ff05::4209").AsSlice())
+	copy(icmp[28:44], netip.MustParseAddr("ff05::ffff").AsSlice())
+	copy(icmp[48:64], group6.AsSlice())
+	target6 := netip.MustParseAddr("ff02::16")
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(local6, target6, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	report6 := ipv6Packet(local6, target6, 0, append(hopByHop, icmp...))
+	report6[7] = 1
+	if err = link.WritePacket(report6); err != nil {
+		t.Fatal(err)
+	}
+	want6, _ := multicastGroupForIP(group6)
+	if !sender.subscriptions[want6] {
+		t.Fatal("unknown MLDv2 record blocked a later recognized record")
+	}
+}
+
+func TestMembershipRouterAlertValidation(t *testing.T) {
+	if routerAlert, valid := ipv4MembershipOptions(nil); routerAlert || !valid {
+		t.Fatalf("empty IPv4 options = alert %v valid %v", routerAlert, valid)
+	}
+	if !ipv4MembershipRouterAlert([]byte{148, 4, 0, 0, 1, 0, 0, 0}) {
+		t.Fatal("valid IPv4 Router Alert with padding was rejected")
+	}
+	if _, valid := ipv4MembershipOptions([]byte{131, 3, 4, 0}); valid {
+		t.Fatal("IPv4 source-route option was accepted for membership traffic")
+	}
+	if ipv4MembershipRouterAlert([]byte{148, 4, 0, 0, 0x44, 4, 0}) {
+		t.Fatal("IPv4 Router Alert accepted a malformed trailing option")
+	}
+	if ipv4MembershipRouterAlert([]byte{148, 4, 0, 0, 148, 4, 0, 0}) {
+		t.Fatal("duplicate IPv4 Router Alert was accepted")
+	}
+
+	packet := make([]byte, 48)
+	packet[6], packet[40], packet[41] = 0, 58, 0
+	copy(packet[42:48], []byte{5, 2, 0, 0, 1, 0})
+	if !ipv6MembershipRouterAlert(packet) {
+		t.Fatal("valid IPv6 Router Alert with PadN was rejected")
+	}
+	copy(packet[42:48], []byte{5, 2, 0, 0, 0x22, 7})
+	if ipv6MembershipRouterAlert(packet) {
+		t.Fatal("IPv6 Router Alert accepted a malformed trailing option")
+	}
+	packet = make([]byte, 56)
+	packet[6], packet[40], packet[41] = 0, 58, 1
+	copy(packet[42:56], []byte{5, 2, 0, 0, 5, 2, 0, 0, 1, 4, 0, 0, 0, 0})
+	if ipv6MembershipRouterAlert(packet) {
+		t.Fatal("duplicate IPv6 Router Alert was accepted")
+	}
+}
+
+func TestMulticastGroupForIPValidatesIPv6FlagsAndScope(t *testing.T) {
+	for _, address := range []string{
+		"ff02::1234",
+		"ff32::1234",
+		"ff72::1234",
+	} {
+		if _, valid := multicastGroupForIP(netip.MustParseAddr(address)); !valid {
+			t.Fatalf("valid IPv6 multicast group %s was rejected", address)
+		}
+	}
+	for _, address := range []string{
+		"ff00::1234", // Scope zero is reserved.
+		"ff01::1234", // Interface-local traffic cannot enter ZeroTier.
+		"ff0f::1234", // Scope fifteen is reserved.
+		"ff22::1234", // P requires T.
+		"ff42::1234", // R requires P.
+		"ff82::1234", // The high flag bit is reserved.
+	} {
+		if _, valid := multicastGroupForIP(netip.MustParseAddr(address)); valid {
+			t.Fatalf("invalid IPv6 multicast group %s was accepted", address)
+		}
+	}
+}
+
+func TestInboundLegacyReportsAreConsumedBeforeL3Suppression(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24"), netip.MustParsePrefix("fe80::10/64")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	group4 := netip.MustParseAddr("239.11.12.13")
+	report4 := legacyIGMPPacket(netip.MustParseAddr("192.0.2.20"), group4, group4, 0x16, 0, true)
+	frame4 := zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: report4}
+	if packet, handleErr := link.HandleFrame(frame4); handleErr != nil || packet != nil {
+		t.Fatalf("valid IGMPv2 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	paddedReport4 := append(append([]byte(nil), report4...), make([]byte, 46-len(report4))...)
+	if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: paddedReport4}); handleErr != nil || packet != nil {
+		t.Fatalf("padded IGMPv2 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	report4[len(report4)-1] ^= 1
+	if packet, handleErr := link.HandleFrame(frame4); handleErr != nil || !bytes.Equal(packet, report4) {
+		t.Fatalf("invalid IGMPv2 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	otherGroup4 := netip.MustParseAddr("239.11.12.14")
+	if err = link.WritePacket(legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), otherGroup4, otherGroup4, 0x16, 0, true)); err != nil {
+		t.Fatal(err)
+	}
+	crossTarget4 := legacyIGMPPacket(netip.MustParseAddr("192.0.2.20"), otherGroup4, group4, 0x16, 0, true)
+	if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: crossTarget4}); handleErr != nil || packet != nil {
+		t.Fatalf("cross-group IGMPv2 Report returned packet=%x error=%v", packet, handleErr)
+	}
+
+	group6 := netip.MustParseAddr("ff05::1234")
+	report6 := mldV1Packet(netip.MustParseAddr("fe80::20"), group6, group6, 131)
+	frame6 := zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv6, Payload: report6}
+	if packet, handleErr := link.HandleFrame(frame6); handleErr != nil || packet != nil {
+		t.Fatalf("valid MLDv1 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	atomicReport6 := ipv6AtomicFragment(mldV1Packet(netip.MustParseAddr("fe80::20"), group6, group6, 131))
+	if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv6, Payload: atomicReport6}); handleErr != nil || packet != nil {
+		t.Fatalf("atomic MLDv1 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	report6[len(report6)-1] ^= 1
+	if packet, handleErr := link.HandleFrame(frame6); handleErr != nil || !bytes.Equal(packet, report6) {
+		t.Fatalf("invalid MLDv1 Report returned packet=%x error=%v", packet, handleErr)
+	}
+	otherGroup6 := netip.MustParseAddr("ff05::1235")
+	if err = link.WritePacket(mldV1Packet(netip.MustParseAddr("fe80::10"), otherGroup6, otherGroup6, 131)); err != nil {
+		t.Fatal(err)
+	}
+	crossTarget6 := mldV1Packet(netip.MustParseAddr("fe80::20"), otherGroup6, group6, 131)
+	if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv6, Payload: crossTarget6}); handleErr != nil || packet != nil {
+		t.Fatalf("cross-group MLDv1 Report returned packet=%x error=%v", packet, handleErr)
+	}
+}
+
+func TestIPv6PayloadDoesNotInterpretZeroLengthFramePadding(t *testing.T) {
+	packet := mldGeneralQueryPacket(netip.MustParseAddr("fe80::20"), 1000, 2, 125, true, nil)
+	binary.BigEndian.PutUint16(packet[4:6], 0)
+	if payload, protocol, fragmented, ok := ipv6Payload(packet); ok || payload != nil || protocol != 0 || fragmented {
+		t.Fatalf("zero-length IPv6 payload = %x, protocol %d, fragmented %v, valid %v", payload, protocol, fragmented, ok)
+	}
+}
+
+func TestIPv6PayloadRejectsInvalidExtensionOrder(t *testing.T) {
+	query := mldGeneralQueryPacket(netip.MustParseAddr("fe80::20"), 1000, 2, 125, true, nil)
+	misordered := make([]byte, len(query)+8)
+	copy(misordered[:40], query[:40])
+	misordered[6] = 60
+	copy(misordered[40:48], []byte{0, 0, 1, 0, 0, 0, 0, 0})
+	copy(misordered[48:], query[40:])
+	binary.BigEndian.PutUint16(misordered[4:6], uint16(len(misordered)-40))
+	if _, _, _, valid := ipv6Payload(misordered); valid {
+		t.Fatal("Hop-by-Hop header after Destination Options was accepted")
+	}
+
+	duplicateFragment := ipv6AtomicFragment(ipv6AtomicFragment(query))
+	duplicateFragment[48] = 44
+	if _, _, _, valid := ipv6Payload(duplicateFragment); valid {
+		t.Fatal("duplicate IPv6 Fragment Header was accepted")
+	}
+
+	badOption := insertIPv6Extension(query, 60, []byte{58, 0, 0x40, 0, 1, 0, 0, 0})
+	if _, _, _, valid := ipv6Payload(badOption); valid {
+		t.Fatal("discard-class IPv6 Destination Option was accepted")
+	}
+	activeRoute := insertIPv6Extension(query, 43, []byte{58, 0, 0, 1, 0, 0, 0, 0})
+	if _, _, _, valid := ipv6Payload(activeRoute); valid {
+		t.Fatal("IPv6 Routing Header with Segments Left was accepted")
+	}
+}
+
+func TestMembershipExpiresOnlyAfterUnansweredQuery(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	now := time.Unix(1000, 0)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.21.22.23")
+	report := legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), group, group, 0x12, 0, false)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := multicastGroupForIP(group)
+	now = now.Add(24 * time.Hour)
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[want] {
+		t.Fatal("IGMPv1 membership expired without evidence from a Query")
+	}
+	queryAt := now
+	query := legacyIGMPPacket(netip.MustParseAddr("192.0.2.20"), netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 0, false)
+	paddedQuery := append(append([]byte(nil), query...), make([]byte, 46-len(query))...)
+	if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: paddedQuery}); handleErr != nil || !bytes.Equal(packet, paddedQuery) {
+		t.Fatalf("IGMPv1 Query returned packet=%x error=%v", packet, handleErr)
+	}
+	membershipInterval := time.Duration(membershipDefaultRobustness)*membershipDefaultQueryInterval + 2*membershipDefaultResponseTime
+	now = queryAt.Add(membershipInterval)
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if sender.subscriptions[want] {
+		t.Fatal("unanswered General Query retained stale membership")
+	}
+
+	now = now.Add(time.Second)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	queryAt = now.Add(time.Second)
+	now = queryAt
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: query}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	now = queryAt.Add(membershipInterval)
+	if err = link.ProcessBackgroundTasks(now); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[want] {
+		t.Fatal("response during the membership interval was expired")
+	}
+}
+
+func TestGeneralQueryMembershipIntervals(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local4 := netip.MustParseAddr("192.0.2.10")
+	querier4 := netip.MustParseAddr("192.0.2.20")
+	group4 := netip.MustParseAddr("239.21.22.23")
+	local6 := netip.MustParseAddr("fe80::10")
+	querier6 := netip.MustParseAddr("fe80::20")
+	group6 := netip.MustParseAddr("ff05::1234")
+	allSystems := netip.MustParseAddr("224.0.0.1")
+	tests := []struct {
+		name     string
+		v6       bool
+		query    []byte
+		interval time.Duration
+	}{
+		{
+			name:     "IGMPv1",
+			query:    legacyIGMPPacket(querier4, allSystems, netip.IPv4Unspecified(), 0x11, 0, false),
+			interval: 2*membershipDefaultQueryInterval + 2*membershipDefaultResponseTime,
+		},
+		{
+			name:     "IGMPv2",
+			query:    legacyIGMPPacket(querier4, allSystems, netip.IPv4Unspecified(), 0x11, 50, true),
+			interval: 2*membershipDefaultQueryInterval + 10*time.Second,
+		},
+		{
+			name:     "IGMPv3",
+			query:    igmpV3GeneralQueryPacket(querier4, 20, 3, 10, []byte{0xde, 0xad, 0xbe, 0xef}),
+			interval: 34 * time.Second,
+		},
+		{
+			name:     "MLDv1",
+			v6:       true,
+			query:    mldGeneralQueryPacket(querier6, 3000, 0, 0, false, nil),
+			interval: 2*membershipDefaultQueryInterval + 3*time.Second,
+		},
+		{
+			name:     "MLDv2",
+			v6:       true,
+			query:    mldGeneralQueryPacket(querier6, 2000, 3, 10, true, []byte{0xde, 0xad, 0xbe, 0xef}),
+			interval: 32 * time.Second,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(1000, 0)
+			sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+			link, err := New(networkID, sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+			link.now = func() time.Time { return now }
+			if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+				NetworkID: networkID, MulticastLimit: 32,
+				Assigned: []netip.Prefix{netip.PrefixFrom(local4, 24), netip.PrefixFrom(local6, 64)},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			group := group4
+			report := legacyIGMPPacket(local4, group4, group4, 0x16, 0, true)
+			etherType := uint16(zerotier.EtherTypeIPv4)
+			if test.v6 {
+				group = group6
+				report = mldV1Packet(local6, group6, group6, 131)
+				etherType = zerotier.EtherTypeIPv6
+			}
+			if err = link.WritePacket(report); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Second)
+			if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: etherType, Payload: test.query}); handleErr != nil || !bytes.Equal(packet, test.query) {
+				t.Fatalf("General Query returned packet=%x error=%v", packet, handleErr)
+			}
+			link.mu.RLock()
+			deadline := link.reportedMemberships[group].queryDeadline
+			link.mu.RUnlock()
+			wantDeadline := now.Add(test.interval)
+			if !deadline.Equal(wantDeadline) {
+				t.Fatalf("membership deadline = %v, want %v", deadline, wantDeadline)
+			}
+			zeroTierGroup, _ := multicastGroupForIP(group)
+			if err = link.ProcessBackgroundTasks(wantDeadline.Add(-time.Nanosecond)); err != nil {
+				t.Fatal(err)
+			}
+			if !sender.subscriptions[zeroTierGroup] {
+				t.Fatal("membership expired before its standards-based interval")
+			}
+			if err = link.ProcessBackgroundTasks(wantDeadline); err != nil {
+				t.Fatal(err)
+			}
+			if sender.subscriptions[zeroTierGroup] {
+				t.Fatal("unanswered membership remained at its expiry deadline")
+			}
+		})
+	}
+}
+
+func TestOnlyValidGeneralQueriesAgeMembership(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local := netip.MustParseAddr("192.0.2.10")
+	querier := netip.MustParseAddr("192.0.2.20")
+	group := netip.MustParseAddr("239.31.32.33")
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32, Assigned: []netip.Prefix{netip.PrefixFrom(local, 24)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.WritePacket(legacyIGMPPacket(local, group, group, 0x16, 0, true)); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	missingAlert := legacyIGMPPacket(querier, netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 100, false)
+	groupSpecific := legacyIGMPPacket(querier, group, group, 0x11, 100, true)
+	badChecksum := append([]byte(nil), missingAlert...)
+	badChecksum[len(badChecksum)-1] ^= 1
+	reservedFlag := legacyIGMPPacket(querier, netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 100, true)
+	binary.BigEndian.PutUint16(reservedFlag[6:8], binary.BigEndian.Uint16(reservedFlag[6:8])|0x8000)
+	binary.BigEndian.PutUint16(reservedFlag[10:12], 0)
+	binary.BigEndian.PutUint16(reservedFlag[10:12], internetChecksum(reservedFlag[:int(reservedFlag[0]&0x0f)*4]))
+	for name, query := range map[string][]byte{
+		"missing Router Alert": missingAlert,
+		"group specific":       groupSpecific,
+		"bad checksum":         badChecksum,
+		"reserved IPv4 flag":   reservedFlag,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if packet, handleErr := link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: query}); handleErr != nil || !bytes.Equal(packet, query) {
+				t.Fatalf("Query returned packet=%x error=%v", packet, handleErr)
+			}
+			link.mu.RLock()
+			deadline := link.reportedMemberships[group].queryDeadline
+			link.mu.RUnlock()
+			if !deadline.IsZero() {
+				t.Fatalf("non-General or invalid Query set deadline %v", deadline)
+			}
+		})
+	}
+}
+
+func TestMembershipReportRejectsReservedIPv4Flag(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.52.53.54")
+	report := legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), group, group, 0x16, 0, true)
+	binary.BigEndian.PutUint16(report[6:8], binary.BigEndian.Uint16(report[6:8])|0x8000)
+	binary.BigEndian.PutUint16(report[10:12], 0)
+	binary.BigEndian.PutUint16(report[10:12], internetChecksum(report[:int(report[0]&0x0f)*4]))
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := multicastGroupForIP(group)
+	if sender.subscriptions[want] {
+		t.Fatal("IGMP Report with the reserved IPv4 flag changed multicast state")
+	}
+}
+
+func TestOverlappingQueriesDoNotExtendMembershipDeadline(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local := netip.MustParseAddr("192.0.2.10")
+	querier := netip.MustParseAddr("192.0.2.20")
+	group := netip.MustParseAddr("239.41.42.43")
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1000, 0)
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32, Assigned: []netip.Prefix{netip.PrefixFrom(local, 24)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report := legacyIGMPPacket(local, group, group, 0x16, 0, true)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Second)
+	shortQuery := igmpV3GeneralQueryPacket(querier, 20, 3, 10, nil)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: shortQuery}); err != nil {
+		t.Fatal(err)
+	}
+	want := now.Add(34 * time.Second)
+	now = now.Add(time.Second)
+	longQuery := legacyIGMPPacket(querier, netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 0, false)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: longQuery}); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	deadline := link.reportedMemberships[group].queryDeadline
+	link.mu.RUnlock()
+	if !deadline.Equal(want) {
+		t.Fatalf("overlapping Query moved deadline to %v, want %v", deadline, want)
+	}
+	now = now.Add(time.Second)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	deadline = link.reportedMemberships[group].queryDeadline
+	link.mu.RUnlock()
+	if !deadline.IsZero() {
+		t.Fatalf("local Report did not clear Query deadline %v", deadline)
+	}
+}
+
+func TestGeneralQueryAtReportTimestampStartsMembershipDeadline(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	now := time.Unix(1700000000, 0)
+	local := netip.MustParseAddr("192.0.2.10")
+	querier := netip.MustParseAddr("192.0.2.1")
+	group := netip.MustParseAddr("239.30.31.32")
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.now = func() time.Time { return now }
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.PrefixFrom(local, 24)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.WritePacket(legacyIGMPPacket(local, group, group, 0x16, 0, true)); err != nil {
+		t.Fatal(err)
+	}
+	query := legacyIGMPPacket(querier, netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 10, true)
+	if _, err = link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: zerotier.EtherTypeIPv4, Payload: query}); err != nil {
+		t.Fatal(err)
+	}
+	link.mu.RLock()
+	deadline := link.reportedMemberships[group].queryDeadline
+	link.mu.RUnlock()
+	if deadline.IsZero() {
+		t.Fatal("General Query at the report timestamp did not start membership expiry")
+	}
+}
+
+func TestEmptyAllowRecordDoesNotRetainReportedMembership(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.31.32.33")
+	link.applyMembershipRecords([]reportedMembershipRecord{{group: group, recordType: 5}})
+	link.mu.Lock()
+	_, retained := link.reportedMemberships[group]
+	link.mu.Unlock()
+	if retained {
+		t.Fatal("empty ALLOW_NEW_SOURCES retained inactive report state")
+	}
+}
+
+func TestSourceFilteredReportsReleaseLastMulticastSubscription(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, MulticastLimit: 32, Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")}}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.1.2.3")
+	first := netip.MustParseAddr("192.0.2.20")
+	second := netip.MustParseAddr("192.0.2.21")
+	want, _ := multicastGroupForIP(group)
+	write := func(recordType byte, sources ...netip.Addr) {
+		t.Helper()
+		packet := igmpv3ReportPacket(netip.MustParseAddr("192.0.2.10"), group, recordType, sources)
+		if writeErr := link.WritePacket(packet); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	write(5, first, second) // ALLOW_NEW_SOURCES
+	if !sender.subscriptions[want] {
+		t.Fatal("source-specific join did not subscribe the multicast group")
+	}
+	malformed := igmpv3ReportPacket(netip.MustParseAddr("192.0.2.10"), group, 6, []netip.Addr{first, second})
+	headerLength := int(malformed[0]&0x0f) * 4
+	igmp := malformed[headerLength:]
+	binary.BigEndian.PutUint16(igmp[6:8], 2)
+	igmp[2], igmp[3] = 0, 0
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	if err = link.WritePacket(malformed); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[want] {
+		t.Fatal("records preceding a truncated report tail were applied")
+	}
+	write(6, first) // BLOCK_OLD_SOURCES
+	if !sender.subscriptions[want] {
+		t.Fatal("removing one of two sources removed the group subscription")
+	}
+	write(6, second)
+	if sender.subscriptions[want] {
+		t.Fatal("removing the final INCLUDE source retained the group subscription")
+	}
+	write(4) // CHANGE_TO_EXCLUDE_MODE {}
+	if !sender.subscriptions[want] {
+		t.Fatal("any-source transition did not subscribe the group")
+	}
+	write(3) // CHANGE_TO_INCLUDE_MODE {}
+	if sender.subscriptions[want] {
+		t.Fatal("empty INCLUDE transition retained the group subscription")
+	}
+	link.mu.Lock()
+	_, retained := link.reportedMemberships[group]
+	link.mu.Unlock()
+	if retained {
+		t.Fatal("inactive source-filter state retained a historical group")
+	}
+
+	write(1, first)
+	write(6, first)
+	if !sender.subscriptions[want] {
+		t.Fatal("partial current-state INCLUDE allowed an unsafe final unsubscribe")
+	}
+	write(3)
+	if sender.subscriptions[want] {
+		t.Fatal("authoritative empty transition did not clear a partial snapshot")
+	}
+
+	write(5, first) // Establish an exact INCLUDE snapshot.
+	write(1, second)
+	write(6, first, second)
+	if !sender.subscriptions[want] {
+		t.Fatal("current-state INCLUDE after an exact snapshot allowed an unsafe unsubscribe")
+	}
+	write(3)
+	if sender.subscriptions[want] {
+		t.Fatal("authoritative leave did not clear the conservative current-state snapshot")
+	}
+
+	write(5, first) // Establish an exact INCLUDE snapshot again.
+	write(3, second)
+	link.mu.Lock()
+	filter := link.reportedMemberships[group]
+	_, retainedFirst := filter.sources[first]
+	_, retainedSecond := filter.sources[second]
+	incomplete := filter.incomplete
+	link.mu.Unlock()
+	if retainedFirst || !retainedSecond || !incomplete {
+		t.Fatalf("CHANGE_TO_INCLUDE replacement = first %t second %t incomplete %t", retainedFirst, retainedSecond, incomplete)
+	}
+	write(6, second)
+	if !sender.subscriptions[want] {
+		t.Fatal("split CHANGE_TO_INCLUDE allowed an unsafe final unsubscribe")
+	}
+	write(3)
+	if sender.subscriptions[want] {
+		t.Fatal("empty CHANGE_TO_INCLUDE did not clear split transition state")
+	}
+}
+
+func TestIGMPMembershipReportsAcceptUnspecifiedSourceOnly(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, MulticastLimit: 32, Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")}}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.4.5.6")
+	zeroSource := igmpv3ReportPacket(netip.IPv4Unspecified(), group, 4, nil)
+	if err = link.WritePacket(zeroSource); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := multicastGroupForIP(group)
+	if !sender.subscriptions[want] {
+		t.Fatal("zero-source IGMP Membership Report did not subscribe the group")
+	}
+	link.applyMembershipRecords([]reportedMembershipRecord{{group: group, recordType: 3}})
+	invalidSource := igmpv3ReportPacket(netip.MustParseAddr("0.1.2.3"), group, 4, nil)
+	if err = link.WritePacket(invalidSource); err != nil {
+		t.Fatal(err)
+	}
+	if sender.subscriptions[want] {
+		t.Fatal("nonzero 0/8 IGMP Membership Report was accepted")
+	}
+}
+
+func TestMembershipSnoopingRejectsMalformedPackets(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	local4 := netip.MustParseAddr("192.0.2.10")
+	local6 := netip.MustParseAddr("fe80::10")
+	group4 := netip.MustParseAddr("239.40.0.1")
+	group6 := netip.MustParseAddr("ff05::4001")
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.PrefixFrom(local4, 24), netip.PrefixFrom(local6, 64)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want4, _ := multicastGroupForIP(group4)
+	want6, _ := multicastGroupForIP(group6)
+	assertInactive := func(group zerotier.MulticastGroup) {
+		t.Helper()
+		if sender.subscriptions[group] {
+			t.Fatalf("malformed membership packet activated %v", group)
+		}
+	}
+
+	badHeader := legacyIGMPPacket(local4, group4, group4, 0x16, 0, true)
+	badHeader[1] ^= 1
+	if err = link.WritePacket(badHeader); err != nil {
+		t.Fatal(err)
+	}
+	assertInactive(want4)
+
+	invalidSource := igmpv3ReportPacket(local4, group4, 4, []netip.Addr{netip.MustParseAddr("239.1.2.3")})
+	if err = link.WritePacket(invalidSource); err != nil {
+		t.Fatal(err)
+	}
+	assertInactive(want4)
+
+	assertInactive(want6)
+}
+
+func TestReportedMulticastSourceTrackingIsBounded(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{NetworkID: networkID, Assigned: []netip.Prefix{netip.MustParsePrefix("10.0.0.1/8")}}); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.2.3.4")
+	sources := make([]netip.Addr, maxReportedMulticastSources+1)
+	for index := range sources {
+		sources[index] = netip.AddrFrom4([4]byte{10, byte(index >> 8), byte(index), 2})
+	}
+	link.applyMembershipRecords([]reportedMembershipRecord{{group: group, recordType: 5, sources: sources}})
+	link.mu.Lock()
+	filter := link.reportedMemberships[group]
+	retained, incomplete := len(filter.sources), filter.incomplete
+	link.mu.Unlock()
+	if retained != maxReportedMulticastSources || !incomplete {
+		t.Fatalf("bounded report filter = %d sources incomplete=%v", retained, incomplete)
+	}
+	link.applyMembershipRecords([]reportedMembershipRecord{{group: group, recordType: 6, sources: sources}})
+	want, _ := multicastGroupForIP(group)
+	if !sender.subscriptions[want] {
+		t.Fatal("overflowed source tracking allowed an unsafe unsubscribe")
+	}
+	link.applyMembershipRecords([]reportedMembershipRecord{{group: group, recordType: 3}})
+	if sender.subscriptions[want] {
+		t.Fatal("authoritative empty INCLUDE transition retained the group")
+	}
+}
+
+func TestValidateIPv4RouteRequiresManagedIPv4Address(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("fd00::1/64")},
+		Routes:    []zerotier.NetworkRoute{{Target: netip.MustParsePrefix("0.0.0.0/0")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("192.0.2.1")); err == nil {
+		t.Fatal("IPv4 route was accepted without a managed IPv4 source address")
+	}
+}
+
+func TestValidateMulticastAndBroadcastPolicy(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 1,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("fd00::1/64")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("ff02::1")); err != nil {
+		t.Fatalf("managed IPv6 multicast was rejected: %v", err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("ff01::1234")); err == nil {
+		t.Fatal("IPv6 interface-local multicast was accepted for link output")
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("239.1.2.3")); err == nil {
+		t.Fatal("IPv4 multicast was accepted without a managed IPv4 address")
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	multicast := ipv4Packet(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("239.1.2.3"), 17)
+	if err = link.WritePacket(multicast); err == nil {
+		t.Fatal("IPv4 multicast packet was sent while multicast was disabled")
+	}
+	broadcast := ipv4Packet(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.255"), 17)
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, Flags: zerotier.NetworkConfigFlagEnableBroadcast,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("192.0.2.255")); err == nil {
+		t.Fatal("broadcast was accepted while ZeroTier multicast was disabled")
+	}
+	if err = link.WritePacket(broadcast); err == nil {
+		t.Fatal("broadcast packet was sent while ZeroTier multicast was disabled")
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 1,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("192.0.2.255")); err == nil {
+		t.Fatal("directed broadcast was accepted while broadcast was disabled")
+	}
+	if err = link.WritePacket(broadcast); err == nil {
+		t.Fatal("directed broadcast packet was sent while broadcast was disabled")
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 1, Flags: zerotier.NetworkConfigFlagEnableBroadcast,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ValidateDestination(netip.MustParseAddr("192.0.2.255")); err != nil {
+		t.Fatalf("enabled directed broadcast was rejected: %v", err)
+	}
+	if err = link.WritePacket(broadcast); err != nil {
+		t.Fatalf("enabled directed broadcast packet was rejected: %v", err)
+	}
+	if len(sender.frames) != 1 || !sender.frames[0].destination.IsBroadcast() {
+		t.Fatalf("enabled broadcast frames = %#v", sender.frames)
+	}
+}
+
+func TestMembershipSurvivesTemporaryMulticastDisable(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := zerotier.NetworkConfigData{
+		NetworkID: networkID,
+		Assigned:  []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	group := netip.MustParseAddr("239.6.7.8")
+	report := igmpv3ReportPacket(netip.MustParseAddr("192.0.2.10"), group, 4, nil)
+	if err = link.WritePacket(report); err == nil {
+		t.Fatal("membership report was transmitted while multicast was disabled")
+	}
+	want, _ := multicastGroupForIP(group)
+	if !sender.subscriptions[want] {
+		t.Fatal("disabled multicast policy discarded local membership state")
+	}
+	config.MulticastLimit = 32
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[want] {
+		t.Fatal("membership was not retained when multicast became available")
+	}
+}
+
+func TestInterfaceGenerationChangeDiscardsReportedMemberships(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	for _, test := range []struct {
+		name   string
+		update func(zerotier.NetworkConfigData) zerotier.NetworkConfigData
+	}{
+		{
+			name: "managed addresses",
+			update: func(config zerotier.NetworkConfigData) zerotier.NetworkConfigData {
+				config.Assigned = []netip.Prefix{netip.MustParsePrefix("192.0.2.20/24")}
+				return config
+			},
+		},
+		{
+			name: "MTU",
+			update: func(config zerotier.NetworkConfigData) zerotier.NetworkConfigData {
+				config.MTU = 1300
+				return config
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+			link, err := New(networkID, sender)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := zerotier.NetworkConfigData{
+				NetworkID: networkID, MTU: 1400, MulticastLimit: 32,
+				Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+			}
+			if err = link.ApplyNetworkConfig(config); err != nil {
+				t.Fatal(err)
+			}
+			group := netip.MustParseAddr("239.10.11.12")
+			report := legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), group, group, 0x16, 0, true)
+			if err = link.WritePacket(report); err != nil {
+				t.Fatal(err)
+			}
+			multicastGroup, _ := multicastGroupForIP(group)
+			if !sender.subscriptions[multicastGroup] {
+				t.Fatal("membership report did not subscribe the group")
+			}
+			if err = link.ApplyNetworkConfig(test.update(config)); err != nil {
+				t.Fatal(err)
+			}
+			if sender.subscriptions[multicastGroup] {
+				t.Fatal("new L3 interface generation retained an old reported membership")
+			}
+			link.mu.RLock()
+			_, retained := link.reportedMemberships[group]
+			link.mu.RUnlock()
+			if retained {
+				t.Fatal("new L3 interface generation retained old report state")
+			}
+		})
+	}
+}
+
+func TestNetworkConfigurationRefreshRestoresNodeSubscriptions(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+	link, err := New(networkID, sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	dynamic := netip.MustParseAddr("239.8.9.10")
+	report := legacyIGMPPacket(netip.MustParseAddr("192.0.2.10"), dynamic, dynamic, 0x16, 0, true)
+	if err = link.WritePacket(report); err != nil {
+		t.Fatal(err)
+	}
+	automaticGroup, _ := multicastGroupForIP(netip.MustParseAddr("224.0.0.1"))
+	dynamicGroup, _ := multicastGroupForIP(dynamic)
+	// Replacing a Node's Network object loses its subscription map while the
+	// longer-lived Link still has the same desired interface state.
+	sender.subscriptions = make(map[zerotier.MulticastGroup]bool)
+	if err = link.ApplyNetworkConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if !sender.subscriptions[automaticGroup] || !sender.subscriptions[dynamicGroup] {
+		t.Fatalf("subscriptions after configuration refresh = %v", sender.subscriptions)
+	}
+}
+
+func TestWritePacketValidatesMTUAndHeaderLength(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MTU: zerotier.MinNetworkMTU,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, zerotier.MinNetworkMTU+1)
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	copy(packet[12:16], netip.MustParseAddr("192.0.2.1").AsSlice())
+	copy(packet[16:20], netip.MustParseAddr("192.0.2.2").AsSlice())
+	if err = link.WritePacket(packet); err == nil {
+		t.Fatal("packet larger than the network MTU was accepted")
+	}
+	packet = ipv4Packet(netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2"), 17)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)-1))
+	if err = link.WritePacket(packet); err == nil {
+		t.Fatal("IPv4 packet with an inconsistent total length was accepted")
+	}
+	link.mu.RLock()
+	pendingCount, pendingPackets, pendingBytes := len(link.neighborPending), link.pendingNeighborPackets, link.pendingNeighborBytes
+	link.mu.RUnlock()
+	if pendingCount != 0 || pendingPackets != 0 || pendingBytes != 0 {
+		t.Fatalf("invalid packets entered neighbor queue: destinations=%d packets=%d bytes=%d", pendingCount, pendingPackets, pendingBytes)
+	}
+}
+
+func BenchmarkProcessBackgroundTasksIdle(b *testing.B) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	link, err := New(networkID, &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+		NetworkID: networkID, MulticastLimit: 32,
+		Assigned: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")},
+	}); err != nil {
+		b.Fatal(err)
+	}
+	now := time.Now()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		if err = link.ProcessBackgroundTasks(now); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func FuzzMembershipPacketHandling(f *testing.F) {
+	local4 := netip.MustParseAddr("192.0.2.10")
+	local6 := netip.MustParseAddr("fe80::10")
+	group4 := netip.MustParseAddr("239.10.11.12")
+	group6 := netip.MustParseAddr("ff02::1011")
+	querier4 := netip.MustParseAddr("192.0.2.1")
+	querier6 := netip.MustParseAddr("fe80::1")
+	f.Add(byte(0), legacyIGMPPacket(local4, group4, group4, 0x16, 0, true))
+	f.Add(byte(0), igmpv3ReportPacket(local4, group4, 4, []netip.Addr{querier4}))
+	f.Add(byte(0), mldV1Packet(local6, group6, group6, 131))
+	f.Add(byte(1), legacyIGMPPacket(querier4, netip.MustParseAddr("224.0.0.1"), netip.IPv4Unspecified(), 0x11, 10, true))
+	f.Add(byte(1), mldGeneralQueryPacket(querier6, 1000, 2, 125, true, nil))
+	f.Fuzz(func(t *testing.T, inbound byte, packet []byte) {
+		const networkID = uint64(0x17d709436c04d6bc)
+		sender := &recordingSender{address: zerotier.NewAddress(0x0f1b56d269)}
+		link, err := New(networkID, sender)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = link.ApplyNetworkConfig(zerotier.NetworkConfigData{
+			NetworkID: networkID, MTU: zerotier.MaxNetworkMTU, MulticastLimit: 32,
+			Assigned: []netip.Prefix{netip.PrefixFrom(local4, 24), netip.PrefixFrom(local6, 64)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if inbound&1 == 0 {
+			_ = link.WritePacket(packet)
+			return
+		}
+		etherType := uint16(0)
+		if len(packet) != 0 {
+			switch packet[0] >> 4 {
+			case 4:
+				etherType = zerotier.EtherTypeIPv4
+			case 6:
+				etherType = zerotier.EtherTypeIPv6
+			}
+		}
+		_, _ = link.HandleFrame(zerotier.Frame{NetworkID: networkID, EtherType: etherType, Payload: packet})
+	})
+}
+
+func arpPacket(operation uint16, senderMAC zerotier.MAC, senderIP netip.Addr, targetMAC zerotier.MAC, targetIP netip.Addr) []byte {
+	payload := make([]byte, 28)
+	binary.BigEndian.PutUint16(payload[0:2], 1)
+	binary.BigEndian.PutUint16(payload[2:4], zerotier.EtherTypeIPv4)
+	payload[4], payload[5] = 6, 4
+	binary.BigEndian.PutUint16(payload[6:8], operation)
+	senderMACBytes := senderMAC.Bytes()
+	copy(payload[8:14], senderMACBytes[:])
+	copy(payload[14:18], senderIP.AsSlice())
+	targetMACBytes := targetMAC.Bytes()
+	copy(payload[18:24], targetMACBytes[:])
+	copy(payload[24:28], targetIP.AsSlice())
+	return payload
+}
+
+func ipv4Packet(source, destination netip.Addr, protocol byte) []byte {
+	packet := make([]byte, 20)
+	packet[0], packet[9] = 0x45, protocol
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	copy(packet[12:16], source.AsSlice())
+	copy(packet[16:20], destination.AsSlice())
+	return packet
+}
+
+func legacyIGMPPacket(source, target, group netip.Addr, messageType, responseCode byte, routerAlert bool) []byte {
+	igmp := make([]byte, 8)
+	igmp[0], igmp[1] = messageType, responseCode
+	copy(igmp[4:8], group.AsSlice())
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	headerLength := 20
+	if routerAlert {
+		headerLength = 24
+	}
+	packet := make([]byte, headerLength+len(igmp))
+	packet[0], packet[8], packet[9] = 0x45, 1, 2
+	if routerAlert {
+		packet[0] = 0x46
+		copy(packet[20:24], []byte{148, 4, 0, 0})
+	}
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	copy(packet[12:16], source.AsSlice())
+	copy(packet[16:20], target.AsSlice())
+	binary.BigEndian.PutUint16(packet[10:12], internetChecksum(packet[:headerLength]))
+	copy(packet[headerLength:], igmp)
+	return packet
+}
+
+func igmpV3GeneralQueryPacket(source netip.Addr, responseCode, robustness, queryInterval byte, additional []byte) []byte {
+	igmp := make([]byte, 12+len(additional))
+	igmp[0], igmp[1], igmp[8], igmp[9] = 0x11, responseCode, robustness&7, queryInterval
+	copy(igmp[12:], additional)
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	packet := make([]byte, 24+len(igmp))
+	packet[0], packet[8], packet[9] = 0x46, 1, 2
+	copy(packet[12:16], source.AsSlice())
+	copy(packet[16:20], netip.MustParseAddr("224.0.0.1").AsSlice())
+	copy(packet[20:24], []byte{148, 4, 0, 0})
+	copy(packet[24:], igmp)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[10:12], internetChecksum(packet[:24]))
+	return packet
+}
+
+func mldV1Packet(source, target, group netip.Addr, messageType byte) []byte {
+	icmp := make([]byte, 24)
+	icmp[0] = messageType
+	copy(icmp[8:24], group.AsSlice())
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(source, target, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	packet := ipv6Packet(source, target, 0, append(hopByHop, icmp...))
+	packet[7] = 1
+	return packet
+}
+
+func mldGeneralQueryPacket(source netip.Addr, responseCode uint16, robustness, queryInterval byte, v2 bool, additional []byte) []byte {
+	target := netip.MustParseAddr("ff02::1")
+	length := 24
+	if v2 {
+		length = 28
+	}
+	icmp := make([]byte, length+len(additional))
+	icmp[0] = 130
+	binary.BigEndian.PutUint16(icmp[4:6], responseCode)
+	if v2 {
+		icmp[24], icmp[25] = robustness&7, queryInterval
+	}
+	copy(icmp[length:], additional)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(source, target, icmp))
+	hopByHop := []byte{58, 0, 5, 2, 0, 0, 1, 0}
+	packet := ipv6Packet(source, target, 0, append(hopByHop, icmp...))
+	packet[7] = 1
+	return packet
+}
+
+// ipv6AtomicFragment inserts an RFC 8200 atomic Fragment header after the
+// mandatory Hop-by-Hop header used by the MLD test packet.
+func ipv6AtomicFragment(packet []byte) []byte {
+	fragmented := make([]byte, len(packet)+8)
+	copy(fragmented[:48], packet[:48])
+	fragmented[40] = 44
+	fragmented[48] = 58
+	copy(fragmented[56:], packet[48:])
+	binary.BigEndian.PutUint16(fragmented[4:6], uint16(len(fragmented)-40))
+	return fragmented
+}
+
+// insertIPv6Extension places one eight-byte header after an MLD packet's
+// mandatory Hop-by-Hop header.
+func insertIPv6Extension(packet []byte, extension byte, header []byte) []byte {
+	result := make([]byte, len(packet)+len(header))
+	copy(result[:48], packet[:48])
+	result[40] = extension
+	copy(result[48:48+len(header)], header)
+	copy(result[48+len(header):], packet[48:])
+	binary.BigEndian.PutUint16(result[4:6], uint16(len(result)-40))
+	return result
+}
+
+func igmpv3ReportPacket(source, group netip.Addr, recordType byte, sources []netip.Addr) []byte {
+	igmp := make([]byte, 16+4*len(sources))
+	igmp[0], igmp[8] = 0x22, recordType
+	binary.BigEndian.PutUint16(igmp[6:8], 1)
+	binary.BigEndian.PutUint16(igmp[10:12], uint16(len(sources)))
+	copy(igmp[12:16], group.AsSlice())
+	offset := 16
+	for _, address := range sources {
+		copy(igmp[offset:offset+4], address.AsSlice())
+		offset += 4
+	}
+	binary.BigEndian.PutUint16(igmp[2:4], internetChecksum(igmp))
+	packet := make([]byte, 24+len(igmp))
+	packet[0], packet[8], packet[9] = 0x46, 1, 2
+	copy(packet[12:16], source.AsSlice())
+	copy(packet[16:20], netip.MustParseAddr("224.0.0.22").AsSlice())
+	copy(packet[20:24], []byte{148, 4, 0, 0})
+	copy(packet[24:], igmp)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[10:12], internetChecksum(packet[:24]))
+	return packet
+}
+
+func ipv6Packet(source, destination netip.Addr, nextHeader byte, payload []byte) []byte {
+	packet := make([]byte, 40+len(payload))
+	packet[0], packet[6], packet[7] = 0x60, nextHeader, 64
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(payload)))
+	copy(packet[8:24], source.AsSlice())
+	copy(packet[24:40], destination.AsSlice())
+	copy(packet[40:], payload)
+	return packet
+}

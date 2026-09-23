@@ -1,0 +1,32 @@
+package zerotier
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestNetworkAuthenticationLoginURL(t *testing.T) {
+	info := NetworkAuthenticationInfo{AuthenticationURL: "https://controller.example/auth/device"}
+	if loginURL, err := info.LoginURL(); err != nil || loginURL != info.AuthenticationURL {
+		t.Fatalf("LoginURL() = %q, %v", loginURL, err)
+	}
+	info.AuthenticationURL = "javascript:alert(1)"
+	if _, err := info.LoginURL(); !errors.Is(err, ErrInvalidAuthenticationURL) {
+		t.Fatalf("invalid LoginURL() = %v", err)
+	}
+	info = NetworkAuthenticationInfo{
+		Version:           1,
+		AuthenticationURL: "https://service-generated.example/auth",
+		IssuerURL:         "https://issuer.example",
+		CentralAuthURL:    "https://central.example/auth",
+		Nonce:             "nonce",
+		State:             "state",
+		ClientID:          "client",
+	}
+	if _, err := info.LoginURL(); !errors.Is(err, ErrOIDCUnsupported) {
+		t.Fatalf("SSO v1 LoginURL() = %v", err)
+	}
+	if _, err := (NetworkAuthenticationInfo{}).LoginURL(); !errors.Is(err, ErrAuthenticationURLUnavailable) {
+		t.Fatalf("empty LoginURL() = %v", err)
+	}
+}

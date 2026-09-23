@@ -6,6 +6,10 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Changed
 
+- Windows settings now use the shared `@slave-vpn/core` `SettingsStore` through
+  a platform `StorageAdapter`, while preserving the existing flat
+  `userData/settings.json` format. All settings mutations are awaited and
+  concurrent writes are serialised to prevent stale snapshots from winning.
 - Android now compiles the selected shared DNS preset, IPv4/IPv6 strategy and
   advanced resolver/rule/prefetch settings instead of always using one fixed
   mobile DNS profile. Built-in profiles retain Android node anti-loop, RU-direct

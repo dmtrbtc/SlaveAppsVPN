@@ -1,0 +1,190 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/netip"
+	"strings"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+// dnsProbeResult reports one standard-library DNS resolution over iplink.
+type dnsProbeResult struct {
+	Node      string         `json:"node"`
+	Network   string         `json:"network"`
+	Server    string         `json:"server"`
+	Name      string         `json:"name"`
+	Query     string         `json:"query"`
+	Type      string         `json:"type"`
+	Addresses []netip.Addr   `json:"addresses"`
+	Duration  time.Duration  `json:"duration"`
+	Managed   bool           `json:"managed_server"`
+	Path      pathDiagnostic `json:"path"`
+}
+
+// runDNS resolves one A or AAAA query through an explicit or controller-managed
+// DNS server using the standard library resolver codec.
+func runDNS(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("dns", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "16-digit network ID")
+	name := flags.String("name", "", "DNS name to resolve")
+	recordType := flags.String("type", "A", "record type: A or AAAA")
+	serverText := flags.String("server", "", "DNS server IP or IP:port; empty uses managed DNS")
+	peerText := flags.String("peer", "", "expected 10-digit ZeroTier peer address")
+	requireDirect := flags.Bool("require-direct", false, "require an active direct path to the expected peer")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	queryNetwork := "ip4"
+	typeName := strings.ToUpper(*recordType)
+	if typeName == "AAAA" {
+		queryNetwork = "ip6"
+	} else if typeName != "A" {
+		return exitUsage, errors.New("dns -type must be A or AAAA")
+	}
+	if strings.TrimSpace(*name) == "" {
+		return exitUsage, errors.New("dns requires -name")
+	}
+	if *peerText != "" {
+		if _, err = zerotier.ParseAddress(*peerText); err != nil {
+			return exitUsage, err
+		}
+	}
+	var explicitServer netip.AddrPort
+	if *serverText != "" {
+		explicitServer, err = parseProbeAddrPort(*serverText, 53)
+		if err != nil {
+			return exitUsage, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	probe, err := startNetworkRuntime(options, networkID, stderr)
+	if err != nil {
+		return exitError, err
+	}
+	defer probe.Close()
+	code, err := probe.waitReady(ctx, networkID, netip.Addr{}, stdout, options.json)
+	if err != nil {
+		return code, err
+	}
+	server, managed := probeDNSServer(probe.network.Config, explicitServer)
+	if !server.IsValid() {
+		return exitProbeFailed, errors.New("network configuration has no managed DNS server; use -server")
+	}
+	if server.Port() == 0 {
+		server = netip.AddrPortFrom(server.Addr(), 53)
+	}
+	probe.runtime.linkMu.RLock()
+	link := probe.runtime.link
+	probe.runtime.linkMu.RUnlock()
+	if err = link.ValidateDestination(server.Addr()); err != nil {
+		return exitProbeFailed, err
+	}
+	resolver := newProbeResolver(probe.runtime, link, probe.network.Config, server)
+	started := time.Now()
+	queryName := absoluteProbeName(*name, probe.network.Config.DNSDomain)
+	addresses, resolveErr := resolver.LookupNetIP(ctx, queryNetwork, queryName)
+	result := dnsProbeResult{
+		Node: probe.runtime.node.Address().String(), Network: fmt.Sprintf("%016x", networkID), Server: server.String(),
+		Name: *name, Query: queryName, Type: typeName, Addresses: addresses, Duration: time.Since(started), Managed: managed,
+	}
+	diagnostic, pathErr := diagnosePath(ctx, probe.runtime.node, probe.network.Config, server.Addr(), *peerText, *requireDirect)
+	result.Path = diagnostic
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		fmt.Fprintf(stdout, "node=%s network=%s server=%s managed=%t name=%q query=%q type=%s addresses=%v duration=%s\n",
+			result.Node, result.Network, result.Server, result.Managed, result.Name, result.Query, result.Type, result.Addresses, result.Duration)
+		printPathDiagnostic(stdout, diagnostic)
+	}
+	if resolveErr != nil {
+		return exitProbeFailed, resolveErr
+	}
+	if len(addresses) == 0 {
+		return exitProbeFailed, errors.New("DNS response contained no requested addresses")
+	}
+	if pathErr != nil {
+		return exitProbeFailed, pathErr
+	}
+	return exitOK, nil
+}
+
+// probeDNSServer selects an explicit endpoint or the first usable managed DNS
+// server and reports whether the result came from network configuration.
+func probeDNSServer(config zerotier.NetworkConfigData, explicit netip.AddrPort) (netip.AddrPort, bool) {
+	if explicit.IsValid() {
+		return explicit, false
+	}
+	for _, candidate := range config.DNSServers {
+		if candidate.IsValid() && !candidate.Addr().IsUnspecified() {
+			if candidate.Port() == 0 {
+				candidate = netip.AddrPortFrom(candidate.Addr(), 53)
+			}
+			return candidate, true
+		}
+	}
+	return netip.AddrPort{}, false
+}
+
+// newProbeResolver returns a standard-library DNS codec over managed UDP with
+// TCP fallback for truncated responses.
+func newProbeResolver(runtime *probeRuntime, link *iplink.Link, config zerotier.NetworkConfigData, server netip.AddrPort) *net.Resolver {
+	return &net.Resolver{
+		PreferGo:     true,
+		StrictErrors: true,
+		Dial: func(dialCtx context.Context, network, _ string) (net.Conn, error) {
+			switch {
+			case strings.HasPrefix(network, "udp"):
+				return newUDPProbeConn(dialCtx, runtime, link, server)
+			case strings.HasPrefix(network, "tcp"):
+				return dialTCPClient(dialCtx, runtime, config, server, tcpClientDefaultMaximumAttempts)
+			default:
+				return nil, fmt.Errorf("unsupported DNS transport network %q", network)
+			}
+		},
+	}
+}
+
+// absoluteProbeName applies the managed domain to a single-label name and
+// makes the result absolute so host OS search configuration cannot interfere.
+func absoluteProbeName(name, managedDomain string) string {
+	name = strings.TrimSpace(name)
+	if strings.HasSuffix(name, ".") {
+		return name
+	}
+	if domain := strings.Trim(managedDomain, "."); !strings.Contains(name, ".") && domain != "" {
+		name += "." + domain
+	}
+	return name + "."
+}
+
+// parseProbeAddrPort parses an IP with an optional port and applies defaultPort.
+func parseProbeAddrPort(value string, defaultPort uint16) (netip.AddrPort, error) {
+	if endpoint, err := netip.ParseAddrPort(value); err == nil {
+		if endpoint.Port() == 0 {
+			return netip.AddrPort{}, errors.New("probe port must be non-zero")
+		}
+		return endpoint, nil
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil || address.IsUnspecified() || address.IsMulticast() {
+		return netip.AddrPort{}, fmt.Errorf("invalid unicast probe address %q", value)
+	}
+	return netip.AddrPortFrom(address, defaultPort), nil
+}

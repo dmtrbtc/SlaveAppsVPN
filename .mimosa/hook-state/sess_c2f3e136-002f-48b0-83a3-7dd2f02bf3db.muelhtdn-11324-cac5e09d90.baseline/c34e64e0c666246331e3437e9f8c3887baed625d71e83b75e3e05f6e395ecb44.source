@@ -1,0 +1,67 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestRunRequiresSubcommand verifies that invoking ztprobe without a command
+// reports a usage error.
+func TestRunRequiresSubcommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run(nil, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), "usage:") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+// TestHelpListsTCPProbe verifies that command help advertises TCP probing.
+func TestHelpListsTCPProbe(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"help"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, command := range []string{"tcp", "http", "udp", "dns", "mtu", "fallback", "watch", "restart"} {
+		if !strings.Contains(stdout.String(), command) {
+			t.Fatalf("help does not list %q: %s", command, stdout.String())
+		}
+	}
+}
+
+// TestNewCommandsRejectInvalidArguments verifies their usage paths without
+// starting physical network activity.
+func TestNewCommandsRejectInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"udp", "-network", "1234567890abcdef", "-target", "192.0.2.2", "-port", "0"},
+		{"tcp", "-network", "1234567890abcdef", "-target", "192.0.2.2", "-port", "443", "-mode", "invalid"},
+		{"http", "-network", "1234567890abcdef", "-url", "ftp://example.com"},
+		{"dns", "-network", "1234567890abcdef", "-name", "example.com", "-type", "MX"},
+		{"mtu", "-network", "1234567890abcdef", "-target", "192.0.2.2", "-min", "-1"},
+		{"fallback", "unexpected"},
+		{"watch", "-network", "1234567890abcdef", "-duration", "0"},
+		{"restart", "-network", "1234567890abcdef", "-cycles", "1"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != exitUsage {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+// TestConfigSubcommandJSON verifies JSON output for cached configurations.
+func TestConfigSubcommandJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "network.conf")
+	data := "v=0000000000000007\nnwid=1234567890abcdef\nid=0000001234567890\nn=test"
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"config", "-json", path}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"network":"1234567890abcdef"`) || !strings.Contains(stdout.String(), `"name":"test"`) {
+		t.Fatalf("config output = %s", stdout.String())
+	}
+}

@@ -1,0 +1,154 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/netip"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+// mtuProbeAttempt records the outcome of probing one complete IP packet size.
+type mtuProbeAttempt struct {
+	Size     int    `json:"size"`
+	Sent     int    `json:"sent"`
+	Received int    `json:"received"`
+	Error    string `json:"error,omitempty"`
+}
+
+// mtuProbeResult reports the highest confirmed complete IP packet size.
+type mtuProbeResult struct {
+	Node          string            `json:"node"`
+	Network       string            `json:"network"`
+	Target        string            `json:"target"`
+	ConfiguredMTU uint32            `json:"configured_mtu"`
+	Minimum       int               `json:"minimum"`
+	Maximum       int               `json:"maximum"`
+	Attempts      []mtuProbeAttempt `json:"attempts"`
+	Path          pathDiagnostic    `json:"path"`
+}
+
+// runMTU probes real overlay fragmentation and reassembly with progressively
+// sized ICMP echo packets.
+func runMTU(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("mtu", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "16-digit network ID")
+	targetText := flags.String("target", "", "IPv4 or IPv6 destination")
+	minimum := flags.Int("min", 0, "minimum complete IP packet size; zero uses 1280")
+	maximum := flags.Int("max", 0, "maximum complete IP packet size; zero uses the managed MTU")
+	count := flags.Int("count", 2, "attempts at each packet size")
+	probeTimeout := flags.Duration("probe-timeout", 5*time.Second, "timeout for each packet size")
+	peerText := flags.String("peer", "", "expected 10-digit ZeroTier peer address")
+	requireDirect := flags.Bool("require-direct", false, "require an active direct path to the expected peer")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	target, err := netip.ParseAddr(*targetText)
+	if err != nil || target.IsUnspecified() || target.IsMulticast() || *minimum < 0 || *maximum < 0 || *count <= 0 || *count > 65535 || *probeTimeout <= 0 {
+		return exitUsage, errors.New("mtu requires a unicast -target, non-negative size bounds, a positive -count, and a positive -probe-timeout")
+	}
+	if *peerText != "" {
+		if _, err = zerotier.ParseAddress(*peerText); err != nil {
+			return exitUsage, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	probe, code, err := startNetworkProbe(ctx, options, networkID, target, stdout, stderr)
+	if err != nil {
+		return code, err
+	}
+	defer probe.Close()
+	headerSize := 28
+	if target.Is6() {
+		headerSize = 48
+	}
+	low, high := *minimum, *maximum
+	if low == 0 {
+		low = zerotier.MinNetworkMTU
+	}
+	if high == 0 || high > int(probe.network.Config.MTU) {
+		high = int(probe.network.Config.MTU)
+	}
+	if low < headerSize || low > high {
+		return exitUsage, fmt.Errorf("mtu size range must be between %d and the configured MTU %d", headerSize, probe.network.Config.MTU)
+	}
+	result := mtuProbeResult{
+		Node: probe.runtime.node.Address().String(), Network: fmt.Sprintf("%016x", networkID), Target: target.String(),
+		ConfiguredMTU: probe.network.Config.MTU, Minimum: low,
+	}
+	probeSize := func(size int) bool {
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, *probeTimeout)
+		ping, pingErr := probe.runtime.ping(attemptCtx, probe.network.Config, target, *count, size-headerSize, 100*time.Millisecond)
+		attemptCancel()
+		attempt := mtuProbeAttempt{Size: size, Sent: ping.Sent, Received: ping.Received}
+		if pingErr != nil {
+			attempt.Error = pingErr.Error()
+		}
+		result.Attempts = append(result.Attempts, attempt)
+		return ping.Received != 0
+	}
+	// The first traffic to a peer may be relayed while rendezvous establishes a
+	// direct path. Repeat the baseline once so path setup is not misreported as
+	// an MTU failure.
+	if !probeSize(low) && !probeSize(low) {
+		result.Maximum = 0
+		result.Path, _ = diagnosePath(ctx, probe.runtime.node, probe.network.Config, target, *peerText, false)
+		if options.json {
+			_ = json.NewEncoder(stdout).Encode(result)
+		} else {
+			printMTUResult(stdout, result)
+		}
+		return exitProbeFailed, fmt.Errorf("minimum packet size %d did not receive an echo reply", low)
+	}
+	confirmed := low
+	if high != low && probeSize(high) {
+		confirmed = high
+	} else {
+		failed := high
+		for failed-confirmed > 1 {
+			middle := confirmed + (failed-confirmed)/2
+			if probeSize(middle) {
+				confirmed = middle
+			} else {
+				failed = middle
+			}
+		}
+	}
+	result.Maximum = confirmed
+	diagnostic, pathErr := diagnosePath(ctx, probe.runtime.node, probe.network.Config, target, *peerText, *requireDirect)
+	result.Path = diagnostic
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		printMTUResult(stdout, result)
+	}
+	if pathErr != nil {
+		return exitProbeFailed, pathErr
+	}
+	if confirmed < high {
+		return exitProbeFailed, fmt.Errorf("largest confirmed packet is %d bytes, below requested %d", confirmed, high)
+	}
+	return exitOK, nil
+}
+
+// printMTUResult writes an MTU probe result in human-readable form.
+func printMTUResult(w io.Writer, result mtuProbeResult) {
+	fmt.Fprintf(w, "node=%s network=%s target=%s configured-mtu=%d confirmed-mtu=%d\n", result.Node, result.Network, result.Target, result.ConfiguredMTU, result.Maximum)
+	for _, attempt := range result.Attempts {
+		fmt.Fprintf(w, "size=%d sent=%d received=%d error=%q\n", attempt.Size, attempt.Sent, attempt.Received, attempt.Error)
+	}
+	printPathDiagnostic(w, result.Path)
+}

@@ -1,0 +1,181 @@
+package main
+
+import (
+	"encoding/binary"
+	"fmt"
+	"net/netip"
+)
+
+const (
+	// icmpv4Protocol is the IPv4 protocol number assigned to ICMP.
+	icmpv4Protocol = byte(1)
+	// icmpv6Protocol is the IPv6 next-header number assigned to ICMPv6.
+	icmpv6Protocol = byte(58)
+)
+
+// probeICMPError is a validated ICMP error and its quoted original packet.
+type probeICMPError struct {
+	Reporter       netip.Addr
+	Type           byte
+	Code           byte
+	MTU            uint32
+	Description    string
+	QuotedSource   netip.Addr
+	QuotedTarget   netip.Addr
+	QuotedProtocol byte
+	QuotedPayload  []byte
+}
+
+// Error formats the remote ICMP failure for command output.
+func (e probeICMPError) Error() string {
+	if e.MTU != 0 {
+		return fmt.Sprintf("ICMP error from %s: %s (mtu=%d)", e.Reporter, e.Description, e.MTU)
+	}
+	return fmt.Sprintf("ICMP error from %s: %s", e.Reporter, e.Description)
+}
+
+// Matches reports whether the quoted packet belongs to the supplied probe.
+func (e probeICMPError) Matches(source, target netip.Addr, protocol byte) bool {
+	return e.QuotedSource == source.Unmap() && e.QuotedTarget == target.Unmap() && e.QuotedProtocol == protocol
+}
+
+// parseProbeICMPError validates an IPv4 or IPv6 ICMP error and decodes its
+// quoted original packet.
+func parseProbeICMPError(packet []byte) (probeICMPError, bool) {
+	if source, target, icmp, ok := ipProtocolPayload(packet, icmpv4Protocol); ok {
+		if len(icmp) < 8 || checksum(icmp) != 0 || (icmp[0] != 3 && icmp[0] != 11 && icmp[0] != 12) {
+			return probeICMPError{}, false
+		}
+		quotedSource, quotedTarget, protocol, payload, quoted := quotedIPPayload(icmp[8:])
+		if !quoted || !target.Is4() {
+			return probeICMPError{}, false
+		}
+		result := probeICMPError{
+			Reporter: source, Type: icmp[0], Code: icmp[1], Description: icmpv4ErrorDescription(icmp[0], icmp[1]),
+			QuotedSource: quotedSource, QuotedTarget: quotedTarget, QuotedProtocol: protocol, QuotedPayload: payload,
+		}
+		if icmp[0] == 3 && icmp[1] == 4 {
+			result.MTU = uint32(binary.BigEndian.Uint16(icmp[6:8]))
+		}
+		return result, true
+	}
+	if source, target, icmp, ok := ipProtocolPayload(packet, icmpv6Protocol); ok {
+		if len(icmp) < 8 || icmpv6Checksum(source, target, icmp) != 0 || icmp[0] < 1 || icmp[0] > 4 {
+			return probeICMPError{}, false
+		}
+		quotedSource, quotedTarget, protocol, payload, quoted := quotedIPPayload(icmp[8:])
+		if !quoted || !target.Is6() {
+			return probeICMPError{}, false
+		}
+		result := probeICMPError{
+			Reporter: source, Type: icmp[0], Code: icmp[1], Description: icmpv6ErrorDescription(icmp[0], icmp[1]),
+			QuotedSource: quotedSource, QuotedTarget: quotedTarget, QuotedProtocol: protocol, QuotedPayload: payload,
+		}
+		if icmp[0] == 2 {
+			result.MTU = binary.BigEndian.Uint32(icmp[4:8])
+		}
+		return result, true
+	}
+	return probeICMPError{}, false
+}
+
+// quotedIPPayload extracts the available upper-layer bytes from an ICMP quote
+// without requiring the quoted packet to contain its original full length.
+func quotedIPPayload(packet []byte) (netip.Addr, netip.Addr, byte, []byte, bool) {
+	if len(packet) < 1 {
+		return netip.Addr{}, netip.Addr{}, 0, nil, false
+	}
+	switch packet[0] >> 4 {
+	case 4:
+		if len(packet) < 20 {
+			return netip.Addr{}, netip.Addr{}, 0, nil, false
+		}
+		headerSize := int(packet[0]&0x0f) * 4
+		if headerSize < 20 || headerSize > len(packet) {
+			return netip.Addr{}, netip.Addr{}, 0, nil, false
+		}
+		source := netip.AddrFrom4([4]byte(packet[12:16]))
+		target := netip.AddrFrom4([4]byte(packet[16:20]))
+		return source, target, packet[9], packet[headerSize:], true
+	case 6:
+		if len(packet) < 40 {
+			return netip.Addr{}, netip.Addr{}, 0, nil, false
+		}
+		source := netip.AddrFrom16([16]byte(packet[8:24]))
+		target := netip.AddrFrom16([16]byte(packet[24:40]))
+		next, offset := packet[6], 40
+		for offset <= len(packet) {
+			switch next {
+			case 0, 43, 60, 135:
+				if len(packet)-offset < 8 {
+					return netip.Addr{}, netip.Addr{}, 0, nil, false
+				}
+				length := (int(packet[offset+1]) + 1) * 8
+				if length > len(packet)-offset {
+					return netip.Addr{}, netip.Addr{}, 0, nil, false
+				}
+				next, offset = packet[offset], offset+length
+			case 44:
+				if len(packet)-offset < 8 {
+					return netip.Addr{}, netip.Addr{}, 0, nil, false
+				}
+				next, offset = packet[offset], offset+8
+			case 51:
+				if len(packet)-offset < 8 {
+					return netip.Addr{}, netip.Addr{}, 0, nil, false
+				}
+				length := (int(packet[offset+1]) + 2) * 4
+				if length > len(packet)-offset {
+					return netip.Addr{}, netip.Addr{}, 0, nil, false
+				}
+				next, offset = packet[offset], offset+length
+			default:
+				return source, target, next, packet[offset:], true
+			}
+		}
+	}
+	return netip.Addr{}, netip.Addr{}, 0, nil, false
+}
+
+// icmpv4ErrorDescription returns a stable description for an ICMPv4 error.
+func icmpv4ErrorDescription(typ, code byte) string {
+	if typ == 3 {
+		descriptions := [...]string{"network unreachable", "host unreachable", "protocol unreachable", "port unreachable", "fragmentation needed", "source route failed", "destination network unknown", "destination host unknown", "source host isolated", "network administratively prohibited", "host administratively prohibited", "network unreachable for TOS", "host unreachable for TOS", "communication administratively prohibited", "host precedence violation", "precedence cutoff"}
+		if int(code) < len(descriptions) {
+			return descriptions[code]
+		}
+	}
+	if typ == 11 {
+		if code == 0 {
+			return "time to live exceeded"
+		}
+		return "fragment reassembly time exceeded"
+	}
+	if typ == 12 {
+		return "invalid IP parameter"
+	}
+	return fmt.Sprintf("ICMPv4 type %d code %d", typ, code)
+}
+
+// icmpv6ErrorDescription returns a stable description for an ICMPv6 error.
+func icmpv6ErrorDescription(typ, code byte) string {
+	if typ == 1 {
+		descriptions := [...]string{"no route", "communication administratively prohibited", "beyond source address scope", "address unreachable", "port unreachable", "source address policy failure", "reject route"}
+		if int(code) < len(descriptions) {
+			return descriptions[code]
+		}
+	}
+	switch typ {
+	case 2:
+		return "packet too big"
+	case 3:
+		if code == 0 {
+			return "hop limit exceeded"
+		}
+		return "fragment reassembly time exceeded"
+	case 4:
+		return "invalid IPv6 parameter"
+	default:
+		return fmt.Sprintf("ICMPv6 type %d code %d", typ, code)
+	}
+}

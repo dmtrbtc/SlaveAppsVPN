@@ -1,0 +1,173 @@
+package zerotier
+
+import (
+	"bytes"
+	"errors"
+	"testing"
+)
+
+func TestPacketArmorRoundTrip(t *testing.T) {
+	var key [32]byte
+	for i := range key {
+		key[i] = byte(i * 7)
+	}
+	p, err := NewPacket(NewAddress(1), NewAddress(2), VerbFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AppendUint64(0x8056c2e21c000001); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AppendUint16(0x0800); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Append([]byte("frame payload")...); err != nil {
+		t.Fatal(err)
+	}
+	wantPayload := append([]byte(nil), p.Bytes()[PacketVerbOffset:]...)
+	if err := p.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(p.Bytes()[PacketVerbOffset:], wantPayload) {
+		t.Fatal("packet was not encrypted")
+	}
+	if err := p.Dearmor(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(p.Bytes()[PacketVerbOffset:], wantPayload) {
+		t.Fatalf("packet payload mismatch\n got %x\nwant %x", p.Bytes()[PacketVerbOffset:], wantPayload)
+	}
+}
+
+func TestPacketCompressionRoundTrip(t *testing.T) {
+	packet, err := NewPacket(NewAddress(1), NewAddress(2), VerbNetworkConfigRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 1024)
+	for i := range payload {
+		payload[i] = byte(i % 7)
+	}
+	_ = packet.Append(payload...)
+	if err := packet.Compress(); err != nil {
+		t.Fatal(err)
+	}
+	if !packet.Compressed() || len(packet.Payload()) >= len(payload) {
+		t.Fatal("compressible packet payload was not compressed")
+	}
+	if err := packet.Uncompress(); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Compressed() || len(packet.Payload()) != len(payload) {
+		t.Fatal("compressed packet did not round trip")
+	}
+	for i := range payload {
+		if packet.Payload()[i] != payload[i] {
+			t.Fatalf("payload differs at byte %d", i)
+		}
+	}
+}
+
+func TestPacketAppendErrorIsSticky(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := NewPacket(identity.Address(), identity.Address(), VerbEcho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Append(make([]byte, MaxPacketSize)...); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("oversized append error = %v", err)
+	}
+	key := make([]byte, SymmetricKeySize)
+	if err = packet.Armor(key, true); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("armor after failed append error = %v", err)
+	}
+}
+
+func TestPacketRejectsModifiedPayload(t *testing.T) {
+	key := make([]byte, 32)
+	p, err := NewPacket(NewAddress(1), NewAddress(2), VerbEcho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Append(1, 2, 3)
+	if err := p.Armor(key, true); err != nil {
+		t.Fatal(err)
+	}
+	p.Bytes()[len(p.Bytes())-1] ^= 1
+	if err := p.Dearmor(key); err == nil {
+		t.Fatal("modified packet accepted")
+	}
+}
+
+func TestPacketAESGMACSIVRoundTrip(t *testing.T) {
+	p, err := NewPacket(NewAddress(1), NewAddress(2), VerbFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Append([]byte("protocol-12-payload")...)
+	var key [SymmetricKeySize]byte
+	for i := range key {
+		key[i] = byte(i)
+	}
+	want := append([]byte(nil), p.Bytes()[PacketVerbOffset:]...)
+	if err := p.ArmorAES(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if p.Cipher() != CipherSuiteAESGMACSIV {
+		t.Fatalf("cipher = %d", p.Cipher())
+	}
+	if err := p.Dearmor(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(p.Bytes()[PacketVerbOffset:], want) {
+		t.Fatal("AES-GMAC-SIV payload mismatch")
+	}
+}
+
+func TestPacketExtendedArmorRoundTrip(t *testing.T) {
+	sender, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := sender.Agree(receiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewPacket(receiver.Address(), sender.Address(), VerbHello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Append([]byte("protocol-13-encrypted-hello")...)
+	want := append([]byte(nil), p.Bytes()[PacketVerbOffset:]...)
+	if err := p.ArmorExtended(key[:], receiver); err != nil {
+		t.Fatal(err)
+	}
+	if !p.ExtendedArmor() || p.Cipher() != CipherSuiteC25519Poly1305None || len(p.Bytes()) != PacketMinSize+len(want)-1+32 {
+		t.Fatal("extended armor flags or size are invalid")
+	}
+	if err := p.DearmorWithIdentity(key[:], receiver); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(p.Bytes()[PacketVerbOffset:], want) {
+		t.Fatal("extended armor payload mismatch")
+	}
+}
+
+func TestPacketTrustedPathMarker(t *testing.T) {
+	p, err := NewPacket(NewAddress(1), NewAddress(2), VerbEcho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trustedPathID = uint64(0x0123456789abcdef)
+	p.SetTrusted(trustedPathID)
+	if p.Cipher() != CipherSuiteTrustedPath || p.TrustedPathID() != trustedPathID {
+		t.Fatalf("trusted marker = cipher %d id %016x", p.Cipher(), p.TrustedPathID())
+	}
+}

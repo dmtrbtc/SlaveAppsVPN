@@ -1,0 +1,1204 @@
+package main
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/netip"
+	"sort"
+	"sync"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/iplink"
+)
+
+const (
+	// tcpClientReceiveCapacity bounds data retained while the application is
+	// slower than the remote peer.
+	tcpClientReceiveCapacity = 256 * 1024
+	// tcpClientMaximumOutOfOrder bounds metadata even for zero-length FIN
+	// segments that do not count against the byte capacity.
+	tcpClientMaximumOutOfOrder = 256
+	// tcpClientInitialRTO is the first retransmission timeout. Each subsequent
+	// data or FIN attempt doubles this value up to tcpClientMaximumRTO.
+	tcpClientInitialRTO = 300 * time.Millisecond
+	// tcpClientInitialSYNRTO leaves time for initial ARP/NDP resolution and
+	// ZeroTier direct-path establishment before retransmitting active open.
+	tcpClientInitialSYNRTO = time.Second
+	// tcpClientMaximumRTO bounds diagnostic recovery latency.
+	tcpClientMaximumRTO = 2 * time.Second
+	// tcpClientDefaultMaximumAttempts bounds retransmissions used by commands
+	// without their own attempt option.
+	tcpClientDefaultMaximumAttempts = 6
+	// tcpClientFINWaitTimeout bounds waiting for the peer's closing FIN after it
+	// acknowledges our FIN.
+	tcpClientFINWaitTimeout = 2 * time.Second
+	// tcpClientTimeWaitDuration retains the tuple long enough to acknowledge a
+	// retransmitted peer FIN before a short-lived diagnostic exits.
+	tcpClientTimeWaitDuration = time.Second
+)
+
+var (
+	// errTCPConnectionRefused reports a matching reset during active open.
+	errTCPConnectionRefused = errors.New("TCP connection refused")
+	// errTCPConnectionReset reports a matching reset after active open.
+	errTCPConnectionReset = errors.New("TCP connection reset by peer")
+)
+
+// tcpClientSegment is a validated segment belonging to one client tuple.
+type tcpClientSegment struct {
+	Sequence        uint32
+	Acknowledgement uint32
+	Flags           byte
+	Window          uint16
+	Options         []byte
+	Payload         []byte
+}
+
+// tcpConnectInfo describes the completed active-open handshake.
+type tcpConnectInfo struct {
+	Attempts int
+	RTT      time.Duration
+}
+
+// tcpWriteRequest transfers one application write to the protocol actor.
+type tcpWriteRequest struct {
+	data     []byte
+	cancel   chan struct{}
+	response chan tcpWriteResult
+	mu       sync.Mutex
+	acked    int
+}
+
+// setAcknowledged publishes cumulative application progress.
+func (r *tcpWriteRequest) setAcknowledged(size int) {
+	r.mu.Lock()
+	r.acked = size
+	r.mu.Unlock()
+}
+
+// acknowledged returns cumulative application progress.
+func (r *tcpWriteRequest) acknowledged() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.acked
+}
+
+// tcpWriteResult completes one application write.
+type tcpWriteResult struct {
+	n   int
+	err error
+}
+
+// tcpCloseRequest asks the protocol actor to close the sending direction.
+type tcpCloseRequest struct {
+	response chan error
+}
+
+// tcpOutstandingKind identifies the segment currently awaiting an ACK.
+type tcpOutstandingKind uint8
+
+const (
+	// tcpOutstandingSYN is the active-open request.
+	tcpOutstandingSYN tcpOutstandingKind = iota
+	// tcpOutstandingData carries application bytes.
+	tcpOutstandingData
+	// tcpOutstandingFIN closes the sending direction.
+	tcpOutstandingFIN
+)
+
+// tcpOutstanding retains one retransmittable segment.
+type tcpOutstanding struct {
+	kind     tcpOutstandingKind
+	packet   []byte
+	end      uint32
+	dataSize int
+	attempts int
+	rto      time.Duration
+	sentAt   time.Time
+}
+
+// tcpReceivedPiece retains one out-of-order segment until its gap arrives.
+type tcpReceivedPiece struct {
+	sequence uint32
+	payload  []byte
+	fin      bool
+}
+
+// tcpClientConn implements a bounded active TCP connection over iplink. A
+// single actor owns all wire protocol state; the mutex below protects only the
+// application-facing buffers, deadlines, and closure notifications.
+type tcpClientConn struct {
+	runtime         *probeRuntime
+	link            *iplink.Link
+	local           netip.AddrPort
+	remote          netip.AddrPort
+	mtu             int
+	maximumAttempts int
+	ctx             context.Context
+
+	writes        chan *tcpWriteRequest
+	closes        chan *tcpCloseRequest
+	windowUpdates chan struct{}
+	abortCh       chan struct{}
+	done          chan struct{}
+	connected     chan error
+	abortOnce     sync.Once
+	closeOnce     sync.Once
+	closeErr      error
+	readCallMu    sync.Mutex
+	writeCallMu   sync.Mutex
+
+	mu             sync.Mutex
+	readBuffer     []byte
+	readErr        error
+	terminalErr    error
+	userClosed     bool
+	readDeadline   time.Time
+	writeDeadline  time.Time
+	readChangedCh  chan struct{}
+	writeChangedCh chan struct{}
+	readNotifyCh   chan struct{}
+	connectInfo    tcpConnectInfo
+}
+
+// dialTCPClient establishes one active TCP connection through runtime's L3
+// link. dialCtx bounds active open while the runtime context owns the returned
+// connection lifetime.
+func dialTCPClient(dialCtx context.Context, runtime *probeRuntime, config zerotier.NetworkConfigData, remote netip.AddrPort, maximumAttempts int) (*tcpClientConn, error) {
+	if !remote.IsValid() || remote.Port() == 0 || remote.Addr().IsUnspecified() || remote.Addr().IsMulticast() {
+		return nil, errors.New("TCP client requires a unicast remote endpoint")
+	}
+	if maximumAttempts <= 0 {
+		return nil, errors.New("TCP client requires a positive attempt count")
+	}
+	runtime.linkMu.RLock()
+	link := runtime.link
+	runtime.linkMu.RUnlock()
+	if link == nil {
+		return nil, errors.New("ZeroTier IP link is unavailable")
+	}
+	source, err := link.SourceFor(remote.Addr())
+	if err != nil {
+		return nil, err
+	}
+	sourcePort, sequence, err := randomTCPProbeState()
+	if err != nil {
+		return nil, err
+	}
+	mtu := int(config.MTU)
+	if mtu == 0 {
+		mtu = zerotier.DefaultNetworkMTU
+	} else if mtu < zerotier.MinNetworkMTU {
+		mtu = zerotier.MinNetworkMTU
+	} else if mtu > zerotier.MaxNetworkMTU {
+		mtu = zerotier.MaxNetworkMTU
+	}
+	conn := &tcpClientConn{
+		runtime: runtime, link: link, local: netip.AddrPortFrom(source, sourcePort), remote: remote, mtu: mtu, maximumAttempts: maximumAttempts, ctx: runtime.ctx,
+		writes: make(chan *tcpWriteRequest, 1), closes: make(chan *tcpCloseRequest), windowUpdates: make(chan struct{}, 1),
+		abortCh: make(chan struct{}), done: make(chan struct{}), connected: make(chan error, 1),
+		readChangedCh: make(chan struct{}), writeChangedCh: make(chan struct{}), readNotifyCh: make(chan struct{}),
+	}
+	if conn.ctx == nil {
+		conn.ctx = context.Background()
+	}
+	go conn.run(sequence)
+	select {
+	case err = <-conn.connected:
+		if err != nil {
+			return nil, err
+		}
+		return conn, nil
+	case <-dialCtx.Done():
+		conn.abort()
+		return nil, dialCtx.Err()
+	}
+}
+
+// Read returns queued in-order application data or the connection's terminal
+// receive error.
+func (c *tcpClientConn) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	c.readCallMu.Lock()
+	defer c.readCallMu.Unlock()
+	for {
+		c.mu.Lock()
+		if c.userClosed {
+			c.mu.Unlock()
+			return 0, net.ErrClosed
+		}
+		if len(c.readBuffer) != 0 {
+			n := copy(buffer, c.readBuffer)
+			copy(c.readBuffer, c.readBuffer[n:])
+			c.readBuffer = c.readBuffer[:len(c.readBuffer)-n]
+			c.mu.Unlock()
+			select {
+			case c.windowUpdates <- struct{}{}:
+			default:
+			}
+			return n, nil
+		}
+		if c.readErr != nil {
+			err := c.readErr
+			c.mu.Unlock()
+			return 0, err
+		}
+		deadline, changed, notified := c.readDeadline, c.readChangedCh, c.readNotifyCh
+		c.mu.Unlock()
+		timer, timeout := deadlineTimer(deadline)
+		select {
+		case <-notified:
+		case <-changed:
+		case <-timeout:
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, probeTimeoutError{}
+		case <-c.done:
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+}
+
+// Write transmits all application bytes with bounded stop-and-wait
+// retransmission. A write timeout aborts the connection because later bytes
+// cannot safely overtake an incompletely acknowledged call.
+func (c *tcpClientConn) Write(payload []byte) (int, error) {
+	c.writeCallMu.Lock()
+	defer c.writeCallMu.Unlock()
+	c.mu.Lock()
+	if c.userClosed || c.terminalErr != nil {
+		err := c.connectionErrorLocked()
+		c.mu.Unlock()
+		return 0, err
+	}
+	deadline := c.writeDeadline
+	c.mu.Unlock()
+	if len(payload) == 0 {
+		return 0, nil
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return 0, probeTimeoutError{}
+	}
+	request := &tcpWriteRequest{data: append([]byte(nil), payload...), cancel: make(chan struct{}), response: make(chan tcpWriteResult, 1)}
+	select {
+	case c.writes <- request:
+	case <-c.done:
+		return 0, c.connectionError()
+	}
+	for {
+		c.mu.Lock()
+		deadline, changed := c.writeDeadline, c.writeChangedCh
+		c.mu.Unlock()
+		timer, timeout := deadlineTimer(deadline)
+		select {
+		case result := <-request.response:
+			if timer != nil {
+				timer.Stop()
+			}
+			return result.n, result.err
+		case <-changed:
+			if timer != nil {
+				timer.Stop()
+			}
+			continue
+		case <-timeout:
+			if timer != nil {
+				timer.Stop()
+			}
+			select {
+			case result := <-request.response:
+				return result.n, result.err
+			default:
+			}
+			close(request.cancel)
+			c.abort()
+			return request.acknowledged(), probeTimeoutError{}
+		case <-c.done:
+			if timer != nil {
+				timer.Stop()
+			}
+			select {
+			case result := <-request.response:
+				return result.n, result.err
+			default:
+				return 0, c.connectionError()
+			}
+		}
+	}
+}
+
+// Close starts an orderly FIN close and waits through the peer FIN and bounded
+// TIME_WAIT. Concurrent reads and writes are unblocked immediately with
+// net.ErrClosed.
+func (c *tcpClientConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.userClosed = true
+		c.readErr = net.ErrClosed
+		c.notifyReadLocked()
+		c.mu.Unlock()
+		request := &tcpCloseRequest{response: make(chan error, 1)}
+		select {
+		case c.closes <- request:
+			select {
+			case c.closeErr = <-request.response:
+			case <-c.done:
+				c.closeErr = c.connectionError()
+			}
+		case <-c.done:
+			c.closeErr = c.connectionError()
+		}
+		if errors.Is(c.closeErr, net.ErrClosed) {
+			c.closeErr = nil
+		}
+	})
+	return c.closeErr
+}
+
+// LocalAddr returns the managed local TCP endpoint.
+func (c *tcpClientConn) LocalAddr() net.Addr {
+	return net.TCPAddrFromAddrPort(c.local)
+}
+
+// RemoteAddr returns the connected remote TCP endpoint.
+func (c *tcpClientConn) RemoteAddr() net.Addr {
+	return net.TCPAddrFromAddrPort(c.remote)
+}
+
+// SetDeadline sets both application read and write deadlines.
+func (c *tcpClientConn) SetDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	if c.userClosed || c.terminalErr != nil {
+		c.mu.Unlock()
+		return net.ErrClosed
+	}
+	readChanged, writeChanged := c.readChangedCh, c.writeChangedCh
+	c.readDeadline, c.writeDeadline = deadline, deadline
+	c.readChangedCh, c.writeChangedCh = make(chan struct{}), make(chan struct{})
+	c.mu.Unlock()
+	close(readChanged)
+	close(writeChanged)
+	return nil
+}
+
+// SetReadDeadline sets the next application Read deadline.
+func (c *tcpClientConn) SetReadDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	if c.userClosed || c.terminalErr != nil {
+		c.mu.Unlock()
+		return net.ErrClosed
+	}
+	changed := c.readChangedCh
+	c.readDeadline = deadline
+	c.readChangedCh = make(chan struct{})
+	c.mu.Unlock()
+	close(changed)
+	return nil
+}
+
+// SetWriteDeadline sets the next application Write deadline.
+func (c *tcpClientConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	if c.userClosed || c.terminalErr != nil {
+		c.mu.Unlock()
+		return net.ErrClosed
+	}
+	changed := c.writeChangedCh
+	c.writeDeadline = deadline
+	c.writeChangedCh = make(chan struct{})
+	c.mu.Unlock()
+	close(changed)
+	return nil
+}
+
+// ConnectInfo returns active-open attempts and final handshake RTT.
+func (c *tcpClientConn) ConnectInfo() tcpConnectInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connectInfo
+}
+
+// abort terminates an active open abandoned by its dial context.
+func (c *tcpClientConn) abort() {
+	c.abortOnce.Do(func() { close(c.abortCh) })
+}
+
+// connectionError returns the application-visible terminal error.
+func (c *tcpClientConn) connectionError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connectionErrorLocked()
+}
+
+// connectionErrorLocked returns a terminal error while c.mu is held.
+func (c *tcpClientConn) connectionErrorLocked() error {
+	if c.terminalErr != nil {
+		return c.terminalErr
+	}
+	if c.userClosed {
+		return net.ErrClosed
+	}
+	return net.ErrClosed
+}
+
+// notifyReadLocked broadcasts a buffer or receive-state change while c.mu is
+// held.
+func (c *tcpClientConn) notifyReadLocked() {
+	notified := c.readNotifyCh
+	c.readNotifyCh = make(chan struct{})
+	close(notified)
+}
+
+// appendReadBuffer appends at most available bytes and wakes one blocked Read.
+func (c *tcpClientConn) appendReadBuffer(payload []byte, outOfOrderBytes int) int {
+	c.mu.Lock()
+	available := tcpClientReceiveCapacity - len(c.readBuffer) - outOfOrderBytes
+	if available < 0 {
+		available = 0
+	}
+	if len(payload) > available {
+		payload = payload[:available]
+	}
+	c.readBuffer = append(c.readBuffer, payload...)
+	if len(payload) != 0 {
+		c.notifyReadLocked()
+	}
+	c.mu.Unlock()
+	return len(payload)
+}
+
+// receiveWindow returns the currently advertised unscaled TCP window.
+func (c *tcpClientConn) receiveWindow(outOfOrderBytes int) uint16 {
+	c.mu.Lock()
+	available := tcpClientReceiveCapacity - len(c.readBuffer) - outOfOrderBytes
+	if c.userClosed {
+		available = 0
+	}
+	c.mu.Unlock()
+	if available <= 0 {
+		return 0
+	}
+	if available > 65535 {
+		return 65535
+	}
+	return uint16(available)
+}
+
+// setReadEOF publishes an orderly remote close after buffered data.
+func (c *tcpClientConn) setReadEOF() {
+	c.mu.Lock()
+	if c.readErr == nil {
+		c.readErr = io.EOF
+		c.notifyReadLocked()
+	}
+	c.mu.Unlock()
+}
+
+// finish publishes the actor's terminal state and unblocks all operations.
+func (c *tcpClientConn) finish(err error) {
+	c.mu.Lock()
+	if err == nil {
+		err = net.ErrClosed
+	}
+	c.terminalErr = err
+	if c.readErr == nil {
+		c.readErr = err
+	}
+	c.notifyReadLocked()
+	c.mu.Unlock()
+	close(c.done)
+}
+
+// run owns the TCP state machine and all access to sequence numbers,
+// retransmission state, and out-of-order segments.
+func (c *tcpClientConn) run(initialSequence uint32) {
+	var (
+		established       bool
+		connectedSent     bool
+		sendNext          = initialSequence + 1
+		receiveNext       uint32
+		peerWindow        = uint32(65535)
+		peerMSS           = defaultTCPPeerMSS(c.remote.Addr())
+		activeWrite       *tcpWriteRequest
+		activeWriteACKed  int
+		closeRequest      *tcpCloseRequest
+		outstanding       *tcpOutstanding
+		outOfOrder        []tcpReceivedPiece
+		outOfOrderBytes   int
+		localFINAcked     bool
+		remoteFINReceived bool
+		timeWaiting       bool
+	)
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	var retransmit <-chan time.Time
+	closeTimer := time.NewTimer(time.Hour)
+	if !closeTimer.Stop() {
+		<-closeTimer.C
+	}
+	var closeTimeout <-chan time.Time
+	stopTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		retransmit = nil
+	}
+	armTimer := func(delay time.Duration) {
+		stopTimer()
+		timer.Reset(delay)
+		retransmit = timer.C
+	}
+	stopCloseTimer := func() {
+		if !closeTimer.Stop() {
+			select {
+			case <-closeTimer.C:
+			default:
+			}
+		}
+		closeTimeout = nil
+	}
+	armCloseTimer := func(delay time.Duration) {
+		stopCloseTimer()
+		closeTimer.Reset(delay)
+		closeTimeout = closeTimer.C
+	}
+	sendRaw := func(packet []byte) error {
+		if len(packet) == 0 || len(packet) > c.mtu {
+			return fmt.Errorf("TCP packet size %d is invalid for network MTU %d", len(packet), c.mtu)
+		}
+		return c.link.WritePacket(packet)
+	}
+	sendOutstanding := func(kind tcpOutstandingKind, packet []byte, end uint32, dataSize int) error {
+		now := time.Now()
+		if err := sendRaw(packet); err != nil {
+			return err
+		}
+		initialRTO := tcpClientInitialRTO
+		if kind == tcpOutstandingSYN {
+			initialRTO = tcpClientInitialSYNRTO
+		}
+		outstanding = &tcpOutstanding{kind: kind, packet: packet, end: end, dataSize: dataSize, attempts: 1, rto: initialRTO, sentAt: now}
+		armTimer(initialRTO)
+		return nil
+	}
+	sendACK := func() error {
+		return sendRaw(tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagACK, c.receiveWindow(outOfOrderBytes), nil, nil))
+	}
+	failWrite := func(err error) {
+		if activeWrite != nil {
+			activeWrite.response <- tcpWriteResult{n: activeWriteACKed, err: err}
+			activeWrite = nil
+		}
+	}
+	failClose := func(err error) {
+		if closeRequest != nil {
+			closeRequest.response <- err
+			closeRequest = nil
+		}
+	}
+	signalConnected := func(err error) {
+		if !connectedSent {
+			c.connected <- err
+			connectedSent = true
+		}
+	}
+	terminate := func(err error) {
+		stopTimer()
+		stopCloseTimer()
+		signalConnected(err)
+		failWrite(err)
+		failClose(err)
+		c.finish(err)
+	}
+	defer timer.Stop()
+	defer closeTimer.Stop()
+	enterTimeWait := func() {
+		if !timeWaiting {
+			timeWaiting = true
+			armCloseTimer(tcpClientTimeWaitDuration)
+		}
+	}
+
+	localMSS := c.mtu - tcpHeaderSize - 40
+	if c.local.Addr().Is4() {
+		localMSS = c.mtu - tcpHeaderSize - 20
+	}
+	if localMSS < 1 {
+		terminate(errors.New("network MTU is too small for TCP"))
+		return
+	}
+	if localMSS > 65535 {
+		localMSS = 65535
+	}
+	mssOption := []byte{2, 4, byte(localMSS >> 8), byte(localMSS)}
+	syn := tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), initialSequence, 0, tcpFlagSYN, c.receiveWindow(0), mssOption, nil)
+	if err := sendOutstanding(tcpOutstandingSYN, syn, initialSequence+1, 0); err != nil {
+		terminate(err)
+		return
+	}
+
+	for {
+		var writeCancel <-chan struct{}
+		if activeWrite != nil {
+			writeCancel = activeWrite.cancel
+		}
+		select {
+		case packet := <-c.runtime.packets:
+			segment, ok := parseTCPClientSegment(packet, c.local, c.remote)
+			if !ok {
+				if remoteErr, isError := parseProbeICMPError(packet); isError && matchTCPClientICMPError(remoteErr, c.local, c.remote) {
+					terminate(remoteErr)
+					return
+				}
+				continue
+			}
+			if segment.Flags&tcpFlagRST != 0 {
+				err := errTCPConnectionReset
+				if !established && segment.Flags&tcpFlagACK != 0 && segment.Acknowledgement == initialSequence+1 {
+					err = errTCPConnectionRefused
+				}
+				terminate(err)
+				return
+			}
+			if !established {
+				if segment.Flags&(tcpFlagSYN|tcpFlagACK) != tcpFlagSYN|tcpFlagACK || segment.Acknowledgement != initialSequence+1 {
+					continue
+				}
+				established = true
+				receiveNext = segment.Sequence + 1
+				peerWindow = uint32(segment.Window)
+				peerMSS = tcpPeerMSS(segment.Options, peerMSS, localMSS)
+				c.mu.Lock()
+				c.connectInfo = tcpConnectInfo{Attempts: outstanding.attempts, RTT: time.Since(outstanding.sentAt)}
+				c.mu.Unlock()
+				outstanding = nil
+				stopTimer()
+				if err := sendACK(); err != nil {
+					terminate(err)
+					return
+				}
+				signalConnected(nil)
+				continue
+			}
+			if segment.Flags&tcpFlagSYN != 0 {
+				if segment.Sequence+1 == receiveNext {
+					if err := sendACK(); err != nil {
+						terminate(err)
+						return
+					}
+				}
+				continue
+			}
+
+			if segment.Flags&tcpFlagACK != 0 {
+				peerWindow = uint32(segment.Window)
+				if outstanding != nil && tcpSequenceGreaterEqual(segment.Acknowledgement, outstanding.end) && tcpSequenceLessEqual(segment.Acknowledgement, sendNext) {
+					kind, dataSize := outstanding.kind, outstanding.dataSize
+					outstanding = nil
+					stopTimer()
+					switch kind {
+					case tcpOutstandingData:
+						activeWriteACKed += dataSize
+						activeWrite.setAcknowledged(activeWriteACKed)
+						if activeWriteACKed == len(activeWrite.data) {
+							activeWrite.response <- tcpWriteResult{n: activeWriteACKed}
+							activeWrite, activeWriteACKed = nil, 0
+						}
+					case tcpOutstandingFIN:
+						localFINAcked = true
+						if remoteFINReceived {
+							enterTimeWait()
+						} else {
+							armCloseTimer(tcpClientFINWaitTimeout)
+						}
+					}
+				}
+			}
+
+			fin := segment.Flags&tcpFlagFIN != 0
+			if len(segment.Payload) != 0 || fin {
+				if remoteFINReceived {
+					// A FIN fixes the end of the receive stream. Acknowledge later
+					// retransmissions, but never expose bytes beyond that boundary.
+					if err := sendACK(); err != nil {
+						terminate(err)
+						return
+					}
+				} else {
+					_, remoteClosed := c.receiveTCPData(segment.Sequence, segment.Payload, fin, &receiveNext, &outOfOrder, &outOfOrderBytes)
+					if err := sendACK(); err != nil {
+						terminate(err)
+						return
+					}
+					if remoteClosed {
+						remoteFINReceived = true
+						c.setReadEOF()
+						if localFINAcked {
+							enterTimeWait()
+						}
+					}
+				}
+				if timeWaiting && fin && segment.Sequence+uint32(len(segment.Payload))+1 == receiveNext {
+					armCloseTimer(tcpClientTimeWaitDuration)
+				}
+			}
+
+			if activeWrite != nil && outstanding == nil && peerWindow != 0 {
+				remaining := activeWrite.data[activeWriteACKed:]
+				size := len(remaining)
+				if size > peerMSS {
+					size = peerMSS
+				}
+				if uint32(size) > peerWindow {
+					size = int(peerWindow)
+				}
+				packet = tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagACK|tcpFlagPSH, c.receiveWindow(outOfOrderBytes), nil, remaining[:size])
+				end := sendNext + uint32(size)
+				if err := sendOutstanding(tcpOutstandingData, packet, end, size); err != nil {
+					terminate(err)
+					return
+				}
+				sendNext = end
+			}
+
+		case request := <-c.writes:
+			if !established || closeRequest != nil {
+				request.response <- tcpWriteResult{err: net.ErrClosed}
+				continue
+			}
+			activeWrite, activeWriteACKed = request, 0
+			if outstanding == nil && peerWindow != 0 {
+				size := len(request.data)
+				if size > peerMSS {
+					size = peerMSS
+				}
+				if uint32(size) > peerWindow {
+					size = int(peerWindow)
+				}
+				packet := tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagACK|tcpFlagPSH, c.receiveWindow(outOfOrderBytes), nil, request.data[:size])
+				end := sendNext + uint32(size)
+				if err := sendOutstanding(tcpOutstandingData, packet, end, size); err != nil {
+					terminate(err)
+					return
+				}
+				sendNext = end
+			}
+
+		case request := <-c.closes:
+			if closeRequest != nil {
+				request.response <- net.ErrClosed
+				continue
+			}
+			closeRequest = request
+			if activeWrite != nil || outstanding != nil {
+				_ = sendRaw(tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagRST|tcpFlagACK, 0, nil, nil))
+				failWrite(net.ErrClosed)
+				failClose(nil)
+				terminate(net.ErrClosed)
+				return
+			}
+			fin := tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagFIN|tcpFlagACK, c.receiveWindow(outOfOrderBytes), nil, nil)
+			end := sendNext + 1
+			if err := sendOutstanding(tcpOutstandingFIN, fin, end, 0); err != nil {
+				terminate(err)
+				return
+			}
+			sendNext = end
+
+		case <-c.windowUpdates:
+			if established && closeRequest == nil {
+				if err := sendACK(); err != nil {
+					terminate(err)
+					return
+				}
+			}
+
+		case <-writeCancel:
+			failWrite(probeTimeoutError{})
+			_ = sendRaw(tcpPacket(c.local.Addr(), c.remote.Addr(), c.local.Port(), c.remote.Port(), sendNext, receiveNext, tcpFlagRST|tcpFlagACK, 0, nil, nil))
+			terminate(probeTimeoutError{})
+			return
+
+		case <-retransmit:
+			if outstanding == nil {
+				continue
+			}
+			if outstanding.attempts >= c.maximumAttempts {
+				err := fmt.Errorf("TCP retransmission limit reached after %d attempts", outstanding.attempts)
+				terminate(err)
+				return
+			}
+			if err := sendRaw(outstanding.packet); err != nil {
+				terminate(err)
+				return
+			}
+			outstanding.attempts++
+			outstanding.sentAt = time.Now()
+			outstanding.rto *= 2
+			if outstanding.rto > tcpClientMaximumRTO {
+				outstanding.rto = tcpClientMaximumRTO
+			}
+			armTimer(outstanding.rto)
+
+		case <-closeTimeout:
+			if timeWaiting || localFINAcked {
+				failClose(nil)
+				terminate(net.ErrClosed)
+				return
+			}
+
+		case err := <-c.runtime.linkErrs:
+			terminate(err)
+			return
+		case <-c.abortCh:
+			terminate(context.Canceled)
+			return
+		case <-c.ctx.Done():
+			terminate(c.ctx.Err())
+			return
+		}
+	}
+}
+
+// receiveTCPData accepts one in-order or bounded out-of-order segment and
+// advances receiveNext only across contiguous bytes.
+func (c *tcpClientConn) receiveTCPData(sequence uint32, payload []byte, fin bool, receiveNext *uint32, outOfOrder *[]tcpReceivedPiece, outOfOrderBytes *int) (bool, bool) {
+	finSequence := sequence + uint32(len(payload))
+	if tcpSequenceLess(sequence, *receiveNext) {
+		skip := *receiveNext - sequence
+		if skip < uint32(len(payload)) {
+			payload = payload[skip:]
+			sequence = *receiveNext
+		} else {
+			payload = nil
+			sequence = *receiveNext
+			fin = fin && finSequence == *receiveNext
+		}
+	}
+	if !c.storeTCPOutOfOrder(*receiveNext, sequence, payload, fin, outOfOrder, outOfOrderBytes) && tcpSequenceGreater(sequence, *receiveNext) {
+		return false, false
+	}
+
+	delivered := false
+	remoteClosed := false
+	for len(*outOfOrder) != 0 && !remoteClosed {
+		piece := (*outOfOrder)[0]
+		if tcpSequenceGreater(piece.sequence, *receiveNext) {
+			break
+		}
+		*outOfOrder = (*outOfOrder)[1:]
+		*outOfOrderBytes -= len(piece.payload)
+		pieceFINSequence := piece.sequence + uint32(len(piece.payload))
+		if tcpSequenceLess(piece.sequence, *receiveNext) {
+			skip := *receiveNext - piece.sequence
+			if skip < uint32(len(piece.payload)) {
+				piece.payload = piece.payload[skip:]
+				piece.sequence = *receiveNext
+			} else {
+				piece.payload = nil
+				piece.sequence = *receiveNext
+				piece.fin = piece.fin && pieceFINSequence == *receiveNext
+			}
+		}
+		accepted := c.appendReadBuffer(piece.payload, *outOfOrderBytes)
+		*receiveNext += uint32(accepted)
+		delivered = delivered || accepted != 0
+		if accepted != len(piece.payload) {
+			remaining := append([]byte(nil), piece.payload[accepted:]...)
+			*outOfOrder = append([]tcpReceivedPiece{{sequence: *receiveNext, payload: remaining, fin: piece.fin}}, *outOfOrder...)
+			*outOfOrderBytes += len(remaining)
+			break
+		}
+		if piece.fin {
+			*receiveNext++
+			remoteClosed = true
+		}
+	}
+	if remoteClosed {
+		*outOfOrder = nil
+		*outOfOrderBytes = 0
+	}
+	return delivered || remoteClosed, remoteClosed
+}
+
+// tcpDataFragment is one uncovered portion of a newly received segment,
+// expressed relative to the current cumulative receive sequence.
+type tcpDataFragment struct {
+	offset  uint32
+	payload []byte
+}
+
+// storeTCPOutOfOrder inserts only bytes not already retained, then combines
+// adjacent pieces. Existing bytes win when retransmissions overlap with
+// different segment boundaries.
+func (c *tcpClientConn) storeTCPOutOfOrder(receiveNext, sequence uint32, payload []byte, fin bool, outOfOrder *[]tcpReceivedPiece, outOfOrderBytes *int) bool {
+	distance := sequence - receiveNext
+	c.mu.Lock()
+	available := tcpClientReceiveCapacity - len(c.readBuffer) - *outOfOrderBytes
+	c.mu.Unlock()
+	if available < 0 {
+		available = 0
+	}
+	if available > 65535 {
+		available = 65535
+	}
+	window := uint32(available)
+	if distance >= window && !(distance == 0 && len(payload) == 0 && fin) {
+		return false
+	}
+	originalPayloadSize := len(payload)
+	if maximumPayload := int(window - distance); len(payload) > maximumPayload {
+		payload = payload[:maximumPayload]
+	}
+	// FIN consumes one sequence number and is acceptable only when that number
+	// lies inside the receive window. An in-order FIN is still retained while
+	// the application is closing and advertising a zero window.
+	fin = fin && (distance == 0 && len(payload) == 0 || uint64(distance)+uint64(originalPayloadSize) < uint64(window))
+	incomingFINSequence := sequence + uint32(originalPayloadSize)
+	var existingFINSequence uint32
+	hasExistingFIN := false
+	for _, existing := range *outOfOrder {
+		if existing.fin {
+			existingFINSequence = existing.sequence + uint32(len(existing.payload))
+			hasExistingFIN = true
+			break
+		}
+	}
+	if hasExistingFIN {
+		fin = fin && incomingFINSequence == existingFINSequence
+		payloadEnd := sequence + uint32(len(payload))
+		if tcpSequenceGreater(payloadEnd, existingFINSequence) {
+			if !tcpSequenceLess(sequence, existingFINSequence) {
+				payload = nil
+			} else {
+				payload = payload[:existingFINSequence-sequence]
+			}
+		}
+	}
+	fragments := make([]tcpDataFragment, 0, 2)
+	if len(payload) != 0 {
+		fragments = append(fragments, tcpDataFragment{offset: distance, payload: payload})
+	}
+	for _, existing := range *outOfOrder {
+		existingStart := existing.sequence - receiveNext
+		existingEnd := existingStart + uint32(len(existing.payload))
+		if existingStart == existingEnd {
+			continue
+		}
+		next := make([]tcpDataFragment, 0, len(fragments)+1)
+		for _, fragment := range fragments {
+			fragmentEnd := fragment.offset + uint32(len(fragment.payload))
+			if fragmentEnd <= existingStart || fragment.offset >= existingEnd {
+				next = append(next, fragment)
+				continue
+			}
+			if fragment.offset < existingStart {
+				leftSize := existingStart - fragment.offset
+				next = append(next, tcpDataFragment{offset: fragment.offset, payload: fragment.payload[:leftSize]})
+			}
+			if fragmentEnd > existingEnd {
+				rightOffset := existingEnd - fragment.offset
+				next = append(next, tcpDataFragment{offset: existingEnd, payload: fragment.payload[rightOffset:]})
+			}
+		}
+		fragments = next
+	}
+	candidate := append([]tcpReceivedPiece(nil), (*outOfOrder)...)
+	for _, fragment := range fragments {
+		candidate = append(candidate, tcpReceivedPiece{
+			sequence: receiveNext + fragment.offset,
+			payload:  append([]byte(nil), fragment.payload...),
+		})
+	}
+	if fin && !hasExistingFIN {
+		finSequence := incomingFINSequence
+		finExists := false
+		for _, piece := range candidate {
+			if piece.fin {
+				finExists = true
+				break
+			}
+		}
+		if !finExists {
+			candidate = append(candidate, tcpReceivedPiece{sequence: finSequence, fin: true})
+		}
+	}
+	candidate = normalizeTCPReceivedPieces(receiveNext, candidate)
+	bytes := 0
+	for _, piece := range candidate {
+		bytes += len(piece.payload)
+	}
+	if bytes > tcpClientReceiveCapacity || len(candidate) > tcpClientMaximumOutOfOrder {
+		return false
+	}
+	*outOfOrder = candidate
+	*outOfOrderBytes = bytes
+	return len(fragments) != 0 || fin
+}
+
+// normalizeTCPReceivedPieces sorts pieces within the advertised receive
+// window, removes anything beyond the first FIN, and joins adjacent data.
+func normalizeTCPReceivedPieces(receiveNext uint32, pieces []tcpReceivedPiece) []tcpReceivedPiece {
+	sort.SliceStable(pieces, func(left, right int) bool {
+		leftOffset := pieces[left].sequence - receiveNext
+		rightOffset := pieces[right].sequence - receiveNext
+		if leftOffset != rightOffset {
+			return leftOffset < rightOffset
+		}
+		return len(pieces[left].payload) > len(pieces[right].payload)
+	})
+	var finOffset uint32
+	hasFIN := false
+	for _, piece := range pieces {
+		if !piece.fin {
+			continue
+		}
+		offset := piece.sequence - receiveNext + uint32(len(piece.payload))
+		if !hasFIN || offset < finOffset {
+			finOffset, hasFIN = offset, true
+		}
+	}
+	result := make([]tcpReceivedPiece, 0, len(pieces))
+	for _, piece := range pieces {
+		piece.fin = false
+		pieceOffset := piece.sequence - receiveNext
+		if hasFIN {
+			if pieceOffset >= finOffset {
+				continue
+			}
+			if pieceEnd := pieceOffset + uint32(len(piece.payload)); pieceEnd > finOffset {
+				piece.payload = piece.payload[:finOffset-pieceOffset]
+			}
+		}
+		if len(piece.payload) == 0 {
+			continue
+		}
+		if len(result) == 0 {
+			result = append(result, piece)
+			continue
+		}
+		previous := &result[len(result)-1]
+		previousEnd := previous.sequence + uint32(len(previous.payload))
+		if previousEnd == piece.sequence {
+			previous.payload = append(previous.payload, piece.payload...)
+			continue
+		}
+		if tcpSequenceGreater(previousEnd, piece.sequence) {
+			skip := previousEnd - piece.sequence
+			if skip >= uint32(len(piece.payload)) {
+				continue
+			}
+			piece.payload = piece.payload[skip:]
+			piece.sequence = previousEnd
+			previous.payload = append(previous.payload, piece.payload...)
+			continue
+		}
+		result = append(result, piece)
+	}
+	if hasFIN {
+		finSequence := receiveNext + finOffset
+		if len(result) != 0 {
+			last := &result[len(result)-1]
+			if last.sequence+uint32(len(last.payload)) == finSequence {
+				last.fin = true
+				return result
+			}
+		}
+		result = append(result, tcpReceivedPiece{sequence: finSequence, fin: true})
+	}
+	return result
+}
+
+// parseTCPClientSegment validates and decodes a segment for local and remote.
+func parseTCPClientSegment(packet []byte, local, remote netip.AddrPort) (tcpClientSegment, bool) {
+	source, target, tcp, ok := ipProtocolPayload(packet, tcpProtocol)
+	if !ok || source != remote.Addr().Unmap() || target != local.Addr().Unmap() || len(tcp) < tcpHeaderSize ||
+		binary.BigEndian.Uint16(tcp[0:2]) != remote.Port() || binary.BigEndian.Uint16(tcp[2:4]) != local.Port() ||
+		transportChecksum(source, target, tcpProtocol, tcp) != 0 {
+		return tcpClientSegment{}, false
+	}
+	headerSize := int(tcp[12]>>4) * 4
+	if headerSize < tcpHeaderSize || headerSize > len(tcp) {
+		return tcpClientSegment{}, false
+	}
+	return tcpClientSegment{
+		Sequence: binary.BigEndian.Uint32(tcp[4:8]), Acknowledgement: binary.BigEndian.Uint32(tcp[8:12]),
+		Flags: tcp[13], Window: binary.BigEndian.Uint16(tcp[14:16]),
+		Options: tcp[tcpHeaderSize:headerSize], Payload: tcp[headerSize:],
+	}, true
+}
+
+// tcpPeerMSS extracts a valid MSS option and applies local packet-size bounds.
+func tcpPeerMSS(options []byte, fallback, localMaximum int) int {
+	result := fallback
+	for offset := 0; offset < len(options); {
+		switch options[offset] {
+		case 0:
+			offset = len(options)
+			continue
+		case 1:
+			offset++
+			continue
+		}
+		if len(options)-offset < 2 || options[offset+1] < 2 || int(options[offset+1]) > len(options)-offset {
+			break
+		}
+		length := int(options[offset+1])
+		if options[offset] == 2 && length == 4 {
+			if value := int(binary.BigEndian.Uint16(options[offset+2 : offset+4])); value != 0 {
+				result = value
+			}
+		}
+		offset += length
+	}
+	if result > localMaximum {
+		result = localMaximum
+	}
+	if result < 1 {
+		result = 1
+	}
+	return result
+}
+
+// defaultTCPPeerMSS returns the RFC default when SYN-ACK omits an MSS option.
+func defaultTCPPeerMSS(address netip.Addr) int {
+	if address.Is4() {
+		return 536
+	}
+	return 1220
+}
+
+// matchTCPClientICMPError verifies that an ICMP quote belongs to c's tuple.
+func matchTCPClientICMPError(remoteErr probeICMPError, local, remote netip.AddrPort) bool {
+	if !remoteErr.Matches(local.Addr(), remote.Addr(), tcpProtocol) || len(remoteErr.QuotedPayload) < 4 {
+		return false
+	}
+	return binary.BigEndian.Uint16(remoteErr.QuotedPayload[0:2]) == local.Port() && binary.BigEndian.Uint16(remoteErr.QuotedPayload[2:4]) == remote.Port()
+}
+
+// tcpSequenceLess compares sequence numbers modulo 2^32.
+func tcpSequenceLess(left, right uint32) bool { return int32(left-right) < 0 }
+
+// tcpSequenceGreater compares sequence numbers modulo 2^32.
+func tcpSequenceGreater(left, right uint32) bool { return tcpSequenceLess(right, left) }
+
+// tcpSequenceLessEqual compares sequence numbers modulo 2^32.
+func tcpSequenceLessEqual(left, right uint32) bool { return !tcpSequenceGreater(left, right) }
+
+// tcpSequenceGreaterEqual compares sequence numbers modulo 2^32.
+func tcpSequenceGreaterEqual(left, right uint32) bool { return !tcpSequenceLess(left, right) }

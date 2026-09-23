@@ -1,0 +1,62 @@
+package main
+
+import (
+	"net/netip"
+	"testing"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+// TestHTTPTokenAndHeaderValidation verifies command-line method and header
+// syntax before any network activity.
+func TestHTTPTokenAndHeaderValidation(t *testing.T) {
+	for _, value := range []string{"GET", "M-SEARCH", "x_custom"} {
+		if !validHTTPToken(value) {
+			t.Fatalf("valid token %q was rejected", value)
+		}
+	}
+	for _, value := range []string{"", "bad method", "Header:", "caf\u00e9"} {
+		if validHTTPToken(value) {
+			t.Fatalf("invalid token %q was accepted", value)
+		}
+	}
+	var headers httpHeaderList
+	if err := headers.Set("Accept: application/json"); err != nil {
+		t.Fatal(err)
+	}
+	if err := headers.Set("Bad Header: value"); err == nil {
+		t.Fatal("invalid HTTP header name was accepted")
+	}
+	if err := headers.Set("X-Test: value\r\ninjected"); err == nil {
+		t.Fatal("HTTP header newline was accepted")
+	}
+}
+
+// TestProbeDNSSelectionAndAbsoluteNames verifies managed endpoint selection
+// and search-domain isolation shared by dns and http.
+func TestProbeDNSSelectionAndAbsoluteNames(t *testing.T) {
+	managed := netip.MustParseAddrPort("192.0.2.53:5353")
+	server, fromConfig := probeDNSServer(zerotier.NetworkConfigData{DNSServers: []netip.AddrPort{managed}}, netip.AddrPort{})
+	if server != managed || !fromConfig {
+		t.Fatalf("managed DNS = %s configured=%t", server, fromConfig)
+	}
+	explicit := netip.MustParseAddrPort("198.51.100.53:53")
+	server, fromConfig = probeDNSServer(zerotier.NetworkConfigData{DNSServers: []netip.AddrPort{managed}}, explicit)
+	if server != explicit || fromConfig {
+		t.Fatalf("explicit DNS = %s configured=%t", server, fromConfig)
+	}
+	for _, test := range []struct {
+		name   string
+		domain string
+		want   string
+	}{
+		{name: "host", domain: "example.internal", want: "host.example.internal."},
+		{name: "service.example", domain: "example.internal", want: "service.example."},
+		{name: "absolute.", domain: "example.internal", want: "absolute."},
+		{name: "host", domain: ".", want: "host."},
+	} {
+		if query := absoluteProbeName(test.name, test.domain); query != test.want {
+			t.Fatalf("absoluteProbeName(%q, %q) = %q, want %q", test.name, test.domain, query, test.want)
+		}
+	}
+}

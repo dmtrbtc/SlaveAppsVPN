@@ -1,0 +1,297 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Search, Check, SplitSquareVertical, Landmark, AlertTriangle, RotateCw, Eraser, Loader2 } from 'lucide-react'
+import { Segmented } from '../ui/segmented'
+import { Input } from '../ui/input'
+import { Button } from '../ui/button'
+import { Spinner } from '../ui/spinner'
+import { settingsApi, splitApi } from '../../lib/api'
+import { useUIStore } from '../../stores/ui.store'
+import { useVpnStore, selectVpnStatus } from '../../stores/vpn.store'
+import { IS_MOBILE } from '../../lib/platform'
+import { cn } from '../../lib/utils'
+import type { SplitAppInfo } from '@shared/ipc/types'
+
+type Mode = 'off' | 'include' | 'exclude'
+
+const MODE_OPTIONS: { value: Mode; label: string }[] = [
+  { value: 'off',     label: 'Все' },
+  { value: 'include', label: 'Только выбр.' },
+  { value: 'exclude', label: 'Кроме выбр.' },
+]
+
+const MODE_HINT: Record<Mode, string> = {
+  off:     'Раздельного туннеля нет — весь трафик идёт через VPN (по выбранному режиму маршрутизации).',
+  include: 'Через VPN идут ТОЛЬКО отмеченные приложения. Всё остальное — напрямую, мимо VPN.',
+  exclude: 'Отмеченные приложения идут НАПРЯМУЮ, мимо VPN (например банки, которые блокируют вход при включённом VPN). Остальное — через VPN.',
+}
+
+// Substring patterns (matched against the installed-app packageName) for Russian
+// banking / payment apps that refuse to run with ANY active VPN. One-tap excludes
+// them so their sockets bypass the tunnel entirely → no VPN detected, RU exit IP.
+const BANK_PACKAGE_PATTERNS: readonly string[] = [
+  'sberbank', 'sber.', 'vtb', 'alfabank', 'tinkoff', 'tbank', 'gazprombank',
+  'raiffeisen', 'rosbank', 'pochta.bank', 'pochtabank', 'sovcombank', 'psbank',
+  'rshb', 'uralsib', 'openbank', 'otkritie', 'mkb', 'ozon', 'yoo.money', 'yoomoney',
+  'mironline', 'nspk', 'gosuslugi', 'rostel', 'mir.',
+]
+
+function isBankApp(pkg: string): boolean {
+  const p = pkg.toLowerCase()
+  return BANK_PACKAGE_PATTERNS.some(pat => p.includes(pat))
+}
+
+function SplitWarning({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-connecting/30 bg-connecting/10 px-3 py-2">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-connecting" />
+      <p className="text-[11px] leading-snug text-text-secondary">{children}</p>
+    </div>
+  )
+}
+
+/**
+ * Per-app split tunnel for Android (native VpnService addAllowed/Disallowed-
+ * Application). Mode + the selected package list persist in AppSettings
+ * (splitTunnelMode / splitProcessList) and apply on the next connect.
+ */
+export function AndroidSplitTunnel() {
+  if (!IS_MOBILE) return null
+  return <AndroidSplitTunnelInner />
+}
+
+function AndroidSplitTunnelInner() {
+  const { notify } = useUIStore()
+  const status = useVpnStore(selectVpnStatus)
+  const vpnMode = status.mode
+  const isConnected = status.state === 'connected'
+  const connect = useVpnStore(s => s.connect)
+  const disconnect = useVpnStore(s => s.disconnect)
+  const [mode, setMode] = useState<Mode>('off')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [apps, setApps] = useState<SplitAppInfo[]>([])
+  const [loading, setLoading] = useState(false)
+  const [query, setQuery] = useState('')
+  const [showSystem, setShowSystem] = useState(false)
+  // Split-tunnel changes apply at connect time; when already connected, surface a
+  // one-tap «Применить» (reconnect) instead of making the user toggle the VPN.
+  const [dirty, setDirty] = useState(false)
+  const [applying, setApplying] = useState(false)
+
+  useEffect(() => {
+    settingsApi.get()
+      .then(s => {
+        setMode(((s as { splitTunnelMode?: Mode }).splitTunnelMode) ?? 'off')
+        setSelected(new Set(s.splitProcessList ?? []))
+      })
+      .catch(() => undefined)
+  }, [])
+
+  // Load the installed-app catalogue (idempotent — returns the cached list).
+  const ensureApps = useCallback(async (): Promise<SplitAppInfo[]> => {
+    if (apps.length > 0) return apps
+    setLoading(true)
+    try {
+      const list = await splitApi.listApps()
+      const sorted = [...list].sort((a, b) => a.label.localeCompare(b.label))
+      setApps(sorted)
+      return sorted
+    } catch {
+      notify({ type: 'error', title: 'Не удалось получить список приложений' })
+      return []
+    } finally {
+      setLoading(false)
+    }
+  }, [apps, notify])
+
+  // Lazily load the catalogue the first time split is enabled.
+  useEffect(() => {
+    if (mode === 'off' || apps.length > 0 || loading) return
+    void ensureApps()
+  }, [mode, apps.length, loading, ensureApps])
+
+  const changeMode = (m: Mode) => {
+    setMode(m)
+    setDirty(true)
+    void settingsApi.set({ splitTunnelMode: m } as Parameters<typeof settingsApi.set>[0])
+  }
+
+  const clearSelection = () => {
+    setSelected(new Set())
+    setDirty(true)
+    void splitApi.setProcessList({ processList: [] })
+  }
+
+  // Re-establish the tunnel so the new split-tunnel filter takes effect live.
+  const applyNow = async (): Promise<void> => {
+    setApplying(true)
+    try {
+      await disconnect()
+      await new Promise(r => setTimeout(r, 400))
+      await connect()
+      setDirty(false)
+      notify({ type: 'success', title: 'Применено', message: 'Раздельный туннель обновлён' })
+    } catch (e) {
+      notify({ type: 'error', title: 'Ошибка', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  // One-tap: route every installed banking app MIMO the VPN (exclude mode).
+  const excludeBanks = async () => {
+    const list = await ensureApps()
+    const banks = list.filter(a => isBankApp(a.packageName)).map(a => a.packageName)
+    if (banks.length === 0) {
+      notify({ type: 'info', title: 'Банковские приложения не найдены', message: 'Не нашли установленных банков по списку' })
+      return
+    }
+    setMode('exclude')
+    setDirty(true)
+    await settingsApi.set({ splitTunnelMode: 'exclude' } as Parameters<typeof settingsApi.set>[0])
+    setSelected(prev => {
+      const next = new Set(prev)
+      for (const b of banks) next.add(b)
+      void splitApi.setProcessList({ processList: [...next] })
+      return next
+    })
+    notify({ type: 'success', title: 'Банки — мимо VPN', message: `Исключено приложений: ${banks.length}.` })
+  }
+
+  const toggleApp = (pkg: string) => {
+    setDirty(true)
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(pkg)) next.delete(pkg)
+      else next.add(pkg)
+      void splitApi.setProcessList({ processList: [...next] })
+      return next
+    })
+  }
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = apps.filter(a =>
+      (showSystem || !a.system) &&
+      (!q || a.label.toLowerCase().includes(q) || a.packageName.toLowerCase().includes(q)),
+    )
+    // Selected apps first so the current choice is visible without scrolling.
+    return list.sort((a, b) => {
+      const sa = selected.has(a.packageName) ? 0 : 1
+      const sb = selected.has(b.packageName) ? 0 : 1
+      if (sa !== sb) return sa - sb
+      return a.label.localeCompare(b.label)
+    })
+  }, [apps, query, showSystem, selected])
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-primary p-4">
+      <div className="flex items-center gap-2">
+        <SplitSquareVertical className="h-4 w-4 text-accent shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-semibold text-text-primary">Приложения и VPN</p>
+          <p className="text-[11px] text-text-muted">Раздельный туннель: какие приложения идут через VPN, а какие — мимо</p>
+        </div>
+      </div>
+
+      {/* One-tap «банки мимо VPN» — the common case (bank apps block on VPN). */}
+      <Button variant="secondary" size="sm" onClick={() => void excludeBanks()} className="justify-start">
+        <Landmark className="h-3.5 w-3.5" />
+        Банковские приложения — мимо VPN
+      </Button>
+
+      <Segmented options={MODE_OPTIONS} value={mode} onChange={changeMode} size="sm" />
+      <p className="text-[11px] text-text-muted">{MODE_HINT[mode]}</p>
+
+      {/* «Раздельный» VPN-режим выбран, но фильтра нет → весь трафик в туннеле. */}
+      {vpnMode === 'split' && mode === 'off' && (
+        <SplitWarning>
+          Режим «Раздельный» выбран, но приложения не указаны — сейчас весь трафик идёт через VPN.
+          Выберите <b>«Только выбр.»</b> и отметьте нужные приложения ниже.
+        </SplitWarning>
+      )}
+      {/* Фильтр включён, но список пуст → ведёт себя как «Все». */}
+      {mode !== 'off' && selected.size === 0 && (
+        <SplitWarning>
+          Ничего не выбрано — фильтр пока не действует (как «Все»). Отметьте приложения ниже.
+        </SplitWarning>
+      )}
+
+      {mode !== 'off' && (
+        <>
+          <Input
+            icon={<Search className="h-3.5 w-3.5" />}
+            placeholder="Поиск приложения"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-[11px] text-text-muted">
+            <input type="checkbox" checked={showSystem} onChange={e => setShowSystem(e.target.checked)} />
+            Показывать системные
+          </label>
+
+          {loading ? (
+            <div className="flex justify-center py-6"><Spinner /></div>
+          ) : (
+            <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+              {filtered.map(app => {
+                const on = selected.has(app.packageName)
+                return (
+                  <button
+                    key={app.packageName}
+                    onClick={() => toggleApp(app.packageName)}
+                    className={cn(
+                      'flex items-center gap-2 rounded-md border px-3 py-2 text-left transition-colors',
+                      on ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-secondary',
+                    )}
+                  >
+                    {app.icon
+                      ? <img src={app.icon} alt="" className="h-7 w-7 shrink-0 rounded" />
+                      : <span className="h-7 w-7 shrink-0 rounded bg-bg-secondary" />}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12px] text-text-primary">{app.label}</span>
+                      <span className="block truncate font-mono text-[10px] text-text-muted">{app.packageName}</span>
+                    </span>
+                    <span className={cn(
+                      'flex h-4 w-4 shrink-0 items-center justify-center rounded border',
+                      on ? 'border-accent bg-accent' : 'border-border-strong',
+                    )}>
+                      {on && <Check className="h-3 w-3 text-white" />}
+                    </span>
+                  </button>
+                )
+              })}
+              {filtered.length === 0 && (
+                <p className="py-4 text-center text-[11px] text-text-muted">Ничего не найдено</p>
+              )}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-text-muted">
+              Выбрано: {selected.size}.{!isConnected && ' Применится при подключении.'}
+            </p>
+            {selected.size > 0 && (
+              <button
+                onClick={clearSelection}
+                className="flex items-center gap-1 text-[10px] text-text-muted hover:text-text-secondary"
+              >
+                <Eraser className="h-3 w-3" /> Очистить
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Live-apply when connected: a split change needs a reconnect to take effect. */}
+      {isConnected && dirty && (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-connecting/30 bg-connecting/10 px-3 py-2">
+          <span className="text-[11px] text-connecting">Изменения применятся после переподключения</span>
+          <Button variant="secondary" size="sm" onClick={() => void applyNow()} disabled={applying}>
+            {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
+            Применить
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}

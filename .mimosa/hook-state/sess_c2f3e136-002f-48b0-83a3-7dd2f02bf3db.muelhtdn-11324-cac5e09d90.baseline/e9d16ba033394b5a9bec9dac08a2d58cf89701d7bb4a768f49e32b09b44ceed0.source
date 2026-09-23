@@ -1,0 +1,43 @@
+import { f as fetchSubscriptionText, n as normalizeSubscriptionContent, p as parseProxiesFromYaml } from "./index-CUXDfnh7.js";
+async function fetchSubscriptionPreview(url) {
+  let displayName;
+  try {
+    displayName = new URL(url).hostname;
+  } catch {
+    return { valid: false, error: "Invalid URL" };
+  }
+  try {
+    const raw = await fetchSubscriptionText(url);
+    const { yaml } = normalizeSubscriptionContent(raw);
+    const proxies = parseProxiesFromYaml(yaml);
+    const protocols = {};
+    for (const p of proxies) {
+      protocols[p.type] = (protocols[p.type] ?? 0) + 1;
+    }
+    const sampleNodes = proxies.slice(0, 5).map((p) => {
+      const extra = p.extra;
+      const network = typeof extra["network"] === "string" ? extra["network"] : "tcp";
+      const tls = extra["tls"] === true || extra["security"] === "reality" || extra["security"] === "tls" ? extra["security"] === "reality" ? "reality" : "tls" : "none";
+      return {
+        name: p.name,
+        protocol: p.type,
+        transport: network,
+        security: tls
+      };
+    });
+    return {
+      valid: proxies.length > 0,
+      displayName,
+      nodeCount: proxies.length,
+      protocols,
+      sampleNodes,
+      ...proxies.length === 0 ? { error: "No proxies parsed from response" } : {}
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { valid: false, displayName, error: message };
+  }
+}
+export {
+  fetchSubscriptionPreview
+};

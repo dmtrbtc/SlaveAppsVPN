@@ -1,0 +1,71 @@
+package zerotier
+
+import (
+	"encoding/hex"
+	"testing"
+)
+
+const knownGoodIdentity = "8e4df28b72:0:ac3d46abe0c21f3cfe7a6c8d6a85cfcffcb82fbd55af6a4d6350657c68200843fa2e16f9418bbd9702cae365f2af5fb4c420908b803a681d4daef6114d78a2d7:bd8dd6e4ce7022d2f812797a80c6ee8ad180dc4ebf301dec8b06d1be08832bddd63a2f1cfa7b2c504474c75bdc8898ba476ef92e8e2d0509f8441985171ff16e"
+
+func TestKnownIdentity(t *testing.T) {
+	id, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := id.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if id.SecretString() != knownGoodIdentity {
+		t.Fatalf("secret identity did not round trip")
+	}
+	binaryIdentity := id.AppendBinary(nil, true)
+	parsed, n, err := ParseIdentityBinary(binaryIdentity)
+	if err != nil || n != len(binaryIdentity) {
+		t.Fatalf("parse binary: n=%d err=%v", n, err)
+	}
+	if parsed.SecretString() != knownGoodIdentity {
+		t.Fatalf("binary identity did not round trip")
+	}
+}
+
+func TestKnownAgreementAndSignature(t *testing.T) {
+	pub1 := mustHex64(t, "a1fc7ab46ddf7dcfe7ec75e5fadd11cbcc37f8845d1c924e098965fcd8e95a30dae486a335b4190cbc7bcb3eb94cbd16e83d132bc9c339eaf142e76f69789ab7")
+	priv1 := mustHex64(t, "e5f37bd40ec9dc775086dcf42ebcdb27f073d45873c44b718b3cc54fa87ca484d9962373b40316bf1ea12dd8c48ae78210dac9e5459b01dc73a6c917a815316d")
+	pub2 := mustHex64(t, "3e49a40e3aafa3073df72aec43b1d4091acb8e92f96595046d2d9b34a3bf5100e2ee23f5280aa9b1570b965662ba1294afc65fb561430fde0babfa4ffec5e718")
+	priv2 := mustHex64(t, "004d418de46923ae98c43e770f1d945d293e945a3839200fd36f76a2290203cb0b7f4f1a295113337c99b3818239440597fb0df293a24094f4ff5d0961e45f76")
+	wantAgreement, err := hex.DecodeString("abced224e893b0e77214dcbb7d0fd894169eb57fd7195f3e2d45d5f7900b3e05182e2bf4fad4ec624a4f4850af1ce89f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id1 := Identity{public: pub1, private: &priv1}
+	id2 := Identity{public: pub2, private: &priv2}
+	agree1, err := id1.Agree(id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agree2, err := id2.Agree(id1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(agree1[:]) != string(wantAgreement) || agree1 != agree2 {
+		t.Fatalf("agreement mismatch: %x / %x", agree1, agree2)
+	}
+	signature, err := id1.Sign(agree1[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !id1.Verify(agree1[:], signature[:]) || id2.Verify(agree1[:], signature[:]) {
+		t.Fatal("signature verification mismatch")
+	}
+}
+
+func mustHex64(t *testing.T, value string) [64]byte {
+	t.Helper()
+	b, err := hex.DecodeString(value)
+	if err != nil || len(b) != 64 {
+		t.Fatalf("decode key: %v", err)
+	}
+	var out [64]byte
+	copy(out[:], b)
+	return out
+}

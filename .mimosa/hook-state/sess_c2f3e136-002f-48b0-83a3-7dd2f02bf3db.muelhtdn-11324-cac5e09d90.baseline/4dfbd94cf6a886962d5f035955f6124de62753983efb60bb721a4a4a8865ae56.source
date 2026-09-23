@@ -1,0 +1,44 @@
+package zerotier
+
+import (
+	"net/netip"
+	"testing"
+)
+
+func TestManagedIPv6Addresses(t *testing.T) {
+	const networkID = uint64(0x17d709436c04d6bc)
+	address := NewAddress(0x0f1b56d269)
+	tests := []struct {
+		name    string
+		prefix  netip.Prefix
+		want    netip.Prefix
+		extract func(uint64, netip.Addr) (Address, bool)
+	}{
+		{
+			name:    "RFC4193",
+			prefix:  RFC4193Address(networkID, address),
+			want:    netip.MustParsePrefix("fd17:d709:436c:4d6:bc99:930f:1b56:d269/88"),
+			extract: AddressFromRFC4193,
+		},
+		{
+			name:    "6plane",
+			prefix:  SixPlaneAddress(networkID, address),
+			want:    netip.MustParsePrefix("fc7b:d3df:ff0f:1b56:d269::1/40"),
+			extract: AddressFromSixPlane,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.prefix != test.want {
+				t.Fatalf("prefix = %s, want %s", test.prefix, test.want)
+			}
+			extracted, ok := test.extract(networkID, test.prefix.Addr())
+			if !ok || extracted != address {
+				t.Fatalf("extracted address = %s, valid=%t, want %s", extracted, ok, address)
+			}
+			if _, ok := test.extract(networkID+1, test.prefix.Addr()); ok {
+				t.Fatal("address was accepted for a different network")
+			}
+		})
+	}
+}

@@ -1,0 +1,34 @@
+package zerotier
+
+import "testing"
+
+func TestDictionaryRoundTrip(t *testing.T) {
+	data, err := appendDictionaryEntry(nil, "key", []byte{'a', 0, '=', '\\', '\n'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = appendDictionaryUint(data, "n", 0x1234)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dictionary, err := ParseDictionary(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dictionary["key"]; string(got) != string([]byte{'a', 0, '=', '\\', '\n'}) {
+		t.Fatalf("decoded value = %q", got)
+	}
+	if got := dictionary.Uint("n", 0); got != 0x1234 {
+		t.Fatalf("decoded integer = %x", got)
+	}
+}
+
+func TestDictionaryAcceptsCROrLFSeparators(t *testing.T) {
+	dictionary, err := ParseDictionary([]byte("a=1\r\nb=2\rc=3\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dictionary.String("a") != "1" || dictionary.String("b") != "2" || dictionary.String("c") != "3" {
+		t.Fatalf("dictionary parsed as a=%q b=%q c=%q", dictionary.String("a"), dictionary.String("b"), dictionary.String("c"))
+	}
+}

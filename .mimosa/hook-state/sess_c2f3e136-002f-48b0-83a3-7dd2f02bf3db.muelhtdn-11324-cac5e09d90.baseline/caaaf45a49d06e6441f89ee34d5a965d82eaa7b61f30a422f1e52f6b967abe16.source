@@ -1,0 +1,5298 @@
+package zerotier
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"net/netip"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+)
+
+type sentWirePacket struct {
+	remote netip.AddrPort
+	data   []byte
+}
+
+type failingPutStore struct{}
+
+func (failingPutStore) Get(string) ([]byte, error) { return nil, ErrStateNotFound }
+func (failingPutStore) Put(string, []byte) error   { return errors.New("state store is read-only") }
+func (failingPutStore) Delete(string) error        { return errors.New("state store is read-only") }
+
+type failingGetStore struct{}
+
+func (failingGetStore) Get(string) ([]byte, error) { return nil, errors.New("state unavailable") }
+func (failingGetStore) Put(string, []byte) error   { return nil }
+func (failingGetStore) Delete(string) error        { return nil }
+
+func TestTrustedPhysicalPathValidation(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trustedPathID = uint64(0x1122334455667788)
+	physicalNetwork := netip.MustParsePrefix("192.0.2.0/24")
+	var messages []UserMessage
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		Sender:        WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		PhysicalPaths: []PhysicalPathConfig{{Network: physicalNetwork, TrustedPathID: trustedPathID}},
+		OnUserMessage: func(message UserMessage) { messages = append(messages, message) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+
+	newMessage := func(id uint64) []byte {
+		packet, packetErr := NewPacket(local.Address(), remote.Address(), VerbUserMessage)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		_ = packet.AppendUint64(7)
+		_ = packet.Append([]byte("trusted")...)
+		packet.SetTrusted(id)
+		return packet.Bytes()
+	}
+	matchingEndpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	if err = node.ProcessWirePacket(0, matchingEndpoint, newMessage(trustedPathID), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || string(messages[0].Data) != "trusted" {
+		t.Fatalf("trusted message callback = %+v", messages)
+	}
+	if err = node.ProcessWirePacket(0, matchingEndpoint, newMessage(trustedPathID+1), time.Now()); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("wrong trusted path ID error = %v", err)
+	}
+	outsideEndpoint := netip.MustParseAddrPort("198.51.100.10:9993")
+	if err = node.ProcessWirePacket(0, outsideEndpoint, newMessage(trustedPathID), time.Now()); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("outside trusted prefix error = %v", err)
+	}
+	node.physicalPaths = []PhysicalPathConfig{{Network: physicalNetwork, MTU: 1200}}
+	if node.inboundPathTrustedLocked(matchingEndpoint, 0) {
+		t.Fatal("an MTU-only physical path accepted trusted cipher ID zero")
+	}
+}
+
+func TestUntrustedUnknownPeerIsRejectedBeforeIdentityLookup(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trustedPathID = uint64(0x1122334455667788)
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		Sender:        WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), TrustedPathID: trustedPathID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbUserMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet.SetTrusted(trustedPathID + 1)
+	err = node.ProcessWirePacket(3, netip.MustParseAddrPort("192.0.2.10:9993"), packet.Bytes(), time.Now())
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("untrusted unknown peer error = %v", err)
+	}
+	node.mu.Lock()
+	queued := node.pendingIncomingCountLocked()
+	_, requested := node.pendingWhois[remote.Address()]
+	node.mu.Unlock()
+	if queued != 0 || requested {
+		t.Fatalf("untrusted packet reached identity lookup: queued=%d requested=%t", queued, requested)
+	}
+}
+
+func TestTrustedUnknownPeerRetainsAuthenticationForRetry(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trustedPathID = uint64(0x1122334455667788)
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		Sender:        WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), TrustedPathID: trustedPathID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbUserMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet.SetTrusted(trustedPathID)
+	err = node.ProcessWirePacket(3, netip.MustParseAddrPort("192.0.2.10:9993"), packet.Bytes(), time.Now())
+	if !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("trusted unknown peer error = %v", err)
+	}
+	node.mu.Lock()
+	pending := node.pendingIncoming[remote.Address()]
+	node.mu.Unlock()
+	if len(pending) != 1 || !pending[0].authenticated {
+		t.Fatalf("trusted retry state = %+v", pending)
+	}
+}
+
+func TestPhysicalPathMTUOverridesDefault(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	var packets [][]byte
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		PhysicalMTU:   1200,
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), MTU: 600}},
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			packets = append(packets, append([]byte(nil), packet...))
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	packet, err := NewPacket(remote.Address(), local.Address(), VerbUserMessage)
+	if err == nil {
+		err = packet.Append(make([]byte, 900)...)
+	}
+	if err == nil {
+		err = node.sendPacketViaPathLocked(peer, packet, true, pathKey{endpoint: endpoint}, false)
+	}
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packets) < 2 {
+		t.Fatalf("physical path MTU produced %d packets", len(packets))
+	}
+	for _, wire := range packets {
+		if len(wire) > 600 {
+			t.Fatalf("wire fragment length = %d, want <= 600", len(wire))
+		}
+	}
+}
+
+func TestExtendedHelloFragmentFlagIncludesEphemeralKey(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planet, err := DefaultPlanet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := planet.Roots[0]
+	var packets [][]byte
+	node, err := NewNode(NodeConfig{
+		Identity:    local,
+		PhysicalMTU: MinPhysicalMTU,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			packets = append(packets, append([]byte(nil), packet...))
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := NewPacket(remote.Identity.Address(), local.Address(), VerbHello)
+	if err == nil {
+		err = packet.Append(make([]byte, 500-PacketMinSize)...)
+	}
+	node.mu.Lock()
+	if err == nil {
+		err = node.sendPacketViaPathLocked(node.peers[remote.Identity.Address()], packet, false, pathKey{endpoint: remote.Endpoints[0]}, true)
+	}
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packets) != 2 {
+		t.Fatalf("extended HELLO produced %d wire packets, want 2", len(packets))
+	}
+	if packets[0][PacketFlagsOffset]&FlagFragmented == 0 {
+		t.Fatal("extended HELLO head does not advertise its trailing fragment")
+	}
+	if len(packets[0]) > MinPhysicalMTU || len(packets[1]) > MinPhysicalMTU {
+		t.Fatalf("extended HELLO fragment lengths = %d, %d", len(packets[0]), len(packets[1]))
+	}
+}
+
+func TestPhysicalAndPeerPathConfiguration(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hint := netip.MustParseAddrPort("203.0.113.20:29993")
+	physicalBlocked := netip.MustParseAddrPort("192.0.2.1:9993")
+	peerBlocked := netip.MustParseAddrPort("198.51.100.1:9993")
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), Blacklist: true}},
+		PeerPaths: []PeerPathConfig{{
+			Address:   remote.Address(),
+			Try:       []netip.AddrPort{physicalBlocked, peerBlocked, hint},
+			Blacklist: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	if node.pathAllowedLocked(peer, physicalBlocked) {
+		node.mu.Unlock()
+		t.Fatal("globally blacklisted path was allowed")
+	}
+	if node.pathAllowedLocked(peer, peerBlocked) {
+		node.mu.Unlock()
+		t.Fatal("peer-specific blacklisted path was allowed")
+	}
+	if !node.pathAllowedLocked(peer, hint) {
+		node.mu.Unlock()
+		t.Fatal("peer path hint was not allowed")
+	}
+	node.tryMemorizedPathsLocked(peer, time.Now())
+	node.mu.Unlock()
+	if len(sent) != 1 || sent[0].remote != hint {
+		t.Fatalf("memorized path probes = %+v", sent)
+	}
+}
+
+// TestPeersReportsCompletePathDiagnostics verifies the public snapshot fields
+// used by ztprobe direct-path assertions.
+func TestPeersReportsCompletePathDiagnostics(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const trustedPathID = uint64(0x1122334455667788)
+	endpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	node, err := NewNode(NodeConfig{
+		Identity:      local,
+		Sender:        WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		PhysicalPaths: []PhysicalPathConfig{{Network: netip.MustParsePrefix("192.0.2.0/24"), TrustedPathID: trustedPathID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.protocol, peer.major, peer.minor, peer.revision = ProtocolVersion, 1, 16, 2
+	peer.paths[pathKey{localSocket: 7, endpoint: endpoint}] = &peerPathState{
+		lastSend: now.Add(-time.Second), lastReceive: now, priority: 3,
+		latency: 5 * time.Millisecond, jitter: time.Millisecond, loss: 0.1, packetError: 0.02,
+	}
+	node.mu.Unlock()
+	var status *PeerStatus
+	for _, candidate := range node.Peers() {
+		if candidate.Address == remote.Address() {
+			copy := candidate
+			status = &copy
+			break
+		}
+	}
+	if status == nil || status.Protocol != ProtocolVersion || status.VersionMajor != 1 || status.VersionMinor != 16 || status.VersionRevision != 2 || len(status.Paths) != 1 {
+		t.Fatalf("peer status = %+v", status)
+	}
+	path := status.Paths[0]
+	if !path.Active || !path.Preferred || path.Priority != 3 || path.TrustedPathID != trustedPathID || path.LastSend.IsZero() || path.PacketError != 0.02 {
+		t.Fatalf("peer path = %+v", path)
+	}
+}
+
+// TestEventTypeString verifies stable names for every public event type.
+func TestEventTypeString(t *testing.T) {
+	for _, test := range []struct {
+		typ  EventType
+		name string
+	}{
+		{EventNodeUp, "node-up"},
+		{EventNodeOnline, "node-online"},
+		{EventNodeOffline, "node-offline"},
+		{EventNodeDown, "node-down"},
+		{EventNodeIdentityCollision, "node-identity-collision"},
+		{EventNetworkConfigPending, "network-config-pending"},
+		{EventNetworkConfigReady, "network-config-ready"},
+		{EventNetworkConfigChanged, "network-config-changed"},
+		{EventNetworkAccessDenied, "network-access-denied"},
+		{EventNetworkNotFound, "network-not-found"},
+		{EventNetworkAuthenticationRequired, "network-authentication-required"},
+		{EventNetworkLeft, "network-left"},
+		{EventPeerIdentityLearned, "peer-identity-learned"},
+		{EventPeerPathLearned, "peer-path-learned"},
+		{EventPeerRouteChanged, "peer-route-changed"},
+		{EventLocalSurfaceChanged, "local-surface-changed"},
+	} {
+		if name := test.typ.String(); name != test.name {
+			t.Fatalf("EventType(%d).String() = %q, want %q", test.typ, name, test.name)
+		}
+	}
+	if name := EventType(255).String(); name != "event(255)" {
+		t.Fatalf("unknown EventType.String() = %q", name)
+	}
+	if PeerRouteDirect.String() != "direct" || PeerRoute(255).String() != "peer-route(255)" {
+		t.Fatalf("unexpected PeerRoute strings: %q %q", PeerRouteDirect, PeerRoute(255))
+	}
+	if PeerRoleMoon.String() != "moon" || PeerRole(255).String() != "peer-role(255)" {
+		t.Fatalf("unexpected PeerRole strings: %q %q", PeerRoleMoon, PeerRole(255))
+	}
+}
+
+// TestNodeLifecycleEventOrdering verifies the official UP/DOWN boundaries and
+// that initialization precedes peer discovery callbacks.
+func TestNodeLifecycleEventOrdering(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent:  func(event Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[0].Type != EventNodeUp {
+		t.Fatalf("initial events = %+v", events)
+	}
+	for _, event := range events[1:] {
+		if event.Type != EventPeerIdentityLearned || event.PeerRole != PeerRolePlanet {
+			t.Fatalf("event after node-up = %+v", event)
+		}
+	}
+	for _, event := range events {
+		if event.NodeAddress != identity.Address() {
+			t.Fatalf("event node address = %s, want %s: %+v", event.NodeAddress, identity.Address(), event)
+		}
+	}
+	if err = node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if events[len(events)-1].Type != EventNodeDown {
+		t.Fatalf("final event = %+v", events[len(events)-1])
+	}
+	count := len(events)
+	if err = node.Close(); err != nil || len(events) != count {
+		t.Fatalf("second Close error=%v events=%+v", err, events)
+	}
+}
+
+func TestNodeCallbacksFollowStateOrderAndAllowReentry(t *testing.T) {
+	events := make(chan EventType, 3)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan struct{})
+	node := &Node{identity: Identity{address: NewAddress(0x12345)}}
+	node.onEvent = func(event Event) {
+		events <- event.Type
+		if event.Type != EventNodeOnline {
+			return
+		}
+		close(firstStarted)
+		<-releaseFirst
+		node.mu.Lock()
+		node.emitLocked(Event{Type: EventPeerPathLearned})
+		node.unlockAndRunCallbacks()
+	}
+	go func() {
+		node.mu.Lock()
+		node.emitLocked(Event{Type: EventNodeOnline})
+		node.unlockAndRunCallbacks()
+		close(firstDone)
+	}()
+	<-firstStarted
+	if event := <-events; event != EventNodeOnline {
+		t.Fatalf("first callback = %v", event)
+	}
+
+	node.mu.Lock()
+	node.emitLocked(Event{Type: EventNodeOffline})
+	node.unlockAndRunCallbacks()
+	select {
+	case event := <-events:
+		t.Fatalf("callback %v overtook the blocked first batch", event)
+	default:
+	}
+	close(releaseFirst)
+	if event := <-events; event != EventNodeOffline {
+		t.Fatalf("second callback = %v", event)
+	}
+	if event := <-events; event != EventPeerPathLearned {
+		t.Fatalf("reentrant callback = %v", event)
+	}
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("callback dispatcher did not finish")
+	}
+}
+
+func TestNodeCallbackPanicDoesNotPoisonDispatcher(t *testing.T) {
+	var events []EventType
+	node := &Node{identity: Identity{address: NewAddress(0x12345)}}
+	node.onEvent = func(event Event) {
+		events = append(events, event.Type)
+		if event.Type == EventNodeOnline {
+			panic("callback failure")
+		}
+	}
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		node.mu.Lock()
+		node.emitLocked(Event{Type: EventNodeOnline})
+		node.emitLocked(Event{Type: EventNodeOffline})
+		node.unlockAndRunCallbacks()
+	}()
+	if recovered == nil {
+		t.Fatal("callback panic did not propagate")
+	}
+	node.mu.Lock()
+	running := node.callbackRunning
+	queuedBatches := len(node.callbackBatches)
+	queuedCallbacks := 0
+	if queuedBatches != 0 {
+		queuedCallbacks = len(node.callbackBatches[0])
+	}
+	node.mu.Unlock()
+	if running || queuedBatches != 1 || queuedCallbacks != 1 {
+		t.Fatalf("dispatcher after panic: running=%t batches=%d callbacks=%d", running, queuedBatches, queuedCallbacks)
+	}
+
+	node.mu.Lock()
+	node.emitLocked(Event{Type: EventNodeDown})
+	node.unlockAndRunCallbacks()
+	want := []EventType{EventNodeOnline, EventNodeOffline, EventNodeDown}
+	if len(events) != len(want) {
+		t.Fatalf("events after recovery = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events after recovery = %v, want %v", events, want)
+		}
+	}
+}
+
+func TestNodeCallbackTerminationTransfersQueuedBatch(t *testing.T) {
+	terminations := map[string]func(){
+		"panic":  func() { panic("callback failure") },
+		"goexit": runtime.Goexit,
+	}
+	for name, terminate := range terminations {
+		t.Run(name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			terminated := make(chan struct{})
+			delivered := make(chan EventType, 1)
+			node := &Node{identity: Identity{address: NewAddress(0x12345)}}
+			node.onEvent = func(event Event) {
+				if event.Type == EventNodeOnline {
+					close(started)
+					<-release
+					terminate()
+					return
+				}
+				delivered <- event.Type
+			}
+
+			go func() {
+				defer close(terminated)
+				defer func() { _ = recover() }()
+				node.mu.Lock()
+				node.emitLocked(Event{Type: EventNodeOnline})
+				node.unlockAndRunCallbacks()
+			}()
+			<-started
+			node.mu.Lock()
+			node.emitLocked(Event{Type: EventNodeOffline})
+			node.unlockAndRunCallbacks()
+			close(release)
+			select {
+			case <-terminated:
+			case <-time.After(time.Second):
+				t.Fatal("terminating callback did not release its protocol worker")
+			}
+			select {
+			case event := <-delivered:
+				if event != EventNodeOffline {
+					t.Fatalf("transferred callback = %v", event)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("concurrently queued callback was stranded")
+			}
+		})
+	}
+}
+
+func TestDataCallbackDoesNotWaitForBlockedStateCallback(t *testing.T) {
+	stateStarted := make(chan struct{})
+	releaseState := make(chan struct{})
+	stateDone := make(chan struct{})
+	frames := make(chan Frame, 1)
+	node := &Node{identity: Identity{address: NewAddress(0x12345)}}
+	node.onEvent = func(Event) {
+		close(stateStarted)
+		<-releaseState
+	}
+	node.onFrame = func(frame Frame) { frames <- frame }
+
+	go func() {
+		node.mu.Lock()
+		node.emitLocked(Event{Type: EventNodeOnline})
+		node.unlockAndRunCallbacks()
+		close(stateDone)
+	}()
+	<-stateStarted
+	want := Frame{NetworkID: 0x1234, EtherType: 0x0800, Payload: []byte{1, 2, 3}}
+	node.mu.Lock()
+	node.deliverFrameLocked(want)
+	node.unlockAndRunCallbacks()
+	select {
+	case got := <-frames:
+		if got.NetworkID != want.NetworkID || got.EtherType != want.EtherType || !bytes.Equal(got.Payload, want.Payload) {
+			t.Fatalf("frame callback = %+v, want %+v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("frame callback waited behind blocked state callback")
+	}
+	close(releaseState)
+	select {
+	case <-stateDone:
+	case <-time.After(time.Second):
+		t.Fatal("state callback dispatcher did not finish")
+	}
+}
+
+func TestEventMatchesNodeState(t *testing.T) {
+	const networkID = uint64(0x1234)
+	authentication := NetworkAuthenticationInfo{Version: 1, AuthenticationURL: "https://auth.example/login"}
+	node := &Node{networks: map[uint64]*Network{}}
+	if (Event{Type: EventNodeOnline}).MatchesNodeState(nil) {
+		t.Fatal("event matched a nil node")
+	}
+	if !(Event{Type: EventNodeOnline}).MatchesNodeState(node) {
+		t.Fatal("non-network event did not match")
+	}
+	if !(Event{Type: EventNetworkConfigPending, NetworkID: networkID}).MatchesNodeState(node) {
+		t.Fatal("non-authoritative network event did not match")
+	}
+	if (Event{Type: EventNetworkConfigReady, NetworkID: networkID}).MatchesNodeState(node) {
+		t.Fatal("ready event matched an absent network")
+	}
+
+	tests := []struct {
+		name           string
+		event          Event
+		status         NetworkStatus
+		authentication NetworkAuthenticationInfo
+		want           bool
+	}{
+		{name: "ready", event: Event{Type: EventNetworkConfigReady, NetworkID: networkID}, status: NetworkStatusOK, want: true},
+		{name: "changed", event: Event{Type: EventNetworkConfigChanged, NetworkID: networkID}, status: NetworkStatusOK, want: true},
+		{name: "denied", event: Event{Type: EventNetworkAccessDenied, NetworkID: networkID}, status: NetworkStatusAccessDenied, want: true},
+		{name: "not found", event: Event{Type: EventNetworkNotFound, NetworkID: networkID}, status: NetworkStatusNotFound, want: true},
+		{name: "authentication", event: Event{Type: EventNetworkAuthenticationRequired, NetworkID: networkID, Authentication: authentication}, status: NetworkStatusAuthenticationRequired, authentication: authentication, want: true},
+		{name: "authentication changed", event: Event{Type: EventNetworkAuthenticationRequired, NetworkID: networkID, Authentication: authentication}, status: NetworkStatusAuthenticationRequired, authentication: NetworkAuthenticationInfo{Version: 1, AuthenticationURL: "https://auth.example/new"}},
+		{name: "superseded", event: Event{Type: EventNetworkAccessDenied, NetworkID: networkID}, status: NetworkStatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			node.networks[networkID] = &Network{ID: networkID, Status: test.status, Authentication: test.authentication}
+			if got := test.event.MatchesNodeState(node); got != test.want {
+				t.Fatalf("MatchesNodeState() = %t, want %t", got, test.want)
+			}
+		})
+	}
+	delete(node.networks, networkID)
+	if !(Event{Type: EventNetworkLeft, NetworkID: networkID}).MatchesNodeState(node) {
+		t.Fatal("left event did not match an absent network")
+	}
+	node.networks[networkID] = &Network{ID: networkID}
+	if (Event{Type: EventNetworkLeft, NetworkID: networkID}).MatchesNodeState(node) {
+		t.Fatal("left event matched a joined network")
+	}
+}
+
+// TestPeerPathAndRouteEventsAreStateTransitions verifies authentication,
+// successful-send, and route-mode deduplication boundaries.
+func TestPeerPathAndRouteEventsAreStateTransitions(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent:  func(event Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	events = nil
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.unlockAndRunCallbacks()
+	events = nil
+	endpoint := netip.MustParseAddrPort("198.51.100.20:9993")
+	now := time.Now()
+	activateTestRootPath(t, node, now)
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.observeAuthenticatedPacketPathLocked(peer, 0, endpoint, VerbOK, 1, 0x1234, now)
+	node.unlockAndRunCallbacks()
+	if len(events) != 1 || events[0].Type != EventPeerPathLearned || events[0].PeerAddress != remote.Address() || events[0].PeerRole != PeerRoleLeaf || events[0].Endpoint != endpoint || events[0].PathCount != 1 {
+		t.Fatalf("learned path events = %+v", events)
+	}
+	node.mu.Lock()
+	node.observeAuthenticatedPacketPathLocked(peer, 0, endpoint, VerbFrame, 2, 0x1234, now.Add(time.Second))
+	node.unlockAndRunCallbacks()
+	if len(events) != 1 {
+		t.Fatalf("known path emitted another event: %+v", events)
+	}
+	sendFrame := func() error {
+		packet, packetErr := NewPacket(remote.Address(), local.Address(), VerbFrame)
+		if packetErr != nil {
+			return packetErr
+		}
+		node.mu.Lock()
+		sendErr := node.sendPacketLocked(peer, packet, true)
+		node.unlockAndRunCallbacks()
+		return sendErr
+	}
+	node.mu.Lock()
+	sender := node.sender
+	node.sender = WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return errors.New("send failed") })
+	node.mu.Unlock()
+	if err = sendFrame(); err == nil {
+		t.Fatal("failed frame send reported success")
+	}
+	if len(events) != 1 {
+		t.Fatalf("failed frame send emitted a route event: %+v", events)
+	}
+	node.mu.Lock()
+	node.sender = sender
+	node.mu.Unlock()
+	if err = sendFrame(); err != nil {
+		t.Fatal(err)
+	}
+	if err = sendFrame(); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	node.deletePeerPathLocked(peer, pathKey{localSocket: 0, endpoint: endpoint})
+	node.mu.Unlock()
+	if err = sendFrame(); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	peer.paths[pathKey{localSocket: 0, endpoint: endpoint}] = &peerPathState{lastReceive: now.Add(2 * time.Second), priority: 1}
+	node.mu.Unlock()
+	if err = sendFrame(); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 4 || events[1].Type != EventPeerRouteChanged || events[1].Route != PeerRouteDirect || events[1].Endpoint != endpoint || events[2].Type != EventPeerRouteChanged || events[2].Route != PeerRouteRelayed || events[2].Endpoint.IsValid() || events[3].Type != EventPeerRouteChanged || events[3].Route != PeerRouteDirect {
+		t.Fatalf("peer route events = %+v", events)
+	}
+}
+
+func TestPeerRouteEventCoalescesToLatestState(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent:  func(event Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.lastReceive = now
+	node.lastRootContact = now
+	node.unlockAndRunCallbacks()
+	events = nil
+
+	first := netip.MustParseAddrPort("198.51.100.21:9993")
+	second := netip.MustParseAddrPort("198.51.100.22:9993")
+	latest := netip.MustParseAddrPort("198.51.100.23:9993")
+	node.mu.Lock()
+	node.observePeerUserRouteLocked(peer, true, first, 1, now)
+	node.unlockAndRunCallbacks()
+	node.mu.Lock()
+	node.observePeerUserRouteLocked(peer, true, second, 1, now.Add(100*time.Millisecond))
+	node.observePeerUserRouteLocked(peer, true, latest, 1, now.Add(200*time.Millisecond))
+	node.unlockAndRunCallbacks()
+	if len(events) != 1 || events[0].Endpoint != first {
+		t.Fatalf("events before coalescing deadline = %+v", events)
+	}
+
+	wantDeadline := now.Add(peerRouteReportInterval)
+	next := node.ProcessBackgroundTasks(wantDeadline.Add(-time.Nanosecond))
+	if !next.Equal(wantDeadline) {
+		t.Fatalf("next background deadline = %v, want %v", next, wantDeadline)
+	}
+	if len(events) != 1 {
+		t.Fatalf("early coalesced events = %+v", events)
+	}
+	node.ProcessBackgroundTasks(wantDeadline)
+	if len(events) != 2 || events[1].Type != EventPeerRouteChanged || events[1].Route != PeerRouteDirect || events[1].Endpoint != latest || events[1].PathCount != 1 {
+		t.Fatalf("coalesced route events = %+v", events)
+	}
+
+	node.mu.Lock()
+	node.observePeerUserRouteLocked(peer, true, second, 1, wantDeadline.Add(100*time.Millisecond))
+	node.observePeerUserRouteLocked(peer, true, latest, 1, wantDeadline.Add(200*time.Millisecond))
+	pendingRoute := peer.pendingUserRoute
+	node.unlockAndRunCallbacks()
+	if pendingRoute != PeerRouteUnknown {
+		t.Fatalf("restored route retained pending state %v", pendingRoute)
+	}
+	node.ProcessBackgroundTasks(wantDeadline.Add(peerRouteReportInterval))
+	if len(events) != 2 {
+		t.Fatalf("restored route emitted a coalesced event: %+v", events)
+	}
+}
+
+// TestLocalSurfaceChangeEventMatchesPathReset verifies that only a recent,
+// changed trusted report emits an event and invalidates matching paths.
+func TestLocalSurfaceChangeEventMatchesPathReset(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent:  func(event Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	events = nil
+	remote := netip.MustParseAddrPort("198.51.100.30:9993")
+	previous := netip.MustParseAddrPort("203.0.113.10:40000")
+	current := netip.MustParseAddrPort("203.0.113.11:40001")
+	path := pathKey{localSocket: 0, endpoint: remote}
+	first := time.Now()
+	node.mu.Lock()
+	var reporter *peer
+	for _, candidate := range node.peers {
+		if candidate.root {
+			reporter = candidate
+			break
+		}
+	}
+	if reporter == nil {
+		node.mu.Unlock()
+		t.Fatal("default planet has no root peer")
+	}
+	reporter.paths[path] = &peerPathState{lastReceive: first, priority: 1}
+	node.observeSurfaceLocked(reporter, 0, remote, previous, first)
+	node.observeSurfaceLocked(reporter, 0, remote, previous, first.Add(time.Minute))
+	node.observeSurfaceLocked(reporter, 0, remote, current, first.Add(2*time.Minute))
+	node.unlockAndRunCallbacks()
+	if len(events) != 1 {
+		t.Fatalf("surface events = %+v", events)
+	}
+	event := events[0]
+	if event.Type != EventLocalSurfaceChanged || event.ReporterAddress != reporter.identity.Address() || event.PeerRole != PeerRolePlanet || event.PreviousEndpoint != previous || event.Endpoint != current || event.PathCount != 1 {
+		t.Fatalf("surface event = %+v", event)
+	}
+	node.mu.Lock()
+	reset := reporter.paths[path].lastReceive.IsZero()
+	node.mu.Unlock()
+	if !reset {
+		t.Fatal("surface event was emitted without invalidating the matching path")
+	}
+}
+
+func TestFullHelloLocalSocketMatchesOfficialLowBandwidthPolicy(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	for _, test := range []struct {
+		name         string
+		lowBandwidth bool
+		wantSocket   int64
+	}{
+		{name: "normal", wantSocket: AnyLocalSocket},
+		{name: "low-bandwidth", lowBandwidth: true, wantSocket: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var sentSocket int64
+			node, nodeErr := NewNode(NodeConfig{
+				Identity:     local,
+				LowBandwidth: test.lowBandwidth,
+				Sender: WireSenderFunc(func(localSocket int64, _ netip.AddrPort, _ []byte) error {
+					sentSocket = localSocket
+					return nil
+				}),
+			})
+			if nodeErr != nil {
+				t.Fatal(nodeErr)
+			}
+			now := time.Now()
+			path := pathKey{localSocket: 7, endpoint: endpoint}
+			node.mu.Lock()
+			if nodeErr = node.addPeerLocked(remote, false); nodeErr == nil {
+				node.peers[remote.Address()].paths[path] = &peerPathState{lastReceive: now}
+				nodeErr = node.sendHelloAtPathLocked(remote.Address(), path, now)
+			}
+			lastSend := node.peers[remote.Address()].paths[path].lastSend
+			node.mu.Unlock()
+			if nodeErr != nil {
+				t.Fatal(nodeErr)
+			}
+			if sentSocket != test.wantSocket {
+				t.Fatalf("HELLO local socket = %d, want %d", sentSocket, test.wantSocket)
+			}
+			if lastSend.IsZero() {
+				t.Fatal("HELLO did not update the originating path send time")
+			}
+		})
+	}
+}
+
+func TestIdentityStateFailuresAreBestEffort(t *testing.T) {
+	for name, store := range map[string]StateStore{
+		"read":  failingGetStore{},
+		"write": failingPutStore{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			identity, err := loadOrCreateIdentity(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !identity.HasPrivate() || identity.Validate() != nil {
+				t.Fatal("generated identity is invalid")
+			}
+		})
+	}
+}
+
+func TestInvalidStoredIdentityIsFatal(t *testing.T) {
+	store := NewMemoryStore()
+	if err := store.Put("identity.secret", []byte("invalid")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateIdentity(store); err == nil {
+		t.Fatal("invalid stored identity was replaced")
+	}
+}
+
+func TestNodeIgnoresStateMutationFailures(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Store:    failingPutStore{},
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Deorbit(1); err != nil {
+		t.Fatalf("Deorbit() propagated a persistence error: %v", err)
+	}
+	const networkID = uint64(0x17d709436c000001)
+	if err = node.Join(networkID); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Leave(networkID); err != nil {
+		t.Fatalf("Leave() propagated a persistence error: %v", err)
+	}
+	if err = node.Close(); err != nil {
+		t.Fatalf("Close() propagated a persistence error: %v", err)
+	}
+}
+
+func TestNodeCloseRejectsProtocolWork(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	const networkID = uint64(0x1234567890abcdef)
+	if err = node.Join(networkID); !errors.Is(err, ErrNodeClosed) {
+		t.Fatalf("Join() after Close() error = %v", err)
+	}
+	if err = node.SendFrame(networkID, NewMAC(0xffffffffffff), EtherTypeIPv4, []byte{1}); !errors.Is(err, ErrNodeClosed) {
+		t.Fatalf("SendFrame() after Close() error = %v", err)
+	}
+	if err = node.ProcessWirePacket(AnyLocalSocket, netip.MustParseAddrPort("192.0.2.1:9993"), nil, time.Now()); !errors.Is(err, ErrNodeClosed) {
+		t.Fatalf("ProcessWirePacket() after Close() error = %v", err)
+	}
+	backgroundDone := make(chan struct{})
+	go func() {
+		node.RunBackgroundTasks(context.Background())
+		close(backgroundDone)
+	}()
+	select {
+	case <-backgroundDone:
+	case <-time.After(time.Second):
+		t.Fatal("RunBackgroundTasks did not stop after Close")
+	}
+}
+
+func TestNetworkConfigRequestReturnsUnsupported(t *testing.T) {
+	local, remote, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbNetworkConfigRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint64(networkID)
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("192.0.2.10:9993")
+	if err = node.ProcessWirePacket(3, endpoint, packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, wire := range *sent {
+		response, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || response.Dearmor(key[:]) != nil || response.Verb() != VerbError {
+			continue
+		}
+		payload := response.Payload()
+		if len(payload) == 18 && payload[0] == byte(VerbNetworkConfigRequest) && binary.BigEndian.Uint64(payload[1:9]) == packet.PacketID() && payload[9] == 0x05 && binary.BigEndian.Uint64(payload[10:]) == networkID {
+			return
+		}
+	}
+	t.Fatal("unsupported NETWORK_CONFIG_REQUEST response was not sent")
+}
+
+func TestRunBackgroundTasksStopsWithContext(t *testing.T) {
+	sent := make(chan struct{}, 1)
+	node, err := NewNode(NodeConfig{
+		Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error {
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		node.RunBackgroundTasks(ctx)
+		close(done)
+	}()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("background runner did not process initial root contact")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("background runner did not stop after cancellation")
+	}
+}
+
+func TestNodeSendsAuthenticatedRootHello(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	node.ProcessBackgroundTasks(now)
+	if len(sent) == 0 {
+		t.Fatal("node did not contact a root")
+	}
+	planet, _ := DefaultPlanet()
+	rootByAddress := make(map[Address]Identity)
+	for _, root := range planet.Roots {
+		rootByAddress[root.Identity.Address()] = root.Identity
+	}
+	packet, err := ParsePacket(sent[0].data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.Verb() != VerbHello || packet.Source() != identity.Address() {
+		t.Fatalf("unexpected HELLO header: verb=%d source=%s", packet.Verb(), packet.Source())
+	}
+	root, ok := rootByAddress[packet.Destination()]
+	if !ok {
+		t.Fatalf("destination %s is not a root", packet.Destination())
+	}
+	key, err := identity.Agree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := packet.Dearmor(key[:]); err != nil {
+		t.Fatalf("root HELLO authentication failed: %v", err)
+	}
+	if packet.Payload()[0] != ProtocolVersion {
+		t.Fatalf("protocol version = %d", packet.Payload()[0])
+	}
+}
+
+func TestEncryptedHelloAppliesBeforePeerProtocolIsKnown(t *testing.T) {
+	identity, _ := ParseIdentity(knownGoodIdentity)
+	root, _ := GenerateIdentity()
+	var sent []byte
+	node, err := NewNode(NodeConfig{
+		Identity:       identity,
+		EncryptedHello: true,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			sent = append([]byte(nil), packet...)
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(root, true); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	err = node.sendHelloLocked(root.Address(), netip.MustParseAddrPort("192.0.2.1:9993"), time.Now())
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, err := ParsePacket(sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !packet.ExtendedArmor() {
+		t.Fatal("initial HELLO did not use extended armor")
+	}
+}
+
+func TestIdentityValidationRateBucketsMatchZeroTierOne(t *testing.T) {
+	if identityValidationBucket(netip.MustParseAddr("192.0.2.1")) != identityValidationBucket(netip.MustParseAddr("192.0.2.254")) {
+		t.Fatal("IPv4 addresses in one /24 used different identity-validation buckets")
+	}
+	if identityValidationBucket(netip.MustParseAddr("2001:db8:1234::1")) != identityValidationBucket(netip.MustParseAddr("2001:db8:1234:ffff::1")) {
+		t.Fatal("IPv6 addresses in one /48 used different identity-validation buckets")
+	}
+}
+
+func TestIdentityValidationRateLimitMatchesZeroTierOne(t *testing.T) {
+	tests := map[string]time.Duration{
+		"amd64": 2 * time.Second,
+		"386":   5 * time.Second,
+		"arm64": 10 * time.Second,
+	}
+	for architecture, want := range tests {
+		if got := identityValidationRateLimit(architecture); got != want {
+			t.Errorf("identity validation rate limit for %s = %s, want %s", architecture, got, want)
+		}
+	}
+}
+
+func TestHelloIdentityCollisionDoesNotRequireValidCollidingIdentity(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	remote, _ := GenerateIdentity()
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+	collision := remote
+	collision.public[0] ^= 0x80
+	packet, _ := NewPacket(local.Address(), collision.Address(), VerbHello)
+	_ = packet.Append(ProtocolVersion, nodeVersionMajor, nodeVersionMinor)
+	_ = packet.AppendUint16(nodeVersionRev)
+	_ = packet.AppendUint64(uint64(time.Now().UnixMilli()))
+	_ = packet.Append(collision.AppendBinary(nil, false)...)
+	key, err := local.Agree(collision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], false); err != nil {
+		t.Fatal(err)
+	}
+	err = node.ProcessWirePacket(0, netip.MustParseAddrPort("192.0.2.1:9993"), packet.Bytes(), time.Now())
+	if !errors.Is(err, ErrIdentityCollision) {
+		t.Fatalf("collision HELLO error = %v, want ErrIdentityCollision", err)
+	}
+}
+
+func TestHelloCommitsPeerVersionBeforeReplayingQueuedPackets(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := remote.Agree(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent [][]byte
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			sent = append(sent, append([]byte(nil), packet...))
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("192.0.2.40:9993")
+	now := time.Now()
+	echo, err := NewPacket(local.Address(), remote.Address(), VerbEcho)
+	if err == nil {
+		err = echo.ArmorAES(key[:])
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(4, endpoint, echo.Bytes(), now); !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("unknown peer ECHO error = %v", err)
+	}
+
+	hello, err := NewPacket(local.Address(), remote.Address(), VerbHello)
+	if err == nil {
+		err = hello.Append(ProtocolVersion, NodeVersionMajor, NodeVersionMinor)
+	}
+	if err == nil {
+		err = hello.AppendUint16(NodeVersionRevision)
+	}
+	if err == nil {
+		err = hello.AppendUint64(uint64(now.UnixMilli()))
+	}
+	if err == nil {
+		err = hello.Append(remote.AppendBinary(nil, false)...)
+	}
+	if err == nil {
+		err = hello.Armor(key[:], false)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(4, endpoint, hello.Bytes(), now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	foundEchoReply := false
+	for _, wire := range sent {
+		packet, parseErr := ParsePacket(wire)
+		if parseErr != nil || packet.Cipher() != CipherSuiteAESGMACSIV || packet.Dearmor(key[:]) != nil {
+			continue
+		}
+		payload := packet.Payload()
+		if packet.Verb() == VerbOK && len(payload) >= 1 && Verb(payload[0]) == VerbEcho {
+			foundEchoReply = true
+			break
+		}
+	}
+	if !foundEchoReply {
+		t.Fatal("queued ECHO was replayed before protocol-12 armor became available")
+	}
+}
+
+func TestEncryptedHelloConfirmsUnknownPath(t *testing.T) {
+	localIdentity, _ := GenerateIdentity()
+	remoteIdentity, _ := GenerateIdentity()
+	var hello []byte
+	remote, err := NewNode(NodeConfig{
+		Identity:       remoteIdentity,
+		EncryptedHello: true,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			hello = append([]byte(nil), packet...)
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := NewNode(NodeConfig{
+		Identity: localIdentity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote.mu.Lock()
+	if err = remote.addPeerLocked(localIdentity, false); err != nil {
+		remote.mu.Unlock()
+		t.Fatal(err)
+	}
+	remote.peers[localIdentity.Address()].protocol = ProtocolVersion
+	endpoint := netip.MustParseAddrPort("192.0.2.20:9993")
+	err = remote.sendHelloLocked(localIdentity.Address(), endpoint, time.Now())
+	remote.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local.mu.Lock()
+	if err = local.addPeerLocked(remoteIdentity, false); err != nil {
+		local.mu.Unlock()
+		t.Fatal(err)
+	}
+	local.mu.Unlock()
+	if err = local.ProcessWirePacket(7, endpoint, hello, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	path := pathKey{localSocket: 7, endpoint: endpoint}
+	local.mu.Lock()
+	_, probing := local.peers[remoteIdentity.Address()].pathProbe[path]
+	local.mu.Unlock()
+	if !probing {
+		t.Fatal("encrypted HELLO did not start authenticated path confirmation")
+	}
+}
+
+func TestUnknownPathRequiresAuthenticatedOK(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent [][]byte
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, packet []byte) error {
+			sent = append(sent, append([]byte(nil), packet...))
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(remoteIdentity, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.peers[remoteIdentity.Address()].protocol = ProtocolVersion
+	node.mu.Unlock()
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("203.0.113.10:9993")
+	now := time.Unix(1700000000, 0)
+	echo, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbEcho)
+	if err := echo.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, endpoint, echo.Bytes(), now); err != nil {
+		t.Fatal(err)
+	}
+	if paths := peerPaths(node, remoteIdentity.Address()); len(paths) != 0 {
+		t.Fatalf("unconfirmed path was learned from ECHO: %+v", paths)
+	}
+	node.mu.Lock()
+	var probeID uint64
+	for packetID, request := range node.pending {
+		if request.verb == VerbHello && request.path.endpoint == endpoint {
+			probeID = packetID
+			break
+		}
+	}
+	node.mu.Unlock()
+	if probeID == 0 {
+		t.Fatal("unknown path did not start a full HELLO confirmation")
+	}
+	confirmationCount := 0
+	for _, wire := range sent {
+		probe, parseErr := ParsePacket(wire)
+		if parseErr != nil || probe.Dearmor(key[:]) != nil {
+			continue
+		}
+		if probe.Verb() == VerbHello && probe.PacketID() == probeID {
+			confirmationCount++
+		}
+	}
+	if confirmationCount != 1 {
+		t.Fatalf("full HELLO confirmations = %d, sent packets = %d", confirmationCount, len(sent))
+	}
+	okPacket, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbOK)
+	_ = okPacket.Append(byte(VerbHello))
+	_ = okPacket.AppendUint64(probeID)
+	_ = okPacket.AppendUint64(uint64(now.UnixMilli()))
+	_ = okPacket.Append(ProtocolVersion, nodeVersionMajor, nodeVersionMinor)
+	_ = okPacket.AppendUint16(nodeVersionRev)
+	if err := okPacket.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, endpoint, okPacket.Bytes(), now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	paths := peerPaths(node, remoteIdentity.Address())
+	if len(paths) != 1 || paths[0].Endpoint != endpoint {
+		t.Fatalf("authenticated OK did not confirm path: %+v", paths)
+	}
+}
+
+func TestUnsolicitedOKDoesNotConfirmPath(t *testing.T) {
+	identity, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbOK)
+	_ = packet.Append(byte(VerbEcho))
+	_ = packet.AppendUint64(0x0102030405060708)
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("203.0.113.44:9993")
+	if err = node.ProcessWirePacket(0, endpoint, packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if paths := peerPaths(node, remoteIdentity.Address()); len(paths) != 0 {
+		t.Fatalf("unsolicited OK confirmed a path: %+v", paths)
+	}
+}
+
+func TestMalformedHelloOKDoesNotChangePeerVersion(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	const requestID = uint64(0x0102030405060708)
+	now := time.Now()
+	packet, _ := NewPacket(local.Address(), remote.Address(), VerbOK)
+	_ = packet.Append(byte(VerbHello))
+	_ = packet.AppendUint64(requestID)
+	_ = packet.AppendUint64(uint64(now.UnixMilli()))
+	_ = packet.Append(ProtocolVersion, NodeVersionMajor, NodeVersionMinor)
+	_ = packet.AppendUint16(NodeVersionRevision)
+	_ = packet.Append(4) // Truncated IPv4 surface address.
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.protocol, peer.major, peer.minor, peer.revision = 11, 1, 4, 8
+	node.pending[requestID] = pendingRequest{verb: VerbHello, peer: remote.Address(), sentAt: now}
+	err := node.handleOKLocked(0, netip.MustParseAddrPort("203.0.113.44:9993"), peer, packet, now)
+	protocol, major, minor, revision := peer.protocol, peer.major, peer.minor, peer.revision
+	_, pending := node.pending[requestID]
+	node.mu.Unlock()
+
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("malformed HELLO response error = %v", err)
+	}
+	if protocol != 11 || major != 1 || minor != 4 || revision != 8 {
+		t.Fatalf("malformed HELLO response changed peer version to %d.%d.%d protocol %d", major, minor, revision, protocol)
+	}
+	if !pending {
+		t.Fatal("malformed HELLO response consumed the pending request")
+	}
+}
+
+func TestHelloOKLearnsEveryRespondingLocalSocket(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	const requestID = uint64(0x0102030405060708)
+	now := time.Now()
+	reply, _ := NewPacket(local.Address(), remote.Address(), VerbOK)
+	_ = reply.Append(byte(VerbHello))
+	_ = reply.AppendUint64(requestID)
+	_ = reply.AppendUint64(uint64(now.UnixMilli()))
+	_ = reply.Append(ProtocolVersion, NodeVersionMajor, NodeVersionMinor)
+	_ = reply.AppendUint16(NodeVersionRevision)
+	endpoints := []netip.AddrPort{
+		netip.MustParseAddrPort("198.51.100.44:9993"),
+		netip.MustParseAddrPort("198.51.100.45:9993"),
+	}
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.pending[requestID] = pendingRequest{
+		verb: VerbHello, peer: remote.Address(), sentAt: now,
+		path: pathKey{localSocket: AnyLocalSocket, endpoint: endpoints[0]},
+	}
+	for index, endpoint := range endpoints {
+		if err := node.handleOKLocked(int64(index), endpoint, peer, reply, now.Add(time.Duration(index)*time.Millisecond)); err != nil {
+			node.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	_, pending := node.pending[requestID]
+	pathCount := len(peer.paths)
+	node.mu.Unlock()
+	if !pending || pathCount != len(endpoints) {
+		t.Fatalf("HELLO responses left pending=%t paths=%d", pending, pathCount)
+	}
+
+	node.ProcessBackgroundTasks(now.Add(31 * time.Second))
+	node.mu.Lock()
+	_, pending = node.pending[requestID]
+	node.mu.Unlock()
+	if pending {
+		t.Fatal("expired HELLO request remained pending")
+	}
+}
+
+func TestPendingRequestCapacityReplacesNextRingEntry(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	for packetID := uint64(1); packetID <= maxPendingRequests; packetID++ {
+		if err = node.addPendingLocked(packetID, pendingRequest{verb: VerbEcho, sentAt: now.Add(time.Duration(packetID))}); err != nil {
+			node.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	const replacementID = uint64(maxPendingRequests + 1)
+	err = node.addPendingLocked(replacementID, pendingRequest{verb: VerbHello, sentAt: now.Add(time.Second)})
+	_, replacedPresent := node.pending[1]
+	_, replacementPresent := node.pending[replacementID]
+	count := len(node.pending)
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != maxPendingRequests || replacedPresent || !replacementPresent {
+		t.Fatalf("pending replacement: count=%d replaced=%t replacement=%t", count, replacedPresent, replacementPresent)
+	}
+}
+
+func TestMovePendingPacketIDUpdatesRingSlot(t *testing.T) {
+	identity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldPacketID = uint64(0x1020304050607080)
+	const newPacketID = uint64(0x8070605040302010)
+	node.mu.Lock()
+	err = node.addPendingLocked(oldPacketID, pendingRequest{verb: VerbEcho, sentAt: time.Now()})
+	if err == nil {
+		err = node.movePendingPacketIDLocked(oldPacketID, newPacketID)
+	}
+	request, moved := node.pending[newPacketID]
+	_, oldPresent := node.pending[oldPacketID]
+	slot := node.pendingSlots[request.slot]
+	node.deletePendingLocked(newPacketID)
+	clearedSlot := node.pendingSlots[request.slot]
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !moved || oldPresent || slot.packetID != newPacketID || slot.generation != request.generation {
+		t.Fatalf("moved request=%+v found=%t old=%t slot=%+v", request, moved, oldPresent, slot)
+	}
+	if clearedSlot != (pendingRequestSlot{}) {
+		t.Fatalf("deleted request retained ring slot %+v", clearedSlot)
+	}
+}
+
+func TestEchoOKLearnsEveryRespondingLocalSocket(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	request, err := NewPacket(remote.Address(), local.Address(), VerbEcho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := NewPacket(local.Address(), remote.Address(), VerbOK)
+	if err == nil {
+		err = reply.Append(byte(VerbEcho))
+	}
+	if err == nil {
+		err = reply.AppendUint64(request.PacketID())
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoints := []netip.AddrPort{
+		netip.MustParseAddrPort("198.51.100.46:9993"),
+		netip.MustParseAddrPort("198.51.100.47:9993"),
+	}
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.pending[request.PacketID()] = pendingRequest{
+		verb: VerbEcho, peer: remote.Address(), sentAt: now,
+		path: pathKey{localSocket: AnyLocalSocket, endpoint: endpoints[0]},
+	}
+	for index, endpoint := range endpoints {
+		if err = node.handleOKLocked(int64(index), endpoint, peer, reply, now.Add(time.Duration(index)*time.Millisecond)); err != nil {
+			node.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	_, pending := node.pending[request.PacketID()]
+	pathCount := len(peer.paths)
+	node.mu.Unlock()
+	if !pending || pathCount != len(endpoints) {
+		t.Fatalf("ECHO responses left pending=%t paths=%d", pending, pathCount)
+	}
+}
+
+func TestEchoRateLimitStateIsBoundedAndExpires(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	key, err := remote.Agree(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(local.Address(), remote.Address(), VerbEcho)
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for port := 10000; port < 10000+maxPeerPaths+1; port++ {
+		if err = node.ProcessWirePacket(0, netip.AddrPortFrom(netip.MustParseAddr("198.51.100.46"), uint16(port)), packet.Bytes(), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	count := len(peer.lastEchoRequest)
+	node.mu.Unlock()
+	if count != maxPeerPaths {
+		t.Fatalf("echo rate-limit entries = %d, want %d", count, maxPeerPaths)
+	}
+
+	node.ProcessBackgroundTasks(now.Add(peerGeneralRateLimit))
+	node.mu.Lock()
+	count = len(peer.lastEchoRequest)
+	node.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expired echo rate-limit entries = %d", count)
+	}
+}
+
+func TestBackgroundRemovesUnusedMulticastGatherState(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	now := time.Now()
+	unused := MulticastGroup{MAC: NewMAC(0x01005e000001)}
+	active := MulticastGroup{MAC: NewMAC(0x01005e000002)}
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	network.LastConfigRequest = now
+	network.LastConfigReceive = now
+	network.lastMulticastGather[unused] = now
+	network.lastMulticastGather[active] = now
+	network.multicast[active] = map[Address]time.Time{remote.Address(): now}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	_, unusedKept := network.lastMulticastGather[unused]
+	_, activeKept := network.lastMulticastGather[active]
+	node.mu.Unlock()
+	if unusedKept || !activeKept {
+		t.Fatalf("multicast gather cleanup kept unused=%t active=%t", unusedKept, activeKept)
+	}
+}
+
+func TestWhoisOKRequiresCurrentRoot(t *testing.T) {
+	identity, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	discovered, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbOK)
+	const requestID = uint64(0x0102030405060708)
+	_ = packet.Append(byte(VerbWhois))
+	_ = packet.AppendUint64(requestID)
+	_ = packet.Append(discovered.AppendBinary(nil, false)...)
+
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.root = false
+	node.pending[requestID] = pendingRequest{verb: VerbWhois, peer: remoteIdentity.Address(), sentAt: time.Now()}
+	err = node.handleOKLocked(0, netip.MustParseAddrPort("203.0.113.44:9993"), peer, packet, time.Now())
+	_, learned := node.peers[discovered.Address()]
+	_, pending := node.pending[requestID]
+	node.mu.Unlock()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if learned {
+		t.Fatal("WHOIS response from a former root added a peer")
+	}
+	if pending {
+		t.Fatal("ignored WHOIS response retained its pending request")
+	}
+}
+
+func TestNetworkErrorMustComeFromController(t *testing.T) {
+	identity, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	node.mu.Lock()
+	node.networks[networkID] = newNetwork(networkID)
+	node.networks[networkID].Status = NetworkStatusOK
+	node.mu.Unlock()
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbError)
+	_ = packet.Append(byte(VerbNOP))
+	_ = packet.AppendUint64(1)
+	_ = packet.Append(0x07)
+	_ = packet.AppendUint64(networkID)
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	_ = node.ProcessWirePacket(0, netip.MustParseAddrPort("203.0.113.45:9993"), packet.Bytes(), time.Now())
+	if network, _ := node.Network(networkID); network.Status != NetworkStatusOK {
+		t.Fatalf("untrusted peer changed network status to %d", network.Status)
+	}
+}
+
+func TestRefreshFailedNetworkMakesRepeatedFailureObservable(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	var events []EventType
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			if event.NetworkID == networkID {
+				events = append(events, event.Type)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	node.mu.Lock()
+	if err = node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusAccessDenied
+	network.Authentication = NetworkAuthenticationInfo{AuthenticationURL: "stale"}
+	node.networks[networkID] = network
+	node.unlockAndRunCallbacks()
+
+	refresh := func(authenticationURL string) {
+		t.Helper()
+		if refreshErr := node.RefreshNetwork(networkID); refreshErr != nil {
+			t.Fatalf("RefreshNetwork() error = %v", refreshErr)
+		}
+		snapshot, ok := node.Network(networkID)
+		if !ok || snapshot.Status != NetworkStatusAccessDenied || snapshot.Authentication.AuthenticationURL != authenticationURL {
+			t.Fatalf("network after refresh = %+v, ok=%t", snapshot, ok)
+		}
+	}
+	reject := func() {
+		t.Helper()
+		packet, packetErr := NewPacket(local.Address(), controller.Address(), VerbError)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		_ = packet.Append(byte(VerbNetworkConfigRequest))
+		_ = packet.AppendUint64(1)
+		_ = packet.Append(0x07)
+		_ = packet.AppendUint64(networkID)
+		node.mu.Lock()
+		packetErr = node.handleErrorLocked(node.peers[controller.Address()], packet, time.Now())
+		node.unlockAndRunCallbacks()
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+	}
+
+	refresh("stale")
+	reject()
+	reject()
+	if len(events) != 2 || events[0] != EventNetworkConfigPending || events[1] != EventNetworkAccessDenied {
+		t.Fatalf("events after repeated response = %v", events)
+	}
+	refresh("")
+	reject()
+	if len(events) != 4 || events[2] != EventNetworkConfigPending || events[3] != EventNetworkAccessDenied {
+		t.Fatalf("events after explicit retry = %v", events)
+	}
+
+	node.mu.Lock()
+	peer := node.peers[controller.Address()]
+	peer.paths[pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("198.51.100.30:9993")}] = &peerPathState{lastReceive: time.Now(), priority: 1}
+	node.sender = WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return errors.New("send failed") })
+	node.mu.Unlock()
+	if err = node.RefreshNetwork(networkID); err == nil {
+		t.Fatal("RefreshNetwork() succeeded after a wire send failure")
+	}
+	snapshot, ok := node.Network(networkID)
+	if !ok || snapshot.Status != NetworkStatusAccessDenied {
+		t.Fatalf("network after failed send = %+v, ok=%t", snapshot, ok)
+	}
+	reject()
+	if len(events) != 5 || events[4] != EventNetworkConfigPending {
+		t.Fatalf("events after failed send = %v", events)
+	}
+}
+
+func TestAuthenticationErrorExposesSSOInfo(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	controller, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	var event Event
+	events := 0
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(candidate Event) {
+			if candidate.Type == EventNetworkAuthenticationRequired {
+				event = candidate
+				events++
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, _ := appendDictionaryUint(nil, "aV", 1)
+	auth, _ = appendDictionaryEntry(auth, "iU", []byte("https://issuer.example"))
+	auth, _ = appendDictionaryEntry(auth, "aCID", []byte("client"))
+	node.mu.Lock()
+	_ = node.addPeerLocked(controller, false)
+	node.networks[networkID] = newNetwork(networkID)
+	packet, _ := NewPacket(local.Address(), controller.Address(), VerbError)
+	_ = packet.Append(byte(VerbNOP))
+	_ = packet.AppendUint64(1)
+	_ = packet.Append(0x09)
+	_ = packet.AppendUint64(networkID)
+	_ = packet.AppendUint16(uint16(len(auth)))
+	_ = packet.Append(auth...)
+	err = node.handleErrorLocked(node.peers[controller.Address()], packet, time.Now())
+	node.unlockAndRunCallbacks()
+	if err != nil || events != 1 || event.Authentication.Version != 1 || event.Authentication.IssuerURL != "https://issuer.example" || event.Authentication.ClientID != "client" || event.Authentication.Provider != "default" {
+		t.Fatalf("authentication event=%+v err=%v", event, err)
+	}
+	node.mu.Lock()
+	err = node.handleErrorLocked(node.peers[controller.Address()], packet, time.Now())
+	node.unlockAndRunCallbacks()
+	if err != nil || events != 1 {
+		t.Fatalf("duplicate authentication error emitted %d events: %v", events, err)
+	}
+}
+
+func TestMalformedAuthenticationErrorDoesNotChangeNetworkState(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	controller, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	events := 0
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			if event.Type == EventNetworkAuthenticationRequired {
+				events++
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingURL, _ := appendDictionaryUint(nil, "aV", 0)
+	unknownVersion, _ := appendDictionaryUint(nil, "aV", 2)
+	tests := []struct {
+		name string
+		auth []byte
+	}{
+		{name: "truncated", auth: []byte{0, 2, 'x'}},
+		{name: "v0-missing-url", auth: binary.BigEndian.AppendUint16(nil, uint16(len(missingURL)))},
+		{name: "unknown-version", auth: binary.BigEndian.AppendUint16(nil, uint16(len(unknownVersion)))},
+	}
+	tests[1].auth = append(tests[1].auth, missingURL...)
+	tests[2].auth = append(tests[2].auth, unknownVersion...)
+
+	node.mu.Lock()
+	_ = node.addPeerLocked(controller, false)
+	peer := node.peers[controller.Address()]
+	for _, test := range tests {
+		network := newNetwork(networkID)
+		node.networks[networkID] = network
+		packet, _ := NewPacket(local.Address(), controller.Address(), VerbError)
+		_ = packet.Append(byte(VerbNOP))
+		_ = packet.AppendUint64(1)
+		_ = packet.Append(0x09)
+		_ = packet.AppendUint64(networkID)
+		_ = packet.Append(test.auth...)
+		if err = node.handleErrorLocked(peer, packet, time.Now()); err != nil {
+			node.mu.Unlock()
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if network.Status != NetworkStatusRequestingConfiguration {
+			node.mu.Unlock()
+			t.Fatalf("%s changed network status to %d", test.name, network.Status)
+		}
+	}
+	node.unlockAndRunCallbacks()
+	if events != 0 {
+		t.Fatalf("malformed authentication errors emitted %d events", events)
+	}
+}
+
+func TestTruncatedErrorDoesNotRefreshPeerOrConsumePendingRequest(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	const packetID = uint64(0x0102030405060708)
+	node.mu.Lock()
+	node.pending[packetID] = pendingRequest{verb: VerbFrame, peer: remote.Address(), sentAt: time.Now()}
+	node.mu.Unlock()
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.Append(byte(VerbFrame))
+	_ = packet.AppendUint64(packetID)
+	_ = packet.Append(0x06) // NEED_MEMBERSHIP_CERTIFICATE requires a network ID.
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.60:9993"), packet.Bytes(), time.Now()); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("truncated ERROR result = %v", err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	_, pending := node.pending[packetID]
+	node.mu.Unlock()
+	if !lastReceive.IsZero() || !pending {
+		t.Fatalf("truncated ERROR changed state: last=%v pending=%t", lastReceive, pending)
+	}
+}
+
+func TestAuthenticatedUnwantedUnicastErrorStillRefreshesPeer(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbError)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.Append(byte(VerbMulticastFrame))
+	_ = packet.AppendUint64(1)
+	_ = packet.Append(0x08)
+	_ = packet.AppendUint64(networkID)
+	unicast := NewMAC(0x020000000001).Bytes()
+	_ = packet.Append(unicast[:]...)
+	_ = packet.AppendUint32(0)
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.62:9993"), packet.Bytes(), now); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	node.mu.Unlock()
+	if !lastReceive.Equal(now) {
+		t.Fatalf("authenticated unwanted-unicast last receive = %v, want %v", lastReceive, now)
+	}
+}
+
+func TestAuthenticatedInvalidNetworkConfigStillRefreshesPeer(t *testing.T) {
+	local, remote, node, _ := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	node.mu.Lock()
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+	packet, err := NewPacket(local.Address(), remote.Address(), VerbNetworkConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint64(networkID)
+	_ = packet.AppendUint16(0) // Unsigned legacy chunks are controller-only.
+	key, err := local.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.61:9993"), packet.Bytes(), now); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("invalid config result = %v", err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	node.mu.Unlock()
+	if !lastReceive.Equal(now) {
+		t.Fatalf("authenticated config last receive = %v, want %v", lastReceive, now)
+	}
+}
+
+func TestRootIdentityCollisionErrorIsFatal(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fatal Event
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			if event.Type == EventNodeIdentityCollision {
+				fatal = event
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	var root *peer
+	for _, candidate := range node.peers {
+		if candidate.root {
+			root = candidate
+			break
+		}
+	}
+	if root == nil {
+		node.mu.Unlock()
+		t.Fatal("default planet has no root")
+	}
+	packet, _ := NewPacket(identity.Address(), root.identity.Address(), VerbError)
+	_ = packet.Append(byte(VerbHello))
+	_ = packet.AppendUint64(0x0102030405060708)
+	_ = packet.Append(0x04)
+	err = node.handleErrorLocked(root, packet, time.Now())
+	node.unlockAndRunCallbacks()
+	if !errors.Is(err, ErrIdentityCollision) || fatal.Type != EventNodeIdentityCollision || fatal.NodeAddress != identity.Address() {
+		t.Fatalf("collision error=%v event=%+v", err, fatal)
+	}
+}
+
+func TestUserMessageAndRemoteTraceCallbacks(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	remote, _ := GenerateIdentity()
+	var message UserMessage
+	var traces []RemoteTrace
+	var node *Node
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnUserMessage: func(value UserMessage) {
+			_ = node.Peers()
+			message = value
+		},
+		OnRemoteTrace: func(value RemoteTrace) {
+			_ = node.Peers()
+			traces = append(traces, value)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_ = node.addPeerLocked(remote, false)
+	node.mu.Unlock()
+	key, _ := remote.Agree(local)
+	userPacket, _ := NewPacket(local.Address(), remote.Address(), VerbUserMessage)
+	_ = userPacket.AppendUint64(0x123456789abcdef0)
+	_ = userPacket.Append([]byte("payload")...)
+	_ = userPacket.Armor(key[:], true)
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.40:9993"), userPacket.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	tracePacket, _ := NewPacket(local.Address(), remote.Address(), VerbRemoteTrace)
+	_ = tracePacket.Append([]byte("first\x00second\x00unterminated")...)
+	_ = tracePacket.Armor(key[:], true)
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.40:9993"), tracePacket.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if message.Origin != remote.Address() || message.TypeID != 0x123456789abcdef0 || string(message.Data) != "payload" || len(traces) != 2 || traces[0].Data != "first" || traces[1].Data != "second" {
+		t.Fatalf("message=%+v traces=%+v", message, traces)
+	}
+}
+
+func TestUnknownUserMessageRetriesWhoisAndFlushesWhenPeerIsLearned(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootEndpoint := activateTestRootPath(t, node, time.Now())
+	if err = node.SendUserMessage(remote.Address(), 0x123456789abcdef0, []byte("queued")); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	firstWhois := node.pendingWhois[remote.Address()]
+	queued := len(node.pendingUserMessages[remote.Address()])
+	node.mu.Unlock()
+	if firstWhois.IsZero() || queued != 1 {
+		t.Fatalf("unknown message was not queued with WHOIS: requested=%v queued=%d", firstWhois, queued)
+	}
+	node.ProcessBackgroundTasks(firstWhois.Add(whoisRetryPeriod + time.Millisecond))
+	node.mu.Lock()
+	secondWhois := node.pendingWhois[remote.Address()]
+	node.mu.Unlock()
+	if !secondWhois.After(firstWhois) {
+		t.Fatalf("WHOIS was not retried: first=%v second=%v", firstWhois, secondWhois)
+	}
+
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+	if len(sent) < 2 {
+		t.Fatalf("queued message was not sent after learning peer: packets=%d", len(sent))
+	}
+	wirePacket := sent[len(sent)-1]
+	if wirePacket.remote != rootEndpoint {
+		t.Fatalf("queued message relay endpoint = %s, want %s", wirePacket.remote, rootEndpoint)
+	}
+	packet, err := ParsePacket(wirePacket.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := remote.Agree(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Dearmor(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Uncompress(); err != nil {
+		t.Fatal(err)
+	}
+	payload := packet.Payload()
+	if packet.Verb() != VerbUserMessage || len(payload) != 14 || binary.BigEndian.Uint64(payload) != 0x123456789abcdef0 || string(payload[8:]) != "queued" {
+		t.Fatalf("flushed user message: verb=%d payload=%x", packet.Verb(), payload)
+	}
+	node.mu.Lock()
+	queued = len(node.pendingUserMessages[remote.Address()])
+	_, pendingWhois := node.pendingWhois[remote.Address()]
+	node.mu.Unlock()
+	if queued != 0 || pendingWhois {
+		t.Fatalf("learned peer retained pending state: queued=%d whois=%t", queued, pendingWhois)
+	}
+}
+
+func TestKnownPeerPacketWaitsForUsablePath(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.planet.Roots = nil
+	node.mu.Unlock()
+	if err = node.SendUserMessage(remote.Address(), 1, []byte("queued for path")); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	queued := len(node.pendingTransmits)
+	node.mu.Unlock()
+	if queued != 1 || len(sent) != 0 {
+		t.Fatalf("initial send: queued=%d sent=%d", queued, len(sent))
+	}
+
+	now := time.Now()
+	endpoint := netip.MustParseAddrPort("198.51.100.70:9993")
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[pathKey{localSocket: 4, endpoint: endpoint}] = &peerPathState{lastReceive: now, priority: 1}
+	peer.lastReceive = now
+	node.lastRootContact = now
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	queued = len(node.pendingTransmits)
+	node.mu.Unlock()
+	if queued != 0 || len(sent) == 0 || sent[0].remote != endpoint {
+		t.Fatalf("retried send: queued=%d sent=%d packets=%v", queued, len(sent), sent)
+	}
+}
+
+func TestPendingTransmitQueueOverwritesAndExpires(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.planet.Roots = nil
+	var firstPacketID, lastPacketID uint64
+	for i := 0; i < maxPendingTransmits+1; i++ {
+		packet, packetErr := NewPacket(remote.Address(), local.Address(), VerbUserMessage)
+		if packetErr != nil {
+			node.mu.Unlock()
+			t.Fatal(packetErr)
+		}
+		_ = packet.Append(byte(i))
+		if i == 0 {
+			firstPacketID = packet.PacketID()
+		}
+		lastPacketID = packet.PacketID()
+		if sendErr := node.sendPacketLocked(node.peers[remote.Address()], packet, true); sendErr != nil {
+			node.mu.Unlock()
+			t.Fatal(sendErr)
+		}
+	}
+	queued := len(node.pendingTransmits)
+	oldestID := node.pendingTransmits[0].packet.PacketID()
+	newestID := node.pendingTransmits[len(node.pendingTransmits)-1].packet.PacketID()
+	createdAt := node.pendingTransmits[0].createdAt
+	node.lastRootContact = createdAt.Add(pendingTransmitExpiration + time.Second)
+	node.mu.Unlock()
+	if queued != maxPendingTransmits || oldestID == firstPacketID || newestID != lastPacketID {
+		t.Fatalf("pending transmit ring: queued=%d oldest=%x first=%x newest=%x last=%x", queued, oldestID, firstPacketID, newestID, lastPacketID)
+	}
+	node.ProcessBackgroundTasks(createdAt.Add(pendingTransmitExpiration + time.Second))
+	node.mu.Lock()
+	queued = len(node.pendingTransmits)
+	node.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("expired pending transmits = %d", queued)
+	}
+}
+
+func TestPeerDiscoveryRetriesOnlyMatchingPendingTransmits(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	firstEndpoint := netip.MustParseAddrPort("198.51.100.101:9993")
+	secondEndpoint := netip.MustParseAddrPort("198.51.100.102:9993")
+	node.mu.Lock()
+	if err = node.addPeerLocked(first, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	if err = node.addPeerLocked(second, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.addPeerPathLocked(node.peers[first.Address()], pathKey{endpoint: firstEndpoint}, &peerPathState{lastReceive: now, priority: 1}, now)
+	node.addPeerPathLocked(node.peers[second.Address()], pathKey{endpoint: secondEndpoint}, &peerPathState{lastReceive: now, priority: 1}, now)
+	for _, destination := range []Address{first.Address(), second.Address()} {
+		packet, packetErr := NewPacket(destination, local.Address(), VerbUserMessage)
+		if packetErr != nil {
+			node.mu.Unlock()
+			t.Fatal(packetErr)
+		}
+		node.enqueuePendingTransmitLocked(packet, true, noFlowID, now)
+	}
+	node.flushPeerQueuesLocked(first.Address(), now)
+	queued := append([]pendingTransmit(nil), node.pendingTransmits...)
+	node.mu.Unlock()
+	if len(sent) != 1 || sent[0].remote != firstEndpoint {
+		t.Fatalf("peer wakeup sent packets = %+v, want only %s", sent, firstEndpoint)
+	}
+	if len(queued) != 1 || queued[0].packet.Destination() != second.Address() {
+		t.Fatalf("pending transmits after peer wakeup = %+v, want only %s", queued, second.Address())
+	}
+}
+
+func TestPendingTransmitSendFailureClearsRequestTracking(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("send failed")
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error {
+			return wantErr
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	packet, packetErr := NewPacket(remote.Address(), local.Address(), VerbExtFrame)
+	if packetErr != nil {
+		node.mu.Unlock()
+		t.Fatal(packetErr)
+	}
+	request := pendingRequest{verb: VerbExtFrame, peer: remote.Address(), sentAt: now}
+	node.pending[packet.PacketID()] = request
+	node.enqueuePendingTransmitLocked(packet, true, noFlowID, now)
+	endpoint := netip.MustParseAddrPort("198.51.100.103:9993")
+	node.addPeerPathLocked(node.peers[remote.Address()], pathKey{endpoint: endpoint}, &peerPathState{lastReceive: now, priority: 1}, now)
+	node.retryPendingTransmitsLocked(remote.Address(), now)
+	queued, pending := len(node.pendingTransmits), len(node.pending)
+	node.mu.Unlock()
+	if queued != 0 || pending != 0 {
+		t.Fatalf("failed deferred send retained queued=%d pending=%d", queued, pending)
+	}
+}
+
+func TestWhoisRequestForUnknownIdentityIsForwardedUpstream(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateTestRootPath(t, node, time.Now())
+	node.mu.Lock()
+	if err = node.addPeerLocked(requester, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	request, err := NewPacket(local.Address(), requester.Address(), VerbWhois)
+	if err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	rawAddress := unknown.Address().Bytes()
+	_ = request.Append(rawAddress[:]...)
+	err = node.handleWhoisLocked(0, netip.MustParseAddrPort("198.51.100.10:9993"), node.peers[requester.Address()], request, time.Now())
+	requestedAt := node.pendingWhois[unknown.Address()]
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requestedAt.IsZero() {
+		t.Fatal("unknown WHOIS request was not forwarded to an upstream root")
+	}
+}
+
+func TestPendingUnknownPacketsAreBoundedAndExpired(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for i := 1; i <= maxPendingIncomingPackets+8; i++ {
+		packet, packetErr := NewPacket(identity.Address(), NewAddress(uint64(i)), VerbFrame)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		_ = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.2:9993"), packet.Bytes(), now)
+	}
+	node.mu.Lock()
+	count := node.pendingIncomingCountLocked()
+	node.mu.Unlock()
+	if count != maxPendingIncomingPackets {
+		t.Fatalf("pending unknown packet count = %d", count)
+	}
+	node.ProcessBackgroundTasks(now.Add(pendingIncomingExpiration + time.Second))
+	node.mu.Lock()
+	count = node.pendingIncomingCountLocked()
+	node.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("expired unknown packets retained: %d", count)
+	}
+}
+
+func TestSingleUnknownPeerCanUseEntireIncomingQueue(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	now := time.Now()
+	endpoint := netip.MustParseAddrPort("198.51.100.2:9993")
+	for index := 0; index < maxPendingIncomingPackets; index++ {
+		packet, packetErr := NewPacket(local.Address(), remote.Address(), VerbFrame)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		_ = node.ProcessWirePacket(0, endpoint, packet.Bytes(), now)
+	}
+	node.mu.Lock()
+	queued := len(node.pendingIncoming[remote.Address()])
+	node.mu.Unlock()
+	if queued != maxPendingIncomingPackets {
+		t.Fatalf("single-peer pending packet count = %d, want %d", queued, maxPendingIncomingPackets)
+	}
+}
+
+func TestPushDirectPathsOnlyStartsProbe(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(remoteIdentity, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbPushDirectPaths)
+	_ = packet.AppendUint16(1)
+	_ = packet.Append(0)
+	_ = packet.AppendUint16(0)
+	_ = packet.Append(4, 6, 203, 0, 113, 20)
+	_ = packet.AppendUint16(29993)
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	incoming := netip.MustParseAddrPort("198.51.100.1:9993")
+	if err := node.ProcessWirePacket(0, incoming, packet.Bytes(), time.Unix(1700000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if paths := peerPaths(node, remoteIdentity.Address()); len(paths) != 0 {
+		t.Fatalf("pushed endpoint was trusted without confirmation: %+v", paths)
+	}
+	wanted := netip.MustParseAddrPort("203.0.113.20:29993")
+	found := false
+	for _, packet := range sent {
+		if packet.remote == wanted {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("pushed endpoint was not probed: sent=%+v", sent)
+	}
+}
+
+func TestPushDirectPathsDoesNotReprobeUnexpiredAuthenticatedPath(t *testing.T) {
+	_, remote, node, sent := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	endpoint := netip.MustParseAddrPort("203.0.113.21:29993")
+	packet, err := NewPacket(node.Address(), remote.Address(), VerbPushDirectPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint16(1)
+	appendPushedIPv4(packet, 0, endpoint)
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	stalePhysicalReceive := now.Add(-peerPathActiveTime - time.Second)
+	node.addPeerPathLocked(peer, pathKey{localSocket: 3, endpoint: endpoint}, &peerPathState{lastReceive: stalePhysicalReceive}, stalePhysicalReceive)
+	err = node.handlePushDirectPathsLocked(3, netip.MustParseAddrPort("198.51.100.1:9993"), peer, packet, now)
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("unexpired authenticated path was reprobed %d times", len(*sent))
+	}
+}
+
+func TestPathProbeProtocolCompatibility(t *testing.T) {
+	tests := []struct {
+		name       string
+		protocol   uint8
+		major      uint8
+		minor      uint8
+		revision   uint16
+		wantVerb   Verb
+		wantCipher Cipher
+	}{
+		{name: "unknown", wantVerb: VerbHello, wantCipher: CipherSuiteC25519Poly1305None},
+		{name: "protocol-4", protocol: 4, wantVerb: VerbHello, wantCipher: CipherSuiteC25519Poly1305None},
+		{name: "protocol-5", protocol: 5, wantVerb: VerbEcho, wantCipher: CipherSuiteC25519Poly1305Salsa2012},
+		{name: "protocol-11", protocol: 11, wantVerb: VerbEcho, wantCipher: CipherSuiteC25519Poly1305Salsa2012},
+		{name: "protocol-12", protocol: 12, wantVerb: VerbEcho, wantCipher: CipherSuiteAESGMACSIV},
+		{name: "protocol-13", protocol: 13, wantVerb: VerbEcho, wantCipher: CipherSuiteAESGMACSIV},
+		{name: "one-1.1.0", protocol: 13, major: 1, minor: 1, wantVerb: VerbHello, wantCipher: CipherSuiteC25519Poly1305None},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity, remote, node, sent := newTestNodeWithPeer(t)
+			endpoint := netip.MustParseAddrPort("203.0.113.21:29993")
+			node.mu.Lock()
+			peer := node.peers[remote.Address()]
+			peer.protocol, peer.major, peer.minor, peer.revision = test.protocol, test.major, test.minor, test.revision
+			err := node.sendPathProbeLocked(peer, 3, endpoint, time.Now())
+			node.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(*sent) != 1 {
+				t.Fatalf("path probe packets = %d", len(*sent))
+			}
+			packet, err := ParsePacket((*sent)[0].data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if packet.Cipher() != test.wantCipher {
+				t.Fatalf("path probe cipher = %d, want %d", packet.Cipher(), test.wantCipher)
+			}
+			key, err := identity.Agree(remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = packet.Dearmor(key[:]); err != nil {
+				t.Fatal(err)
+			}
+			if packet.Verb() != test.wantVerb {
+				t.Fatalf("path probe verb = %d, want %d", packet.Verb(), test.wantVerb)
+			}
+		})
+	}
+}
+
+func TestPushDirectPathsAcceptsMoreThanPeerPathCapacity(t *testing.T) {
+	_, remote, node, sent := newTestNodeWithPeer(t)
+	packet, _ := NewPacket(node.Address(), remote.Address(), VerbPushDirectPaths)
+	const count = maxPeerPaths + 1
+	_ = packet.AppendUint16(count)
+	for port := 20000; port < 20000+count; port++ {
+		appendPushedIPv4(packet, 0, netip.AddrPortFrom(netip.MustParseAddr("203.0.113.1"), uint16(port)))
+	}
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	err := node.handlePushDirectPathsLocked(3, netip.MustParseAddrPort("198.51.100.1:9993"), peer, packet, time.Now())
+	node.mu.Unlock()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != maxPushedPathsPerScopeAndFamily {
+		t.Fatalf("path probes = %d, want per-scope limit %d", len(*sent), maxPushedPathsPerScopeAndFamily)
+	}
+}
+
+func TestClusterRedirectsBypassOrdinaryScopeLimitAndUseHello(t *testing.T) {
+	identity, remote, node, sent := newTestNodeWithPeer(t)
+	packet, err := NewPacket(identity.Address(), remote.Address(), VerbPushDirectPaths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = maxPushedPathsPerScopeAndFamily + 1
+	_ = packet.AppendUint16(count)
+	for port := 20000; port < 20000+count; port++ {
+		appendPushedIPv4(packet, 0x02, netip.AddrPortFrom(netip.MustParseAddr("203.0.113.1"), uint16(port)))
+	}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.protocol = ProtocolVersion
+	err = node.handlePushDirectPathsLocked(3, netip.MustParseAddrPort("198.51.100.1:9993"), peer, packet, time.Now())
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != count {
+		t.Fatalf("cluster redirect probes = %d, want %d", len(*sent), count)
+	}
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wire := range *sent {
+		probe, parseErr := ParsePacket(wire.data)
+		if parseErr != nil || probe.Dearmor(key[:]) != nil || probe.Verb() != VerbHello {
+			t.Fatalf("cluster redirect probe to %s is not a HELLO", wire.remote)
+		}
+	}
+}
+
+func TestExpiredPathProbesDoNotExhaustCapacity(t *testing.T) {
+	_, remote, node, sent := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	for port := 20000; port < 20000+maxPeerPaths; port++ {
+		key := pathKey{localSocket: 3, endpoint: netip.AddrPortFrom(netip.MustParseAddr("203.0.113.1"), uint16(port))}
+		peer.pathProbe[key] = now.Add(-peerPathProbeWindow - time.Millisecond)
+	}
+	endpoint := netip.MustParseAddrPort("203.0.113.2:29993")
+	err := node.sendPathProbeLocked(peer, 3, endpoint, now)
+	_, probing := peer.pathProbe[pathKey{localSocket: 3, endpoint: endpoint}]
+	probeCount := len(peer.pathProbe)
+	node.mu.Unlock()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probing || probeCount != 1 {
+		t.Fatalf("path probes = %d, new endpoint present = %t", probeCount, probing)
+	}
+	if len(*sent) != 1 || (*sent)[0].remote != endpoint {
+		t.Fatalf("sent path probes = %+v", *sent)
+	}
+}
+
+func TestRecentPathProbeSuppressesDuplicate(t *testing.T) {
+	_, remote, node, sent := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	endpoint := netip.MustParseAddrPort("203.0.113.2:29993")
+
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.pathProbe[pathKey{localSocket: 3, endpoint: endpoint}] = now.Add(-peerPathProbeWindow)
+	err := node.sendPathProbeLocked(peer, 3, endpoint, now)
+	node.mu.Unlock()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("duplicate path probe packets = %d", len(*sent))
+	}
+}
+
+func TestFailedPathProbeCanRetryImmediately(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	endpoint := netip.MustParseAddrPort("203.0.113.2:29993")
+	wantErr := errors.New("send failed")
+	attempts := 0
+
+	node.mu.Lock()
+	node.sender = WireSenderFunc(func(_ int64, _ netip.AddrPort, _ []byte) error {
+		attempts++
+		if attempts == 1 {
+			return wantErr
+		}
+		return nil
+	})
+	peer := node.peers[remote.Address()]
+	peer.protocol = 5
+	firstErr := node.sendPathProbeLocked(peer, 3, endpoint, now)
+	_, retainedAfterFailure := peer.pathProbe[pathKey{localSocket: 3, endpoint: endpoint}]
+	secondErr := node.sendPathProbeLocked(peer, 3, endpoint, now)
+	node.mu.Unlock()
+
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first path probe error = %v", firstErr)
+	}
+	if retainedAfterFailure {
+		t.Fatal("failed path probe retained its duplicate-suppression entry")
+	}
+	if secondErr != nil || attempts != 2 {
+		t.Fatalf("immediate retry = %v, attempts = %d", secondErr, attempts)
+	}
+}
+
+func TestHelloProtocolRange(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol byte
+		accepted bool
+	}{
+		{name: "below-minimum", protocol: ProtocolVersionMin - 1},
+		{name: "minimum", protocol: ProtocolVersionMin, accepted: true},
+		{name: "current", protocol: ProtocolVersion, accepted: true},
+		{name: "future", protocol: ProtocolVersion + 1, accepted: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			local, err := ParseIdentity(knownGoodIdentity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			remote, err := GenerateIdentity()
+			if err != nil {
+				t.Fatal(err)
+			}
+			node, err := NewNode(NodeConfig{
+				Identity: local,
+				Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			packet, err := NewPacket(local.Address(), remote.Address(), VerbHello)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = packet.Append(test.protocol, NodeVersionMajor, NodeVersionMinor)
+			_ = packet.AppendUint16(NodeVersionRevision)
+			_ = packet.AppendUint64(uint64(time.Now().UnixMilli()))
+			_ = packet.Append(remote.AppendBinary(nil, false)...)
+			key, err := local.Agree(remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = packet.Armor(key[:], false); err != nil {
+				t.Fatal(err)
+			}
+			err = node.ProcessWirePacket(0, netip.MustParseAddrPort("192.0.2.1:9993"), packet.Bytes(), time.Now())
+			if test.accepted {
+				if err != nil {
+					t.Fatal(err)
+				}
+				node.mu.Lock()
+				protocol := node.peers[remote.Address()].protocol
+				node.mu.Unlock()
+				if protocol != test.protocol {
+					t.Fatalf("stored peer protocol = %d, want %d", protocol, test.protocol)
+				}
+			} else if !errors.Is(err, ErrInvalidPacket) {
+				t.Fatalf("protocol %d error = %v, want ErrInvalidPacket", test.protocol, err)
+			}
+		})
+	}
+}
+
+func TestNetworkSpecialistIsContactedThroughRoot(t *testing.T) {
+	_, specialist, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{
+		NetworkID: networkID,
+		Specialists: []uint64{
+			specialistTypeNetworkRelay | specialist.Address().Uint64(),
+		},
+	}
+	now := time.Now()
+	activateTestRootPath(t, node, now)
+	node.mu.Lock()
+	node.contactNetworkSpecialistsLocked(network, now)
+	first := len(*sent)
+	node.contactNetworkSpecialistsLocked(network, now.Add(rootContactPeriod))
+	second := len(*sent)
+	node.mu.Unlock()
+	if first != 1 || second != 2 {
+		t.Fatalf("specialist contact packets first=%d second=%d", first, second)
+	}
+	packet, err := ParsePacket((*sent)[0].data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.Destination() != specialist.Address() {
+		t.Fatalf("specialist HELLO destination = %s", packet.Destination())
+	}
+}
+
+func TestRootFullHelloProbesKnownPathAndMissingAddressFamily(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stableV4 := netip.MustParseAddrPort("192.0.2.10:9993")
+	stableV6 := netip.MustParseAddrPort("[2001:db8::10]:9993")
+	knownV4 := netip.MustParseAddrPort("198.51.100.10:9993")
+	planet := World{
+		Type: WorldTypePlanet, ID: 1, Timestamp: 1, UpdatesMustBeSignedBy: root.PublicKey(),
+		Roots: []WorldRoot{{Identity: root, Endpoints: []netip.AddrPort{stableV4, stableV6}}},
+	}
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local, Planet: &planet,
+		Sender: WireSenderFunc(func(_ int64, endpoint netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: endpoint, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	node.mu.Lock()
+	peer := node.peers[root.Address()]
+	peer.lastReceive = now
+	peer.lastFullHello = now.Add(-rootPathPingPeriod - time.Second)
+	peer.paths[pathKey{localSocket: 7, endpoint: knownV4}] = &peerPathState{lastReceive: now, lastSend: now, priority: 1}
+	node.lastRootContact = now.Add(-rootContactPeriod)
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	foundKnownV4, foundStableV4, foundStableV6 := false, false, false
+	for _, packet := range sent {
+		foundKnownV4 = foundKnownV4 || packet.remote == knownV4
+		foundStableV4 = foundStableV4 || packet.remote == stableV4
+		foundStableV6 = foundStableV6 || packet.remote == stableV6
+	}
+	if !foundKnownV4 || foundStableV4 || !foundStableV6 {
+		t.Fatalf("root HELLO destinations known-v4=%t stable-v4=%t stable-v6=%t", foundKnownV4, foundStableV4, foundStableV6)
+	}
+}
+
+func TestRootKnownStalePathUsesOfficialRoleGate(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable := netip.MustParseAddrPort("192.0.2.10:9993")
+	planet := World{
+		Type: WorldTypePlanet, ID: 1, Timestamp: 1, UpdatesMustBeSignedBy: root.PublicKey(),
+		Roots: []WorldRoot{{Identity: root, Endpoints: []netip.AddrPort{stable}}},
+	}
+	var sent int
+	node, err := NewNode(NodeConfig{
+		Identity: local, Planet: &planet,
+		Sender: WireSenderFunc(func(_ int64, _ netip.AddrPort, _ []byte) error {
+			sent++
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0)
+	node.mu.Lock()
+	peer := node.peers[root.Address()]
+	peer.lastReceive = now
+	peer.lastFullHello = now.Add(-rootPathPingPeriod / 2)
+	peer.paths[pathKey{localSocket: 7, endpoint: stable}] = &peerPathState{
+		lastReceive: now.Add(-peerPathActiveTime - time.Second), priority: 1,
+	}
+	node.lastRootContact = now.Add(-rootContactPeriod)
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	if sent != 0 {
+		t.Fatalf("root with a retained path was contacted %d times before its role gate expired", sent)
+	}
+}
+
+func TestNetworkSpecialistDirectPathIsKeptAliveWithoutNetworkTraffic(t *testing.T) {
+	_, specialist, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	endpoint := netip.MustParseAddrPort("198.51.100.54:9993")
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{
+		NetworkID:   networkID,
+		Specialists: []uint64{specialistTypeNetworkRelay | specialist.Address().Uint64()},
+	}
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[specialist.Address()]
+	peer.protocol = ProtocolVersion
+	peer.lastReceive = now
+	peer.lastFullHello = now.Add(-2*peerPathPingPeriod - time.Second)
+	lastProbe := now.Add(-peerPathPingPeriod)
+	peer.paths[pathKey{localSocket: 4, endpoint: endpoint}] = &peerPathState{
+		lastReceive: now, lastSend: lastProbe, lastProbe: lastProbe, priority: 1,
+	}
+	node.contactNetworkSpecialistsLocked(network, now)
+	got := peer.paths[pathKey{localSocket: 4, endpoint: endpoint}].lastProbe
+	node.mu.Unlock()
+	if !got.Equal(now) {
+		t.Fatalf("specialist direct path probe = %v, want %v", got, now)
+	}
+	peerPackets := 0
+	for _, packet := range *sent {
+		if packet.remote == endpoint {
+			peerPackets++
+		}
+	}
+	if peerPackets != 1 {
+		t.Fatalf("specialist direct path packets = %d, want 1", peerPackets)
+	}
+}
+
+func TestNetworkSpecialistRelayContactDoesNotDelayNextAttempt(t *testing.T) {
+	_, specialist, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	endpoint := netip.MustParseAddrPort("198.51.100.55:9993")
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{
+		NetworkID:   networkID,
+		Specialists: []uint64{specialistTypeNetworkRelay | specialist.Address().Uint64()},
+	}
+	now := time.Now()
+	activateTestRootPath(t, node, now)
+	node.mu.Lock()
+	peer := node.peers[specialist.Address()]
+	peer.protocol = ProtocolVersion
+	peer.lastReceive = now
+	peer.lastFullHello = now.Add(-2*peerPathPingPeriod - time.Second)
+	peer.paths[pathKey{localSocket: 4, endpoint: endpoint}] = &peerPathState{
+		lastReceive: now, lastSend: now, lastProbe: now, priority: 1,
+	}
+	node.contactNetworkSpecialistsLocked(network, now)
+	node.contactNetworkSpecialistsLocked(network, now.Add(rootContactPeriod))
+	node.mu.Unlock()
+
+	rootRelays := 0
+	for _, packet := range *sent {
+		if packet.remote != endpoint {
+			rootRelays++
+		}
+	}
+	if rootRelays != 2 {
+		t.Fatalf("specialist relay contacts = %d, want 2", rootRelays)
+	}
+}
+
+func TestNetworkSpecialistRemainsAlwaysContactAfterConfigFailure(t *testing.T) {
+	_, specialist, node, _ := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusAuthenticationRequired
+	network.Config = NetworkConfigData{
+		NetworkID:   networkID,
+		Specialists: []uint64{specialistTypeNetworkRelay | specialist.Address().Uint64()},
+	}
+	node.networks[networkID] = network
+	_, present := node.networkSpecialistAddressesLocked()[specialist.Address()]
+	node.mu.Unlock()
+	if !present {
+		t.Fatal("specialist from retained network configuration was not kept in the always-contact set")
+	}
+}
+
+func TestRendezvousPunchConfirmsDirectPath(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	root, _ := GenerateIdentity()
+	target, _ := GenerateIdentity()
+	type wirePacket struct {
+		remote netip.AddrPort
+		data   []byte
+	}
+	var sent []wirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, wirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_ = node.addPeerLocked(root, true)
+	_ = node.addPeerLocked(target, false)
+	node.peers[target.Address()].protocol = ProtocolVersion
+	node.mu.Unlock()
+	endpoint := netip.MustParseAddrPort("203.0.113.20:29993")
+	rendezvous, _ := NewPacket(local.Address(), root.Address(), VerbRendezvous)
+	_ = rendezvous.Append(0)
+	targetAddress := target.Address().Bytes()
+	_ = rendezvous.Append(targetAddress[:]...)
+	_ = rendezvous.AppendUint16(endpoint.Port())
+	_ = rendezvous.Append(4)
+	ip := endpoint.Addr().As4()
+	_ = rendezvous.Append(ip[:]...)
+	rootKey, _ := root.Agree(local)
+	if err = rendezvous.Armor(rootKey[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(7, netip.MustParseAddrPort("198.51.100.1:9993"), rendezvous.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	targetKey, _ := target.Agree(local)
+	var probeID uint64
+	foundJunk := false
+	for _, wire := range sent {
+		if wire.remote != endpoint {
+			continue
+		}
+		if len(wire.data) == 4 {
+			foundJunk = true
+			continue
+		}
+		packet, parseErr := ParsePacket(wire.data)
+		if parseErr == nil && packet.Dearmor(targetKey[:]) == nil && packet.Verb() == VerbEcho {
+			probeID = packet.PacketID()
+		}
+	}
+	if !foundJunk || probeID == 0 {
+		t.Fatalf("rendezvous did not send NAT-opening junk and authenticated probe: junk=%t probe=%x", foundJunk, probeID)
+	}
+	reply, _ := NewPacket(local.Address(), target.Address(), VerbOK)
+	_ = reply.Append(byte(VerbEcho))
+	_ = reply.AppendUint64(probeID)
+	if err = reply.Armor(targetKey[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(7, endpoint, reply.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	paths := peerPaths(node, target.Address())
+	if len(paths) != 1 || paths[0].LocalSocket != 7 || paths[0].Endpoint != endpoint {
+		t.Fatalf("confirmed rendezvous path = %+v", paths)
+	}
+}
+
+func TestRendezvousInvalidEndpointAndTruncation(t *testing.T) {
+	local, root, node, sent := newTestNodeWithPeer(t)
+	target, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	node.peers[root.Address()].root = true
+	if err = node.addPeerLocked(target, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+	key, err := local.Agree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := netip.MustParseAddrPort("198.51.100.64:9993")
+
+	zeroPort, _ := NewPacket(local.Address(), root.Address(), VerbRendezvous)
+	_ = zeroPort.Append(0)
+	targetAddress := target.Address().Bytes()
+	_ = zeroPort.Append(targetAddress[:]...)
+	_ = zeroPort.AppendUint16(0)
+	_ = zeroPort.Append(4, 203, 0, 113, 64)
+	if err = zeroPort.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = node.ProcessWirePacket(0, remote, zeroPort.Bytes(), now); err != nil {
+		t.Fatalf("zero-port rendezvous: %v", err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[root.Address()].lastReceive
+	node.peers[root.Address()].lastReceive = time.Time{}
+	node.mu.Unlock()
+	for _, packet := range *sent {
+		if packet.remote.Port() == 0 {
+			t.Fatalf("zero-port rendezvous sent a packet to %s", packet.remote)
+		}
+	}
+	if !lastReceive.Equal(now) {
+		t.Fatalf("zero-port rendezvous last receive = %v, want %v", lastReceive, now)
+	}
+
+	truncated, _ := NewPacket(local.Address(), root.Address(), VerbRendezvous)
+	_ = truncated.Append(0)
+	if err = truncated.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(0, remote, truncated.Bytes(), now.Add(time.Second)); !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("truncated rendezvous result = %v", err)
+	}
+	node.mu.Lock()
+	lastReceive = node.peers[root.Address()].lastReceive
+	node.mu.Unlock()
+	if !lastReceive.IsZero() {
+		t.Fatalf("truncated rendezvous refreshed root at %v", lastReceive)
+	}
+}
+
+func TestPushDirectPathsForgetDoesNotDeleteAuthenticatedPath(t *testing.T) {
+	identity, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := netip.MustParseAddrPort("203.0.113.20:29993")
+	now := time.Unix(1700000000, 0)
+	node.mu.Lock()
+	node.peers[remoteIdentity.Address()].paths[pathKey{localSocket: 0, endpoint: wanted}] = &peerPathState{lastReceive: now}
+	node.mu.Unlock()
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbPushDirectPaths)
+	_ = packet.AppendUint16(1)
+	appendPushedIPv4(packet, 0x01, wanted)
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.1:9993"), packet.Bytes(), now); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_, retained := node.peers[remoteIdentity.Address()].paths[pathKey{localSocket: 0, endpoint: wanted}]
+	node.mu.Unlock()
+	if !retained {
+		t.Fatal("forget flag deleted an independently authenticated path")
+	}
+	for _, wirePacket := range *sent {
+		if wirePacket.remote == wanted {
+			t.Fatal("forget flag probed the advertised path")
+		}
+	}
+}
+
+func TestTrustedPeerReceivesParseableDirectPathPush(t *testing.T) {
+	identity, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	candidate := netip.MustParseAddrPort("192.0.2.50:29993")
+	remoteEndpoint := netip.MustParseAddrPort("198.51.100.50:9993")
+	now := time.Now()
+	node.mu.Lock()
+	node.directPaths = func() []netip.AddrPort { return []netip.AddrPort{candidate} }
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	node.networks[networkID] = network
+	node.markNetworkTrustLocked(network, node.peers[remoteIdentity.Address()], now)
+	node.observeAuthenticatedPathLocked(node.peers[remoteIdentity.Address()], 3, remoteEndpoint, VerbOK, now)
+	node.mu.Unlock()
+	if len(*sent) != 1 {
+		t.Fatalf("direct path push packets = %d", len(*sent))
+	}
+	packet, err := ParsePacket((*sent)[0].data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := identity.Agree(remoteIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Dearmor(key[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Uncompress(); err != nil {
+		t.Fatal(err)
+	}
+	payload := packet.Payload()
+	if packet.Verb() != VerbPushDirectPaths || len(payload) != 13 || binary.BigEndian.Uint16(payload[:2]) != 1 || payload[2] != 0 || binary.BigEndian.Uint16(payload[3:5]) != 0 || payload[5] != 4 || payload[6] != 6 {
+		t.Fatalf("invalid direct path push payload: %x", payload)
+	}
+	parsed := netip.AddrPortFrom(netip.AddrFrom4([4]byte{payload[7], payload[8], payload[9], payload[10]}), binary.BigEndian.Uint16(payload[11:13]))
+	if parsed != candidate {
+		t.Fatalf("pushed candidate = %s, want %s", parsed, candidate)
+	}
+}
+
+func TestEmptyDirectPathPushAttemptIsRateLimited(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	calls := 0
+	node.mu.Lock()
+	node.directPaths = func() []netip.AddrPort {
+		calls++
+		return nil
+	}
+	peer := node.peers[remote.Address()]
+	peer.lastTrustEstablished = now
+	node.maybePushDirectPathsLocked(peer, pathKey{}, now, false)
+	node.maybePushDirectPathsLocked(peer, pathKey{}, now.Add(time.Second), false)
+	lastAttempt := peer.lastDirectPathPushSent
+	node.mu.Unlock()
+	if calls != 1 || !lastAttempt.Equal(now) {
+		t.Fatalf("empty direct path attempts = %d, last = %v", calls, lastAttempt)
+	}
+}
+
+func TestLowBandwidthKeepsNoPathDirectPushInterval(t *testing.T) {
+	_, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	candidate := netip.MustParseAddrPort("192.0.2.51:29993")
+	remoteEndpoint := netip.MustParseAddrPort("198.51.100.51:9993")
+	now := time.Now()
+	node.mu.Lock()
+	node.lowBandwidth = true
+	node.directPaths = func() []netip.AddrPort { return []netip.AddrPort{candidate} }
+	peer := node.peers[remoteIdentity.Address()]
+	peer.lastTrustEstablished = now
+	peer.lastDirectPathPushSent = now.Add(-directPathPushInterval - time.Second)
+	path := pathKey{localSocket: 3, endpoint: remoteEndpoint}
+	peer.paths[path] = &peerPathState{lastReceive: now, latency: time.Millisecond, priority: 1}
+	node.maybePushDirectPathsLocked(peer, path, now, false)
+	node.mu.Unlock()
+	if len(*sent) != 1 {
+		t.Fatalf("low-bandwidth peer without a direct path received %d candidate pushes, want 1", len(*sent))
+	}
+}
+
+func TestLowBandwidthScalesPeerPathHeartbeat(t *testing.T) {
+	_, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	now := time.Now()
+	endpoint := netip.MustParseAddrPort("198.51.100.52:9993")
+	node.mu.Lock()
+	node.lowBandwidth = true
+	node.lastRootContact = now
+	peer := node.peers[remoteIdentity.Address()]
+	peer.lastReceive = now
+	peer.lastNontrivialReceive = now
+	peer.lastFullHello = now
+	lastProbe := now.Add(-peerPathPingPeriod)
+	peer.paths[pathKey{localSocket: 0, endpoint: endpoint}] = &peerPathState{lastReceive: now, lastSend: lastProbe, lastProbe: lastProbe, priority: 1}
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	got := peer.paths[pathKey{localSocket: 0, endpoint: endpoint}].lastProbe
+	node.mu.Unlock()
+	if !got.Equal(lastProbe) || len(*sent) != 0 {
+		t.Fatalf("early low-bandwidth path heartbeat = %v, packets=%d", got, len(*sent))
+	}
+	want := now.Add(5 * rootContactPeriod)
+	node.ProcessBackgroundTasks(want)
+	node.mu.Lock()
+	got = peer.paths[pathKey{localSocket: 0, endpoint: endpoint}].lastProbe
+	node.mu.Unlock()
+	peerPackets := 0
+	for _, packet := range *sent {
+		if packet.remote == endpoint {
+			peerPackets++
+		}
+	}
+	if !got.Equal(want) || peerPackets != 1 {
+		t.Fatalf("low-bandwidth path heartbeat = %v, peer packets=%d, want %v/1", got, peerPackets, want)
+	}
+}
+
+func TestLowBandwidthSkipsPeriodicMulticastAnnouncements(t *testing.T) {
+	_, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	const networkID = uint64(0x1234567890abcdef)
+	now := time.Now()
+	node.mu.Lock()
+	node.lowBandwidth = true
+	node.lastRootContact = now.Add(-5 * rootContactPeriod)
+	peer := node.peers[remoteIdentity.Address()]
+	peer.lastReceive = now
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePublic}
+	network.LastConfigRequest = now
+	network.LastConfigReceive = now
+	network.associated[remoteIdentity.Address()] = now
+	network.multicastSubscriptions[MulticastGroup{MAC: NewMAC(0x01005e000001)}] = struct{}{}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	for _, wirePacket := range *sent {
+		packet, err := ParsePacket(wirePacket.data)
+		if err == nil && packet.Destination() == remoteIdentity.Address() && packet.Verb() == VerbMulticastLike {
+			t.Fatal("low-bandwidth background task sent a periodic multicast announcement")
+		}
+	}
+}
+
+func TestInactivePeerDoesNotReceivePathHeartbeat(t *testing.T) {
+	_, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	now := time.Now()
+	endpoint := netip.MustParseAddrPort("198.51.100.53:9993")
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.lastReceive = now
+	peer.lastFullHello = now
+	lastProbe := now.Add(-peerPathPingPeriod)
+	peer.paths[pathKey{localSocket: 0, endpoint: endpoint}] = &peerPathState{lastReceive: now, lastSend: lastProbe, lastProbe: lastProbe, priority: 1}
+	node.lastRootContact = now.Add(-rootContactPeriod)
+	if !peer.lastNontrivialReceive.IsZero() || node.bondingPolicyForPeerLocked(peer) != BondingNone {
+		t.Fatalf("inactive peer setup: last nontrivial=%v bonding=%v", peer.lastNontrivialReceive, node.bondingPolicyForPeerLocked(peer))
+	}
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	got := peer.paths[pathKey{localSocket: 0, endpoint: endpoint}].lastProbe
+	node.mu.Unlock()
+	peerPackets := 0
+	for _, packet := range *sent {
+		if packet.remote == endpoint {
+			peerPackets++
+		}
+	}
+	if !got.Equal(lastProbe) || peerPackets != 0 {
+		t.Fatalf("inactive peer heartbeat = %v, peer packets=%d", got, peerPackets)
+	}
+}
+
+func TestMalformedPushDirectPathsHasNoPartialEffect(t *testing.T) {
+	identity, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := netip.MustParseAddrPort("203.0.113.20:29993")
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbPushDirectPaths)
+	_ = packet.AppendUint16(2)
+	appendPushedIPv4(packet, 0, wanted)
+	_ = packet.Append(0) // truncated second entry
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.1:9993"), packet.Bytes(), time.Now())
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("malformed push error = %v, want ErrInvalidPacket", err)
+	}
+	for _, wirePacket := range *sent {
+		if wirePacket.remote == wanted {
+			t.Fatal("malformed push probed an endpoint before the entire payload was validated")
+		}
+	}
+}
+
+func TestUnusedPathNegotiationDoesNotConfirmPath(t *testing.T) {
+	identity, remote, node, _ := newTestNodeWithPeer(t)
+	packet, err := NewPacket(identity.Address(), remote.Address(), VerbPathNegotiation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint16(1)
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := netip.MustParseAddrPort("198.51.100.53:9993")
+	if err = node.ProcessWirePacket(0, endpoint, packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if paths := peerPaths(node, remote.Address()); len(paths) != 0 {
+		t.Fatalf("unused path negotiation confirmed paths: %+v", paths)
+	}
+}
+
+func TestBondControlPacketsDoNotLearnOrRefreshPaths(t *testing.T) {
+	identity, remote, node, sent := newTestNodeWithPeer(t)
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbs := []Verb{VerbACK, VerbQoSMeasurement, VerbPathNegotiation}
+	for i, verb := range verbs {
+		packet, packetErr := NewPacket(identity.Address(), remote.Address(), verb)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		switch verb {
+		case VerbQoSMeasurement:
+			_ = packet.Append(make([]byte, 10)...)
+		case VerbPathNegotiation:
+			_ = packet.AppendUint16(1)
+		}
+		if packetErr = packet.Armor(key[:], true); packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		endpoint := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.53"), uint16(9993+i))
+		if packetErr = node.ProcessWirePacket(0, endpoint, packet.Bytes(), time.Now()); packetErr != nil {
+			t.Fatalf("verb %d: %v", verb, packetErr)
+		}
+	}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	lastReceive := peer.lastReceive
+	pathCount := len(peer.paths)
+	node.mu.Unlock()
+	if !lastReceive.IsZero() || pathCount != 0 || len(*sent) != 0 {
+		t.Fatalf("bond control packets changed receive state: last=%v paths=%d probes=%d", lastReceive, pathCount, len(*sent))
+	}
+}
+
+func TestReplySendFailureDoesNotRejectAuthenticatedPacket(t *testing.T) {
+	identity, remote, node, _ := newTestNodeWithPeer(t)
+	wantErr := errors.New("reply send failed")
+	node.mu.Lock()
+	node.sender = WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return wantErr })
+	node.mu.Unlock()
+	packet, _ := NewPacket(identity.Address(), remote.Address(), VerbEcho)
+	_ = packet.Append(1, 2, 3)
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.56:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatalf("authenticated ECHO failed with its reply: %v", err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	node.mu.Unlock()
+	if lastReceive.IsZero() {
+		t.Fatal("authenticated ECHO did not refresh its peer after reply failure")
+	}
+}
+
+func TestDeniedPrivateFramesDoNotLearnOrRefreshPaths(t *testing.T) {
+	identity, remote, node, _ := newTestNodeWithPeer(t)
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const networkID = uint64(0x1234567890abcdef)
+	node.mu.Lock()
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID, Type: NetworkTypePrivate, MTU: DefaultNetworkMTU}
+	node.networks[networkID] = network
+	node.mu.Unlock()
+
+	for i, verb := range []Verb{VerbFrame, VerbExtFrame, VerbMulticastFrame} {
+		packet, packetErr := NewPacket(identity.Address(), remote.Address(), verb)
+		if packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		_ = packet.AppendUint64(networkID)
+		switch verb {
+		case VerbFrame:
+			_ = packet.AppendUint16(EtherTypeIPv4)
+			_ = packet.Append(1)
+		default:
+			_ = packet.Append(0)
+		}
+		if packetErr = packet.Armor(key[:], true); packetErr != nil {
+			t.Fatal(packetErr)
+		}
+		endpoint := netip.AddrPortFrom(netip.MustParseAddr("198.51.100.54"), uint16(9993+i))
+		if packetErr = node.ProcessWirePacket(0, endpoint, packet.Bytes(), time.Now()); packetErr != nil {
+			t.Fatalf("verb %d: %v", verb, packetErr)
+		}
+	}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	lastReceive := peer.lastReceive
+	pathCount := len(peer.paths)
+	node.mu.Unlock()
+	if !lastReceive.IsZero() || pathCount != 0 {
+		t.Fatalf("denied frames changed receive state: last=%v paths=%d", lastReceive, pathCount)
+	}
+}
+
+func TestEmptyMulticastLikeRefreshesAuthenticatedPeer(t *testing.T) {
+	identity, remote, node, _ := newTestNodeWithPeer(t)
+	packet, err := NewPacket(identity.Address(), remote.Address(), VerbMulticastLike)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.62:9993"), packet.Bytes(), now); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	node.mu.Unlock()
+	if !lastReceive.Equal(now) {
+		t.Fatalf("empty multicast LIKE last receive = %v, want %v", lastReceive, now)
+	}
+}
+
+func TestUnknownNetworkMulticastFrameDoesNotRefreshPeer(t *testing.T) {
+	identity, remote, node, _ := newTestNodeWithPeer(t)
+	packet, err := NewPacket(identity.Address(), remote.Address(), VerbMulticastFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = packet.AppendUint64(0x1234567890abcdef)
+	_ = packet.Append(0)
+	key, err := identity.Agree(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err = node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.63:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	lastReceive := node.peers[remote.Address()].lastReceive
+	node.mu.Unlock()
+	if !lastReceive.IsZero() {
+		t.Fatalf("unknown-network multicast frame refreshed peer at %v", lastReceive)
+	}
+}
+
+func TestPushDirectPathsLimitsEachScopeAndFamily(t *testing.T) {
+	identity, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	key, err := remoteIdentity.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet, _ := NewPacket(identity.Address(), remoteIdentity.Address(), VerbPushDirectPaths)
+	_ = packet.AppendUint16(10)
+	for i := 1; i <= 10; i++ {
+		appendPushedIPv4(packet, 0, netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}), uint16(20000+i)))
+	}
+	if err := packet.Armor(key[:], true); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ProcessWirePacket(0, netip.MustParseAddrPort("198.51.100.1:9993"), packet.Bytes(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	for _, wirePacket := range *sent {
+		if wirePacket.remote.Addr().Is4() && wirePacket.remote.Port() >= 20001 && wirePacket.remote.Port() <= 20010 {
+			probes++
+		}
+	}
+	if probes != maxPushedPathsPerScopeAndFamily {
+		t.Fatalf("pushed IPv4 probes = %d, want %d", probes, maxPushedPathsPerScopeAndFamily)
+	}
+}
+
+func TestPathScopeMatchesZeroTierOne(t *testing.T) {
+	for address, want := range map[string]int{
+		"8.8.8.8":           4,
+		"6.1.2.3":           3,
+		"10.1.2.3":          7,
+		"100.64.1.2":        7,
+		"192.0.2.1":         7,
+		"198.18.0.1":        7,
+		"203.0.113.1":       7,
+		"240.0.0.1":         3,
+		"127.0.0.1":         0,
+		"169.254.1.2":       0,
+		"fd00::1":           7,
+		"2001:4860:4860::8": 4,
+		"2001:470::1":       0,
+		"fe80::1":           0,
+	} {
+		if got := pathScope(netip.MustParseAddr(address)); got != want {
+			t.Errorf("pathScope(%s) = %d, want %d", address, got, want)
+		}
+	}
+	if !IsGlobalPhysicalAddress(netip.MustParseAddr("2001:470::1")) {
+		t.Fatal("HE tunnel address lost its global IP scope")
+	}
+	if IsGlobalPhysicalAddress(netip.MustParseAddr("192.0.2.1")) {
+		t.Fatal("ZeroTier-private documentation address was treated as global")
+	}
+}
+
+func TestPeerPathMaintenanceAndEviction(t *testing.T) {
+	_, remoteIdentity, node, sent := newTestNodeWithPeer(t)
+	now := time.Now()
+	expired := netip.MustParseAddrPort("203.0.113.1:9993")
+	active := netip.MustParseAddrPort("203.0.113.2:9993")
+
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.lastReceive = now
+	peer.lastNontrivialReceive = now
+	peer.paths[pathKey{localSocket: 0, endpoint: expired}] = &peerPathState{lastReceive: now.Add(-peerPathExpiration)}
+	peer.paths[pathKey{localSocket: 0, endpoint: active}] = &peerPathState{lastReceive: now.Add(-time.Second), lastProbe: now.Add(-peerPathPingPeriod)}
+	node.lastRootContact = now
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now)
+	paths := peerPaths(node, remoteIdentity.Address())
+	if len(paths) != 1 || paths[0].Endpoint != active {
+		t.Fatalf("paths after maintenance = %+v", paths)
+	}
+	foundKeepalive := false
+	for _, wirePacket := range *sent {
+		if wirePacket.remote == active {
+			foundKeepalive = true
+		}
+	}
+	if !foundKeepalive {
+		t.Fatal("active peer path did not receive its periodic authenticated probe")
+	}
+
+	node.mu.Lock()
+	peer.paths = make(map[pathKey]*peerPathState)
+	for i := 0; i < maxPeerPaths; i++ {
+		endpoint := netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, byte(i / 250), byte(i%250 + 1)}), uint16(10000+i))
+		peer.paths[pathKey{localSocket: 0, endpoint: endpoint}] = &peerPathState{lastReceive: now.Add(time.Duration(i) * time.Millisecond)}
+	}
+	newEndpoint := netip.MustParseAddrPort("198.51.100.200:29993")
+	node.observeAuthenticatedPathLocked(peer, 0, newEndpoint, VerbOK, now.Add(time.Second))
+	pathCount := len(peer.paths)
+	_, oldestPresent := peer.paths[pathKey{localSocket: 0, endpoint: netip.MustParseAddrPort("203.0.0.1:10000")}]
+	_, newestPresent := peer.paths[pathKey{localSocket: 0, endpoint: newEndpoint}]
+	node.mu.Unlock()
+	if pathCount != maxPeerPaths || oldestPresent || !newestPresent {
+		t.Fatalf("path eviction: count=%d oldest=%t newest=%t", pathCount, oldestPresent, newestPresent)
+	}
+}
+
+func TestFullFreshPathSetRejectsNewPath(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	for i := 0; i < maxPeerPaths; i++ {
+		endpoint := netip.AddrPortFrom(netip.AddrFrom4([4]byte{203, 0, byte(i / 250), byte(i%250 + 1)}), uint16(10000+i))
+		node.addPeerPathLocked(peer, pathKey{endpoint: endpoint}, &peerPathState{lastReceive: now, priority: 1}, now)
+	}
+	newEndpoint := netip.MustParseAddrPort("198.51.100.200:29993")
+	node.observeAuthenticatedPathLocked(peer, 0, newEndpoint, VerbOK, now)
+	pathCount := len(peer.paths)
+	_, learned := peer.paths[pathKey{endpoint: newEndpoint}]
+	node.mu.Unlock()
+	if pathCount != maxPeerPaths || learned {
+		t.Fatalf("fresh full path set: count=%d learned=%t", pathCount, learned)
+	}
+}
+
+func TestEqualAgePathEvictionIsStable(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	first := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.10:9993")}
+	second := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.20:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[first] = &peerPathState{lastReceive: now.Add(-time.Second)}
+	peer.paths[second] = &peerPathState{lastReceive: now.Add(-time.Second)}
+	evicted := node.evictOldestPathLocked(peer, now)
+	_, firstPresent := peer.paths[first]
+	_, secondPresent := peer.paths[second]
+	node.mu.Unlock()
+	if !evicted || firstPresent || !secondPresent {
+		t.Fatalf("equal-age eviction: evicted=%t first=%t second=%t", evicted, firstPresent, secondPresent)
+	}
+}
+
+func TestStaleDirectPathRemainsUsableUntilExpiration(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	path := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.80:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[path] = &peerPathState{lastReceive: now.Add(-30 * time.Second), latency: time.Millisecond, priority: 1}
+	selected := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if selected != path {
+		t.Fatalf("stale-but-unexpired path = %+v, want %+v", selected, path)
+	}
+}
+
+func TestAuthenticatedPathIsNotRecheckedAfterLearning(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	endpoint := netip.MustParseAddrPort("198.51.100.81:9993")
+	allow, checks := true, 0
+	node.mu.Lock()
+	node.pathCheck = func(Address, int64, netip.AddrPort) bool {
+		checks++
+		return allow
+	}
+	peer := node.peers[remoteIdentity.Address()]
+	node.observeAuthenticatedPacketPathLocked(peer, 1, endpoint, VerbOK, 1, 0, now)
+	allow = false
+	selected := node.bestDirectPeerPathLocked(peer, now)
+	probeErr := node.sendPathProbeLocked(peer, 1, endpoint, now.Add(peerPathPingPeriod))
+	node.mu.Unlock()
+	if probeErr != nil {
+		t.Fatal(probeErr)
+	}
+	want := pathKey{localSocket: 1, endpoint: endpoint}
+	if selected != want {
+		t.Fatalf("authenticated path = %v, want %v", selected, want)
+	}
+	peers := node.Peers()
+	if checks != 1 {
+		t.Fatalf("path checks = %d, want one check while learning", checks)
+	}
+	var remoteStatus *PeerStatus
+	for index := range peers {
+		if peers[index].Address == remoteIdentity.Address() {
+			remoteStatus = &peers[index]
+			break
+		}
+	}
+	if remoteStatus == nil || len(remoteStatus.Paths) != 1 || !remoteStatus.Paths[0].Active {
+		t.Fatalf("authenticated path diagnostics = %+v", remoteStatus)
+	}
+}
+
+func TestPathQualityCapsStaleAgeLikeZeroTierOne(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	veryOld := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.80:9993")}
+	moderatelyOld := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.81:9993")}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[veryOld] = &peerPathState{lastReceive: now.Add(-200 * time.Second), latency: time.Millisecond, priority: 2}
+	peer.paths[moderatelyOld] = &peerPathState{lastReceive: now.Add(-50 * time.Second), latency: time.Millisecond, priority: 1}
+	selected := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if selected != veryOld {
+		t.Fatalf("selected path %v, want capped-age priority path %v", selected, veryOld)
+	}
+}
+
+func TestPathBecomesStaleAtOfficialAliveBoundary(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	boundary := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.82:9993")}
+	fresh := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.83:9993")}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.paths[boundary] = &peerPathState{lastReceive: now.Add(-peerPathActiveTime), latency: time.Millisecond, priority: 1}
+	peer.paths[fresh] = &peerPathState{lastReceive: now, latency: 10 * time.Millisecond, priority: 1}
+	selected := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if selected != fresh {
+		t.Fatalf("selected path %v, want fresh path %v", selected, fresh)
+	}
+}
+
+func TestPhysicalReceiveDoesNotAuthenticatePeerPath(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Now().Truncate(time.Millisecond)
+	key := pathKey{localSocket: 5, endpoint: netip.MustParseAddrPort("198.51.100.84:9993")}
+	authenticatedAt := now.Add(-time.Minute)
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	peer.lastReceive = authenticatedAt
+	node.addPeerPathLocked(peer, key, &peerPathState{lastReceive: authenticatedAt, priority: 1}, authenticatedAt)
+	node.mu.Unlock()
+
+	err := node.ProcessWirePacket(key.localSocket, key.endpoint, []byte{1, 2, 3}, now)
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("invalid physical packet error = %v", err)
+	}
+	node.mu.Lock()
+	path := peer.paths[key]
+	peerLastReceive := peer.lastReceive
+	pathLastReceive := path.lastReceive
+	physicalAge := wirePathAge(path, now)
+	node.mu.Unlock()
+	if !peerLastReceive.Equal(authenticatedAt) || !pathLastReceive.Equal(authenticatedAt) {
+		t.Fatalf("physical packet authenticated state: peer=%v path=%v", peerLastReceive, pathLastReceive)
+	}
+	if physicalAge != 0 {
+		t.Fatalf("physical receive age = %v, want zero", physicalAge)
+	}
+	paths := peerPaths(node, remote.Address())
+	if len(paths) != 1 || !paths[0].LastReceive.Equal(now) || !paths[0].Active {
+		t.Fatalf("physical path diagnostics = %+v", paths)
+	}
+}
+
+func TestPhysicalReceiveDoesNotReactivateExpiredPeerPath(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Now().Truncate(time.Millisecond)
+	key := pathKey{localSocket: 5, endpoint: netip.MustParseAddrPort("198.51.100.85:9993")}
+	authenticatedAt := now.Add(-peerPathExpiration)
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.addPeerPathLocked(peer, key, &peerPathState{lastReceive: authenticatedAt, priority: 1}, authenticatedAt)
+	node.mu.Unlock()
+
+	err := node.ProcessWirePacket(key.localSocket, key.endpoint, []byte{1, 2, 3}, now)
+	if !errors.Is(err, ErrInvalidPacket) {
+		t.Fatalf("invalid physical packet error = %v", err)
+	}
+	paths := peerPaths(node, remote.Address())
+	if len(paths) != 1 || !paths[0].LastReceive.Equal(now) || paths[0].Active {
+		t.Fatalf("expired physical path diagnostics = %+v", paths)
+	}
+}
+
+func TestAuthenticatedObservationDoesNotInventPhysicalReceive(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	physicalReceive := now.Add(-time.Minute)
+	key := pathKey{localSocket: 5, endpoint: netip.MustParseAddrPort("198.51.100.88:9993")}
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.addPeerPathLocked(peer, key, &peerPathState{lastReceive: physicalReceive}, physicalReceive)
+	node.observeAuthenticatedPacketPathLocked(peer, key.localSocket, key.endpoint, VerbFrame, 1, 0, now)
+	authenticatedReceive := peer.paths[key].lastReceive
+	physicalAge := wirePathAge(peer.paths[key], now)
+	node.mu.Unlock()
+	if !authenticatedReceive.Equal(now) {
+		t.Fatalf("authenticated receive = %v, want %v", authenticatedReceive, now)
+	}
+	if physicalAge != time.Minute {
+		t.Fatalf("physical receive age = %v, want 1m", physicalAge)
+	}
+}
+
+func TestPhysicalReceiveRestoresOfficialPathQuality(t *testing.T) {
+	_, remote, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	refreshed := pathKey{localSocket: 5, endpoint: netip.MustParseAddrPort("198.51.100.85:9993")}
+	steady := pathKey{localSocket: 6, endpoint: netip.MustParseAddrPort("198.51.100.86:9993")}
+	staleAt := now.Add(-peerPathActiveTime)
+	node.mu.Lock()
+	peer := node.peers[remote.Address()]
+	node.addPeerPathLocked(peer, refreshed, &peerPathState{lastReceive: staleAt, latency: time.Millisecond, priority: 1}, staleAt)
+	node.addPeerPathLocked(peer, steady, &peerPathState{lastReceive: now, latency: 10 * time.Millisecond, priority: 1}, now)
+	before := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if before != steady {
+		t.Fatalf("path before physical receive = %v, want %v", before, steady)
+	}
+
+	_ = node.ProcessWirePacket(refreshed.localSocket, refreshed.endpoint, []byte{1, 2, 3}, now)
+	node.mu.Lock()
+	after := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if after != refreshed {
+		t.Fatalf("path after physical receive = %v, want %v", after, refreshed)
+	}
+}
+
+func TestWirePathActivityReferencesFollowPeerPaths(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	now := time.Now()
+	key := pathKey{localSocket: 7, endpoint: netip.MustParseAddrPort("198.51.100.87:9993")}
+	node.mu.Lock()
+	if err = node.addPeerLocked(first, false); err == nil {
+		err = node.addPeerLocked(second, false)
+	}
+	if err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.addPeerPathLocked(node.peers[first.Address()], key, &peerPathState{lastReceive: now}, now)
+	node.addPeerPathLocked(node.peers[second.Address()], key, &peerPathState{lastReceive: now}, now)
+	value, loaded := node.wirePaths.Load(key)
+	if !loaded || value.(*wirePathActivity).references != 2 {
+		node.mu.Unlock()
+		t.Fatalf("shared wire path = %v, loaded=%t", value, loaded)
+	}
+	node.removePeerLocked(first.Address())
+	value, loaded = node.wirePaths.Load(key)
+	if !loaded || value.(*wirePathActivity).references != 1 {
+		node.mu.Unlock()
+		t.Fatalf("wire path after first removal = %v, loaded=%t", value, loaded)
+	}
+	node.removePeerLocked(second.Address())
+	_, loaded = node.wirePaths.Load(key)
+	node.mu.Unlock()
+	if loaded {
+		t.Fatal("wire path activity survived its final peer path")
+	}
+}
+
+func TestWirePathActivityDoesNotMoveBackward(t *testing.T) {
+	later := time.Unix(1700000000, 0)
+	activity := newWirePathActivity(later)
+	activity.receive(later.Add(-time.Second))
+	if got, ok := activity.lastReceive(); !ok || !got.Equal(later) {
+		t.Fatalf("physical receive clock = %v, found=%t, want %v", got, ok, later)
+	}
+}
+
+func TestRelayedSendRefreshesPhysicalRootPath(t *testing.T) {
+	local, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: local, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	rootPath := pathKey{localSocket: 4, endpoint: netip.MustParseAddrPort("198.51.100.89:9993")}
+	node.mu.Lock()
+	if err = node.addPeerLocked(rootIdentity, true); err == nil {
+		err = node.addPeerLocked(leafIdentity, false)
+	}
+	if err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	root := node.peers[rootIdentity.Address()]
+	leaf := node.peers[leafIdentity.Address()]
+	node.addPeerPathLocked(root, rootPath, &peerPathState{lastReceive: now, priority: 1}, now)
+	packet, err := NewPacket(leafIdentity.Address(), local.Address(), VerbUserMessage)
+	if err == nil {
+		err = node.sendPacketViaPathLocked(leaf, packet, true, rootPath, false)
+	}
+	lastSend := wirePathLastSend(root.paths[rootPath])
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastSend.IsZero() {
+		t.Fatal("relayed output did not refresh the physical root path")
+	}
+}
+
+func TestCachedPeerWithoutReceiveIsCleaned(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	node.mu.Lock()
+	node.lastRootContact = now
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	node.mu.Unlock()
+	if peer != nil {
+		t.Fatal("peer with no received traffic survived periodic cleanup")
+	}
+}
+
+func TestPeerIdentityRunsCallbacksFromCacheLoad(t *testing.T) {
+	local, _ := ParseIdentity(knownGoodIdentity)
+	remote, _ := GenerateIdentity()
+	store := NewMemoryStore()
+	first, err := NewNode(NodeConfig{
+		Identity: local,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.mu.Lock()
+	if err = first.addPeerLocked(remote, false); err != nil {
+		first.mu.Unlock()
+		t.Fatal(err)
+	}
+	first.savePeerLocked(first.peers[remote.Address()])
+	first.mu.Unlock()
+	var events []Event
+	second, err := NewNode(NodeConfig{
+		Identity: local,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent:  func(event Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events = nil
+	identity, ok := second.PeerIdentity(remote.Address())
+	if !ok || identity.PublicString() != remote.PublicString() {
+		t.Fatalf("cached identity=%s ok=%t", identity.PublicString(), ok)
+	}
+	if len(events) != 1 || events[0].Type != EventPeerIdentityLearned || events[0].PeerAddress != remote.Address() || events[0].PeerRole != PeerRoleLeaf {
+		t.Fatalf("cache-load events = %+v", events)
+	}
+}
+
+func TestBestPeerPathAccountsForAddressScope(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	privateEndpoint := netip.MustParseAddrPort("192.168.1.10:9993")
+	globalEndpoint := netip.MustParseAddrPort("8.8.8.8:9993")
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[pathKey{localSocket: 0, endpoint: privateEndpoint}] = &peerPathState{lastReceive: now, latency: 30 * time.Millisecond}
+	peer.paths[pathKey{localSocket: 0, endpoint: globalEndpoint}] = &peerPathState{lastReceive: now, latency: 10 * time.Millisecond}
+	best := node.bestPeerEndpointLocked(peer)
+	node.mu.Unlock()
+	if best != privateEndpoint {
+		t.Fatalf("best path = %s, want private path %s", best, privateEndpoint)
+	}
+}
+
+func TestPeerPathsKeepLocalSocketIdentity(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	endpoint := netip.MustParseAddrPort("198.51.100.20:9993")
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	node.observeAuthenticatedPathLocked(peer, 10, endpoint, VerbOK, now)
+	node.observeAuthenticatedPathLocked(peer, 11, endpoint, VerbOK, now)
+	pathCount := len(peer.paths)
+	node.mu.Unlock()
+	if pathCount != 2 {
+		t.Fatalf("same endpoint on two local sockets produced %d paths", pathCount)
+	}
+}
+
+func TestPeerCacheLazilyRestoresOfficialPeerState(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	now := time.Now()
+	var sent []sentWirePacket
+	newNode := func() *Node {
+		node, nodeErr := NewNode(NodeConfig{
+			Identity: local,
+			Store:    store,
+			Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+				sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+				return nil
+			}),
+		})
+		if nodeErr != nil {
+			t.Fatal(nodeErr)
+		}
+		return node
+	}
+	node := newNode()
+	endpoint := netip.MustParseAddrPort("198.51.100.30:9993")
+	expiredEndpoint := netip.MustParseAddrPort("198.51.100.31:9993")
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.lastReceive = now
+	peer.protocol, peer.major, peer.minor, peer.revision = 13, 1, 16, 2
+	peer.paths[pathKey{localSocket: 7, endpoint: endpoint}] = &peerPathState{lastReceive: now, latency: 12 * time.Millisecond, priority: 3}
+	peer.paths[pathKey{localSocket: 8, endpoint: expiredEndpoint}] = &peerPathState{lastReceive: now.Add(-peerPathExpiration), latency: time.Second, priority: 1}
+	node.savePeerCacheLocked()
+	node.mu.Unlock()
+	data := store.data[peerCacheName(remote.Address())]
+	if len(data) == 0 || data[0] != 2 {
+		t.Fatalf("official peer cache was not written: %x", data)
+	}
+	expected := []byte{2}
+	expected = remote.AppendBinary(expected, false)
+	expected = binary.BigEndian.AppendUint16(expected, 13)
+	expected = binary.BigEndian.AppendUint16(expected, 1)
+	expected = binary.BigEndian.AppendUint16(expected, 16)
+	expected = binary.BigEndian.AppendUint16(expected, 2)
+	expected = binary.BigEndian.AppendUint16(expected, 2)
+	expected = appendInetAddress(expected, endpoint)
+	expected = appendInetAddress(expected, expiredEndpoint)
+	if !bytes.Equal(data, expected) {
+		t.Fatalf("peer cache = %x, want official v2 layout %x", data, expected)
+	}
+	if _, exists := store.data["peers.d/cache"]; exists {
+		t.Fatal("legacy aggregate peer cache was written")
+	}
+
+	sent = nil
+	restored := newNode()
+	restored.mu.Lock()
+	peer = restored.peers[remote.Address()]
+	restored.mu.Unlock()
+	if peer != nil {
+		t.Fatal("peer cache was eagerly scanned")
+	}
+	if identity, ok := restored.PeerIdentity(remote.Address()); !ok || identity.PublicString() != remote.PublicString() {
+		t.Fatal("cached peer identity was not restored on demand")
+	}
+	restored.mu.Lock()
+	peer = restored.peers[remote.Address()]
+	if peer == nil {
+		restored.mu.Unlock()
+		t.Fatal("cached peer identity was not restored")
+	}
+	pathCount := len(peer.paths)
+	protocol, revision := peer.protocol, peer.revision
+	restored.mu.Unlock()
+	if pathCount != 0 || protocol != 13 || revision != 2 {
+		t.Fatalf("restored peer state: paths=%d protocol=%d revision=%d", pathCount, protocol, revision)
+	}
+	if len(sent) != 2 || sent[0].remote != endpoint || sent[1].remote != expiredEndpoint {
+		t.Fatalf("cached path probes = %+v, want [%s %s]", sent, endpoint, expiredEndpoint)
+	}
+}
+
+func TestPeerCachePersistsOnCloseInsteadOfPeriodicTraffic(t *testing.T) {
+	local, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	node, err := NewNode(NodeConfig{
+		Identity: local,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(remote, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	peer := node.peers[remote.Address()]
+	peer.lastReceive = now
+	peer.protocol, peer.major, peer.minor, peer.revision = 13, 1, 16, 2
+	peer.paths[pathKey{localSocket: 7, endpoint: netip.MustParseAddrPort("198.51.100.30:9993")}] = &peerPathState{lastReceive: now}
+	node.mu.Unlock()
+
+	node.ProcessBackgroundTasks(now.Add(2 * time.Minute))
+	if _, exists := store.data[peerCacheName(remote.Address())]; exists {
+		t.Fatal("active peer was persisted by periodic traffic maintenance")
+	}
+	if err = node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := store.data[peerCacheName(remote.Address())]; !exists {
+		t.Fatal("active peer was not persisted during node shutdown")
+	}
+}
+
+func TestFragmentAssemblyUsesHeadPath(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := make([]byte, PacketMinSize)
+	binary.BigEndian.PutUint64(head, 0x0102030405060708)
+	destination := identity.Address().Bytes()
+	copy(head[PacketDestOffset:PacketSourceOffset], destination[:])
+	head[PacketFlagsOffset] = FlagFragmented
+	fragment := make([]byte, 17)
+	copy(fragment[:8], head[:8])
+	copy(fragment[8:13], destination[:])
+	fragment[13] = 0xff
+	fragment[14] = 0x21
+	fragment[16] = 0xaa
+	headRemote := netip.MustParseAddrPort("198.51.100.10:9993")
+	fragmentRemote := netip.MustParseAddrPort("203.0.113.20:9993")
+	fragmentTime := time.Now()
+	headTime := fragmentTime.Add(time.Second)
+	if _, complete, err := node.reassembleWirePacket(9, fragmentRemote, fragment, fragmentTime); err != nil || complete {
+		t.Fatalf("fragment first: complete=%t err=%v", complete, err)
+	}
+	assembled, complete, err := node.reassembleWirePacket(7, headRemote, head, headTime)
+	if err != nil || !complete {
+		t.Fatalf("assembly: complete=%t err=%v", complete, err)
+	}
+	if assembled.localSocket != 7 || assembled.remote != headRemote || !assembled.receivedAt.Equal(headTime) {
+		t.Fatalf("assembly origin = (%d, %s, %v), want head (%d, %s, %v)", assembled.localSocket, assembled.remote, assembled.receivedAt, 7, headRemote, headTime)
+	}
+}
+
+func TestIncompleteFragmentDoesNotWaitForProtocolState(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment := make([]byte, FragmentHeaderSize+1)
+	binary.BigEndian.PutUint64(fragment, 0x0102030405060708)
+	destination := identity.Address().Bytes()
+	copy(fragment[8:13], destination[:])
+	fragment[13], fragment[14] = 0xff, 0x21
+
+	node.mu.Lock()
+	result := make(chan error, 1)
+	go func() {
+		result <- node.ProcessWirePacket(1, netip.MustParseAddrPort("198.51.100.1:9993"), fragment, time.Now())
+	}()
+	select {
+	case processErr := <-result:
+		node.mu.Unlock()
+		if processErr != nil {
+			t.Fatal(processErr)
+		}
+	case <-time.After(2 * time.Second):
+		node.mu.Unlock()
+		<-result
+		t.Fatal("incomplete fragment waited for protocol-state lock")
+	}
+}
+
+func TestFragmentAssemblyCloseRace(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := identity.Address().Bytes()
+	remote := netip.MustParseAddrPort("198.51.100.1:9993")
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			<-start
+			for index := 0; index < 256; index++ {
+				packetID := uint64(worker+1)<<32 | uint64(index+1)
+				fragment := make([]byte, FragmentHeaderSize+1)
+				binary.BigEndian.PutUint64(fragment, packetID)
+				copy(fragment[8:13], destination[:])
+				fragment[13], fragment[14] = 0xff, 0x21
+				if _, _, reassembleErr := node.reassembleWirePacket(int64(worker), remote, fragment, time.Now()); reassembleErr != nil && !errors.Is(reassembleErr, ErrNodeClosed) {
+					t.Errorf("reassemble fragment: %v", reassembleErr)
+					return
+				}
+			}
+		}(worker)
+	}
+	close(start)
+	if err = node.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workers.Wait()
+	node.fragmentMu.Lock()
+	assemblies := len(node.fragments)
+	node.fragmentMu.Unlock()
+	if assemblies != 0 {
+		t.Fatalf("assemblies after Close = %d", assemblies)
+	}
+}
+
+func TestFragmentAssemblyRejectsForeignHead(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := make([]byte, PacketMinSize)
+	binary.BigEndian.PutUint64(head, 1)
+	foreign := NewAddress(identity.Address().Uint64() + 1).Bytes()
+	copy(head[PacketDestOffset:PacketSourceOffset], foreign[:])
+	head[PacketFlagsOffset] = FlagFragmented
+
+	_, complete, err := node.reassembleWirePacket(0, netip.MustParseAddrPort("198.51.100.1:9993"), head, time.Now())
+	node.fragmentMu.Lock()
+	assemblies := len(node.fragments)
+	node.fragmentMu.Unlock()
+	if !errors.Is(err, ErrInvalidPacket) || complete || assemblies != 0 {
+		t.Fatalf("foreign fragmented head: complete=%t assemblies=%d err=%v", complete, assemblies, err)
+	}
+}
+
+func TestFragmentAssemblyIgnoresDuplicates(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const packetID = uint64(0x0102030405060708)
+	destination := identity.Address().Bytes()
+	fragment := make([]byte, 17)
+	binary.BigEndian.PutUint64(fragment, packetID)
+	copy(fragment[8:13], destination[:])
+	fragment[13], fragment[14], fragment[16] = 0xff, 0x31, 0xaa
+	duplicateFragment := append([]byte(nil), fragment...)
+	duplicateFragment[16] = 0xbb
+	lastFragment := append([]byte(nil), fragment...)
+	lastFragment[14], lastFragment[16] = 0x32, 0xcc
+	head := make([]byte, PacketMinSize)
+	binary.BigEndian.PutUint64(head, packetID)
+	copy(head[PacketDestOffset:PacketSourceOffset], destination[:])
+	head[PacketFlagsOffset], head[PacketVerbOffset] = FlagFragmented, byte(VerbFrame)
+	duplicateHead := append([]byte(nil), head...)
+	duplicateHead[PacketVerbOffset] = byte(VerbUserMessage)
+	now := time.Now()
+
+	_, _, _ = node.reassembleWirePacket(1, netip.MustParseAddrPort("198.51.100.1:9993"), fragment, now)
+	_, _, _ = node.reassembleWirePacket(1, netip.MustParseAddrPort("198.51.100.1:9993"), duplicateFragment, now.Add(time.Second))
+	_, _, _ = node.reassembleWirePacket(2, netip.MustParseAddrPort("198.51.100.2:9993"), head, now.Add(2*time.Second))
+	_, _, _ = node.reassembleWirePacket(3, netip.MustParseAddrPort("198.51.100.3:9993"), duplicateHead, now.Add(3*time.Second))
+	assembled, complete, err := node.reassembleWirePacket(4, netip.MustParseAddrPort("198.51.100.4:9993"), lastFragment, now.Add(4*time.Second))
+	if err != nil || !complete {
+		t.Fatalf("duplicate assembly: complete=%t err=%v", complete, err)
+	}
+	if assembled.data[PacketVerbOffset] != byte(VerbFrame) || assembled.data[len(head)] != 0xaa || assembled.data[len(assembled.data)-1] != 0xcc {
+		t.Fatalf("duplicate data replaced first arrival: verb=%d first=%x tail=%x", assembled.data[PacketVerbOffset], assembled.data[len(head)], assembled.data[len(assembled.data)-1])
+	}
+	if !assembled.receivedAt.Equal(now.Add(2*time.Second)) || assembled.localSocket != 2 {
+		t.Fatalf("duplicate refreshed assembly: received=%v socket=%d", assembled.receivedAt, assembled.localSocket)
+	}
+}
+
+func TestFragmentAssemblyOverwritesOldestSlot(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := identity.Address().Bytes()
+	makeFragment := func(packetID uint64) []byte {
+		fragment := make([]byte, 17)
+		binary.BigEndian.PutUint64(fragment, packetID)
+		copy(fragment[8:13], destination[:])
+		fragment[13], fragment[14] = 0xff, 0x21
+		return fragment
+	}
+	now := time.Now()
+	for packetID := uint64(1); packetID <= maxFragmentAssemblies+1; packetID++ {
+		if _, complete, reassembleErr := node.reassembleWirePacket(0, netip.MustParseAddrPort("198.51.100.1:9993"), makeFragment(packetID), now); reassembleErr != nil || complete {
+			t.Fatalf("fragment %d: complete=%t err=%v", packetID, complete, reassembleErr)
+		}
+	}
+	node.fragmentMu.Lock()
+	_, firstPresent := node.fragments[1]
+	_, newestPresent := node.fragments[maxFragmentAssemblies+1]
+	count := len(node.fragments)
+	node.fragmentMu.Unlock()
+	if count != maxFragmentAssemblies || firstPresent || !newestPresent {
+		t.Fatalf("fragment ring: count=%d first=%t newest=%t", count, firstPresent, newestPresent)
+	}
+}
+
+func TestHelloLatencyUsesResponsePath(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	remote := netip.MustParseAddrPort("198.51.100.40:9993")
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[pathKey{localSocket: 1, endpoint: remote}] = &peerPathState{lastReceive: now, priority: 1}
+	node.updatePathLatencyLocked(peer, 1, remote, uint64(now.Add(-20*time.Millisecond).UnixMilli()), now)
+	latency := peer.paths[pathKey{localSocket: 1, endpoint: remote}].latency
+	node.mu.Unlock()
+	if latency != 20*time.Millisecond {
+		t.Fatalf("latency = %v", latency)
+	}
+}
+
+func TestHelloLatencyUsesOfficialSmoothing(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	remote := netip.MustParseAddrPort("198.51.100.41:9993")
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	key := pathKey{localSocket: 1, endpoint: remote}
+	peer.paths[key] = &peerPathState{lastReceive: now, latency: 100 * time.Millisecond, priority: 1}
+	node.updatePathLatencyLocked(peer, 1, remote, uint64(now.Add(-20*time.Millisecond).UnixMilli()), now)
+	latency := peer.paths[key].latency
+	node.mu.Unlock()
+	if latency != 60*time.Millisecond {
+		t.Fatalf("smoothed latency = %v, want 60ms", latency)
+	}
+}
+
+func TestEchoResponseDoesNotUpdateLegacyPathLatency(t *testing.T) {
+	local, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	remote := netip.MustParseAddrPort("198.51.100.42:9993")
+	now := time.Now()
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	key := pathKey{localSocket: 1, endpoint: remote}
+	peer.paths[key] = &peerPathState{lastReceive: now, latency: 100 * time.Millisecond, priority: 1}
+	request, _ := NewPacket(remoteIdentity.Address(), local.Address(), VerbEcho)
+	node.pending[request.PacketID()] = pendingRequest{verb: VerbEcho, peer: remoteIdentity.Address(), sentAt: now.Add(-20 * time.Millisecond), path: key}
+	reply, _ := NewPacket(local.Address(), remoteIdentity.Address(), VerbOK)
+	_ = reply.Append(byte(VerbEcho))
+	_ = reply.AppendUint64(request.PacketID())
+	err := node.handleOKLocked(1, remote, peer, reply, now)
+	latency := peer.paths[key].latency
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latency != 100*time.Millisecond {
+		t.Fatalf("ECHO changed legacy latency to %v", latency)
+	}
+}
+
+func TestHelloResponseMeasuresDifferentReplyPort(t *testing.T) {
+	local, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	requestEndpoint := netip.MustParseAddrPort("198.51.100.43:9993")
+	responseEndpoint := netip.MustParseAddrPort("198.51.100.43:29993")
+	now := time.Unix(1700000000, 0)
+	request, _ := NewPacket(remoteIdentity.Address(), local.Address(), VerbHello)
+	reply, _ := NewPacket(local.Address(), remoteIdentity.Address(), VerbOK)
+	_ = reply.Append(byte(VerbHello))
+	_ = reply.AppendUint64(request.PacketID())
+	_ = reply.AppendUint64(uint64(now.Add(-20 * time.Millisecond).UnixMilli()))
+	_ = reply.Append(ProtocolVersion, nodeVersionMajor, nodeVersionMinor)
+	_ = reply.AppendUint16(nodeVersionRev)
+
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	responsePath := pathKey{localSocket: 1, endpoint: responseEndpoint}
+	peer.paths[responsePath] = &peerPathState{lastReceive: now, priority: 1}
+	node.pending[request.PacketID()] = pendingRequest{
+		verb: VerbHello, peer: remoteIdentity.Address(), sentAt: now.Add(-20 * time.Millisecond),
+		path: pathKey{localSocket: 1, endpoint: requestEndpoint},
+	}
+	err := node.handleOKLocked(1, responseEndpoint, peer, reply, now)
+	latency := peer.paths[responsePath].latency
+	measured := peer.paths[responsePath].latencyMeasured
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latency != 20*time.Millisecond || !measured {
+		t.Fatalf("response path latency = %v, measured=%t", latency, measured)
+	}
+}
+
+func TestBestDirectPeerPathIsStableForEqualQuality(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	first := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.10:9993")}
+	second := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("192.0.2.20:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[first] = &peerPathState{lastReceive: now, latency: 10 * time.Millisecond, priority: 1}
+	peer.paths[second] = &peerPathState{lastReceive: now, latency: 10 * time.Millisecond, priority: 1}
+	want := first
+	for i := 0; i < 1024; i++ {
+		if got := node.bestDirectPeerPathLocked(peer, now); got != want {
+			node.mu.Unlock()
+			t.Fatalf("equal-quality path changed from %v to %v", want, got)
+		}
+	}
+	node.mu.Unlock()
+}
+
+func TestHelloLatencyUsesOfficialMillisecondResolution(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	remote := netip.MustParseAddrPort("198.51.100.42:9993")
+	now := time.Unix(1700000000, 2*int64(time.Millisecond)+100*int64(time.Microsecond))
+	key := pathKey{localSocket: 1, endpoint: remote}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[key] = &peerPathState{lastReceive: now, priority: 1}
+	// The first 200us sample crosses a wall-clock millisecond boundary. The
+	// official wire clock therefore records 1ms rather than duration-truncating
+	// it to zero.
+	node.updatePathLatencyLocked(peer, 1, remote, uint64(now.Add(-200*time.Microsecond).UnixMilli()), now)
+	path := peer.paths[key]
+	first := path.latency
+	node.updatePathLatencyLocked(peer, 1, remote, uint64(now.Add(-50*time.Microsecond).UnixMilli()), now)
+	second := path.latency
+	quality := pathLatency(path)
+	node.mu.Unlock()
+	if first != time.Millisecond {
+		t.Fatalf("first millisecond latency = %s, want 1ms", first)
+	}
+	if second != 0 || quality != 0 {
+		t.Fatalf("smoothed zero-millisecond latency = %s quality %s", second, quality)
+	}
+}
+
+func TestUnknownLatencyUsesOfficialWorstValue(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	measured := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.43:9993")}
+	unknown := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.44:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[measured] = &peerPathState{lastReceive: now, latency: 2 * time.Second, priority: 1}
+	peer.paths[unknown] = &peerPathState{lastReceive: now, priority: 1}
+	selected := node.bestDirectPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if selected != measured {
+		t.Fatalf("unknown RTT path selected over measured path: %v", selected)
+	}
+}
+
+func TestNonBondingSuppressesActiveSameIPDifferentPort(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	first := pathKey{localSocket: 7, endpoint: netip.MustParseAddrPort("198.51.100.45:9993")}
+	second := netip.MustParseAddrPort("198.51.100.45:29993")
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[first] = &peerPathState{lastReceive: now, priority: 1}
+	node.observeAuthenticatedPacketPathLocked(peer, 7, second, VerbOK, 1, 0, now)
+	activeCount := len(peer.paths)
+	peer.paths[first].lastReceive = now.Add(-peerPathActiveTime)
+	node.observeAuthenticatedPacketPathLocked(peer, 7, second, VerbOK, 2, 0, now)
+	expiredCount := len(peer.paths)
+	node.mu.Unlock()
+	if activeCount != 1 || expiredCount != 2 {
+		t.Fatalf("same-IP path counts active=%d expired=%d", activeCount, expiredCount)
+	}
+}
+
+func TestNetworkConfigPushAcknowledgementDespitePersistenceFailure(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Store:    failingPutStore{},
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.networks[networkID] = newNetwork(networkID)
+	node.mu.Unlock()
+
+	config := appendTestNetworkConfig(t, networkID, identity.Address())
+	key, err := controller.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	makePush := func(updateID uint64) *Packet {
+		packet, err := NewPacket(identity.Address(), controller.Address(), VerbNetworkConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = packet.AppendUint64(networkID)
+		_ = packet.AppendUint16(uint16(len(config)))
+		_ = packet.Append(config...)
+		_ = packet.Append(0)
+		_ = packet.AppendUint64(updateID)
+		_ = packet.AppendUint32(uint32(len(config)))
+		_ = packet.AppendUint32(0)
+		signature, err := controller.Sign(packet.Payload())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = packet.Append(1)
+		_ = packet.AppendUint16(SignatureSize)
+		_ = packet.Append(signature[:]...)
+		if err := packet.Armor(key[:], true); err != nil {
+			t.Fatal(err)
+		}
+		return packet
+	}
+	remote := netip.MustParseAddrPort("203.0.113.30:9993")
+	findACK := func(packet *Packet, updateID uint64, start int) bool {
+		for _, wirePacket := range sent[start:] {
+			if wirePacket.remote != remote {
+				continue
+			}
+			response, err := ParsePacket(wirePacket.data)
+			if err != nil || response.Dearmor(key[:]) != nil || response.Verb() != VerbOK {
+				continue
+			}
+			payload := response.Payload()
+			if len(payload) == 25 && payload[0] == byte(VerbEcho) && readUint64(payload[1:]) == packet.PacketID() && readUint64(payload[9:]) == networkID && readUint64(payload[17:]) == updateID {
+				return true
+			}
+		}
+		return false
+	}
+	for index, updateID := range []uint64{0x1020304050607080, 0x1020304050607081} {
+		packet := makePush(updateID)
+		sentBefore := len(sent)
+		if err := node.ProcessWirePacket(7, remote, packet.Bytes(), time.Now().Add(time.Duration(index)*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		if !findACK(packet, updateID, sentBefore) {
+			t.Fatalf("NETWORK_CONFIG update %x acknowledgement not found in %d outbound packets", updateID, len(sent)-sentBefore)
+		}
+	}
+	if network, ok := node.Network(networkID); !ok || network.Status != NetworkStatusOK || network.Config.NetworkID != networkID {
+		t.Fatalf("network configuration was not applied: ok=%t network=%+v", ok, network)
+	}
+}
+
+func TestNetworkConfigRequestUsesDirectControllerPath(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	direct := netip.MustParseAddrPort("198.51.100.25:9993")
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err = node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.peers[controller.Address()].paths[pathKey{localSocket: 7, endpoint: direct}] = &peerPathState{lastReceive: now, latency: time.Millisecond, priority: 1}
+	node.networks[networkID] = newNetwork(networkID)
+	err = node.sendNetworkConfigRequestPacketLocked(networkID, now)
+	node.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 1 || sent[0].remote != direct {
+		t.Fatalf("network config request path = %+v, want %s", sent, direct)
+	}
+}
+
+func TestNetworkConfigRequestAcceptsMultipleOKChunks(t *testing.T) {
+	identity, _ := ParseIdentity(knownGoodIdentity)
+	controller, _ := GenerateIdentity()
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{Identity: identity, Sender: WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requestID = uint64(0x0102030405060708)
+	const updateID = uint64(0x8877665544332211)
+	now := time.Now()
+	node.mu.Lock()
+	_ = node.addPeerLocked(controller, false)
+	node.networks[networkID] = newNetwork(networkID)
+	node.pending[requestID] = pendingRequest{verb: VerbNetworkConfigRequest, peer: controller.Address(), networkID: networkID, sentAt: now}
+	node.mu.Unlock()
+	config := appendTestNetworkConfig(t, networkID, identity.Address())
+	split := len(config) / 2
+	key, err := controller.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeChunk := func(index int, chunk []byte) []byte {
+		packet, err := NewPacket(identity.Address(), controller.Address(), VerbOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = packet.Append(byte(VerbNetworkConfigRequest))
+		_ = packet.AppendUint64(requestID)
+		signedAt := len(packet.Payload())
+		_ = packet.AppendUint64(networkID)
+		_ = packet.AppendUint16(uint16(len(chunk)))
+		_ = packet.Append(chunk...)
+		_ = packet.Append(0)
+		_ = packet.AppendUint64(updateID)
+		_ = packet.AppendUint32(uint32(len(config)))
+		_ = packet.AppendUint32(uint32(index))
+		signature, err := controller.Sign(packet.Payload()[signedAt:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = packet.Append(1)
+		_ = packet.AppendUint16(SignatureSize)
+		_ = packet.Append(signature[:]...)
+		if err = packet.Armor(key[:], true); err != nil {
+			t.Fatal(err)
+		}
+		return append([]byte(nil), packet.Bytes()...)
+	}
+	remote := netip.MustParseAddrPort("203.0.113.31:9993")
+	if err = node.ProcessWirePacket(0, remote, makeChunk(0, config[:split]), now); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_, pendingAfterFirst := node.pending[requestID]
+	statusAfterFirst := node.networks[networkID].Status
+	node.mu.Unlock()
+	if !pendingAfterFirst || statusAfterFirst == NetworkStatusOK {
+		t.Fatalf("first chunk consumed request: pending=%t status=%d", pendingAfterFirst, statusAfterFirst)
+	}
+	if err = node.ProcessWirePacket(0, remote, makeChunk(split, config[split:]), now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	_, pendingAfterSecond := node.pending[requestID]
+	applied := node.networks[networkID].Status == NetworkStatusOK && node.networks[networkID].Config.NetworkID == networkID
+	node.mu.Unlock()
+	if pendingAfterSecond || !applied {
+		t.Fatalf("multi-chunk config: pending=%t applied=%t", pendingAfterSecond, applied)
+	}
+}
+
+func TestJoinRestoresCachedNetworkConfig(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	store := NewMemoryStore()
+	config := appendTestNetworkConfig(t, networkID, identity.Address())
+	if err := store.Put(networkStateName(networkID), config); err != nil {
+		t.Fatal(err)
+	}
+	var restored NetworkConfigData
+	var eventReentered bool
+	var configReentered bool
+	var node *Node
+	node, err = NewNode(NodeConfig{
+		Identity: identity,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnNetworkConfig: func(config NetworkConfigData) {
+			_, configReentered = node.Network(config.NetworkID)
+			restored = config
+		},
+		OnEvent: func(event Event) {
+			if event.Type == EventNetworkConfigPending {
+				_, eventReentered = node.Network(event.NetworkID)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Join(networkID); err != nil {
+		t.Fatal(err)
+	}
+	network, ok := node.Network(networkID)
+	if !ok || network.Status != NetworkStatusOK || restored.NetworkID != networkID || !eventReentered || !configReentered {
+		t.Fatalf("cached config was not restored outside the node lock: ok=%t event=%t config=%t network=%+v restored=%+v", ok, eventReentered, configReentered, network, restored)
+	}
+}
+
+func TestNetworkConfigCallbackCannotMutateNodeState(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	store := NewMemoryStore()
+	config := appendTestNetworkConfig(t, networkID, identity.Address())
+	assigned := appendInetAddress(nil, netip.AddrPortFrom(netip.MustParseAddr("192.0.2.10"), 24))
+	config, err = appendDictionaryEntry(config, "I", assigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err = appendDictionaryEntry(config, "R", []byte{ruleActionAccept, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := append([]byte(nil), config...)
+	if err = store.Put(networkStateName(networkID), config); err != nil {
+		t.Fatal(err)
+	}
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Store:    store,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnNetworkConfig: func(callback NetworkConfigData) {
+			callback.Assigned[0] = netip.MustParsePrefix("198.51.100.1/24")
+			callback.Rules[0].Type = ruleActionDrop
+			callback.RulesRaw[0] ^= 0xff
+			callback.Raw[0] ^= 0xff
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = node.Join(networkID); err != nil {
+		t.Fatal(err)
+	}
+	network, ok := node.Network(networkID)
+	if !ok || len(network.Config.Assigned) != 1 || network.Config.Assigned[0] != netip.MustParsePrefix("192.0.2.10/24") {
+		t.Fatalf("callback mutated assigned addresses: %+v", network.Config.Assigned)
+	}
+	if len(network.Config.Rules) != 1 || network.Config.Rules[0].Type != ruleActionAccept || !bytes.Equal(network.Config.Raw, original) {
+		t.Fatal("callback mutated rules or raw network configuration")
+	}
+}
+
+func TestPeriodicNetworkConfigRequestCarriesCurrentVersion(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	var sent []sentWirePacket
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			sent = append(sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseNetworkConfig(appendTestNetworkConfig(t, networkID, identity.Address()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = config
+	network.LastConfigRequest = now.Add(-networkConfigRefreshPeriod)
+	// A restored disk configuration has no receive timestamp, but the official
+	// request still advertises its known revision and timestamp.
+	node.networks[networkID] = network
+	node.lastRootContact = now.Add(-rootContactPeriod)
+	node.mu.Unlock()
+	activateTestRootPath(t, node, now)
+	node.ProcessBackgroundTasks(now)
+
+	key, err := controller.Agree(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, wirePacket := range sent {
+		request, err := ParsePacket(wirePacket.data)
+		if err != nil || request.Destination() != controller.Address() || request.Dearmor(key[:]) != nil || request.Verb() != VerbNetworkConfigRequest {
+			continue
+		}
+		if err := request.Uncompress(); err != nil {
+			t.Fatal(err)
+		}
+		payload := request.Payload()
+		if len(payload) < 26 {
+			t.Fatalf("short network config request payload: %d", len(payload))
+		}
+		metadataLength := int(payload[8])<<8 | int(payload[9])
+		versionOffset := 10 + metadataLength
+		if len(payload)-versionOffset < 16 {
+			t.Fatalf("network config request metadata overruns payload: %d", metadataLength)
+		}
+		if readUint64(payload[versionOffset:]) != testConfigRevision || readUint64(payload[versionOffset+8:]) != testConfigTimestamp {
+			t.Fatalf("request version = revision %x timestamp %x", readUint64(payload[versionOffset:]), readUint64(payload[versionOffset+8:]))
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("periodic network configuration request was not sent")
+	}
+	node.mu.Lock()
+	requestedAt := node.networks[networkID].LastConfigRequest
+	node.mu.Unlock()
+	if !requestedAt.Equal(now) {
+		t.Fatalf("last config request = %v, want %v", requestedAt, now)
+	}
+}
+
+func TestNetworkConfigRetriesWhileAwaitingResponse(t *testing.T) {
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := controller.Address().Uint64()<<24 | 0x1234
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	node.mu.Lock()
+	if err := node.addPeerLocked(controller, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	network := newNetwork(networkID)
+	network.Status = NetworkStatusOK
+	network.Config = NetworkConfigData{NetworkID: networkID}
+	network.LastConfigRequest = now.Add(-networkConfigRetryPeriod)
+	node.networks[networkID] = network
+	node.lastRootContact = now.Add(-rootContactPeriod)
+	node.mu.Unlock()
+	node.ProcessBackgroundTasks(now)
+	node.mu.Lock()
+	requestedAt := network.LastConfigRequest
+	node.mu.Unlock()
+	if !requestedAt.Equal(now) {
+		t.Fatalf("unanswered config request was not retried: got %v want %v", requestedAt, now)
+	}
+}
+
+func TestBestPeerPathUsesOfficialQualityPriorityWeight(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Unix(1700000000, 0)
+	fast := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("192.0.2.1:9993")}
+	slowPriority := pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("192.0.2.2:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[fast] = &peerPathState{lastReceive: now, latency: 10 * time.Millisecond, priority: 1}
+	peer.paths[slowPriority] = &peerPathState{lastReceive: now, latency: 100 * time.Millisecond, priority: 2}
+	selected := node.bestPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if selected != fast {
+		t.Fatalf("selected path %v, want lower quality score %v", selected, fast)
+	}
+}
+
+func TestBestPeerPathUsesExpiredDirectPathOnlyWithoutUpstream(t *testing.T) {
+	_, remoteIdentity, node, _ := newTestNodeWithPeer(t)
+	now := time.Now()
+	expired := pathKey{localSocket: 1, endpoint: netip.MustParseAddrPort("198.51.100.150:9993")}
+	node.mu.Lock()
+	peer := node.peers[remoteIdentity.Address()]
+	peer.paths[expired] = &peerPathState{lastReceive: now.Add(-peerPathExpiration), latency: time.Millisecond, priority: 1}
+	var upstream pathKey
+	for _, candidate := range node.peers {
+		if !candidate.root {
+			continue
+		}
+		upstream = pathKey{localSocket: 2, endpoint: netip.MustParseAddrPort("198.51.100.151:9993")}
+		candidate.paths[upstream] = &peerPathState{lastReceive: now, latency: time.Millisecond, priority: 1}
+		candidate.lastReceive = now
+		break
+	}
+	if !upstream.endpoint.IsValid() {
+		node.mu.Unlock()
+		t.Fatal("test node has no planet root")
+	}
+	withUpstream := node.bestPeerPathLocked(peer, now)
+	for _, candidate := range node.peers {
+		if candidate.root {
+			candidate.paths = make(map[pathKey]*peerPathState)
+		}
+	}
+	withoutUpstream := node.bestPeerPathLocked(peer, now)
+	node.mu.Unlock()
+	if withUpstream != upstream {
+		t.Fatalf("path with upstream = %v, want %v", withUpstream, upstream)
+	}
+	if withoutUpstream != expired {
+		t.Fatalf("path without upstream = %v, want expired fallback %v", withoutUpstream, expired)
+	}
+}
+
+func TestNetworkWithLocalControllerIsNotFound(t *testing.T) {
+	identity, _ := GenerateIdentity()
+	var notFound bool
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+		OnEvent: func(event Event) {
+			notFound = notFound || event.Type == EventNetworkNotFound
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkID := identity.Address().Uint64()<<24 | 1
+	if err = node.Join(networkID); err != nil {
+		t.Fatal(err)
+	}
+	network, loaded := node.Network(networkID)
+	if !loaded || network.Status != NetworkStatusNotFound || !notFound {
+		t.Fatalf("local controller network status=%d loaded=%t event=%t", network.Status, loaded, notFound)
+	}
+}
+
+func TestOptionalWorldCacheReadFailuresAreIgnored(t *testing.T) {
+	identity, _ := GenerateIdentity()
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Store:    failingGetStore{},
+		Sender:   WireSenderFunc(func(int64, netip.AddrPort, []byte) error { return nil }),
+	})
+	if err != nil {
+		t.Fatalf("optional planet cache prevented startup: %v", err)
+	}
+	seed, _ := GenerateIdentity()
+	const worldID = uint64(0x0123456789abcdef)
+	if err = node.Orbit(worldID, seed.Address()); err != nil {
+		t.Fatalf("optional moon cache prevented orbit: %v", err)
+	}
+	node.mu.Lock()
+	wanted := node.moonSeeds[worldID]
+	node.mu.Unlock()
+	if wanted != seed.Address() {
+		t.Fatalf("moon seed = %s, want %s", wanted, seed.Address())
+	}
+}
+
+func newTestNodeWithPeer(t *testing.T) (Identity, Identity, *Node, *[]sentWirePacket) {
+	t.Helper()
+	identity, err := ParseIdentity(knownGoodIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteIdentity, err := GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := new([]sentWirePacket)
+	node, err := NewNode(NodeConfig{
+		Identity: identity,
+		Sender: WireSenderFunc(func(_ int64, remote netip.AddrPort, packet []byte) error {
+			*sent = append(*sent, sentWirePacket{remote: remote, data: append([]byte(nil), packet...)})
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.mu.Lock()
+	if err := node.addPeerLocked(remoteIdentity, false); err != nil {
+		node.mu.Unlock()
+		t.Fatal(err)
+	}
+	node.mu.Unlock()
+	return identity, remoteIdentity, node, sent
+}
+
+func appendPushedIPv4(packet *Packet, flags byte, endpoint netip.AddrPort) {
+	address := endpoint.Addr().As4()
+	_ = packet.Append(flags)
+	_ = packet.AppendUint16(0)
+	_ = packet.Append(4, 6)
+	_ = packet.Append(address[:]...)
+	_ = packet.AppendUint16(endpoint.Port())
+}
+
+func appendTestNetworkConfig(t *testing.T, networkID uint64, member Address) []byte {
+	t.Helper()
+	var config []byte
+	var err error
+	for _, entry := range []struct {
+		key   string
+		value uint64
+	}{
+		{key: "v", value: networkConfigVersion},
+		{key: "nwid", value: networkID},
+		{key: "id", value: member.Uint64()},
+		{key: "t", value: uint64(NetworkTypePublic)},
+		{key: "mtu", value: 2800},
+		{key: "r", value: testConfigRevision},
+		{key: "ts", value: testConfigTimestamp},
+	} {
+		config, err = appendDictionaryUint(config, entry.key, entry.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return config
+}
+
+const (
+	testConfigRevision  = uint64(0x1122334455667788)
+	testConfigTimestamp = uint64(0x8877665544332211)
+)
+
+func readUint64(value []byte) uint64 {
+	return uint64(value[0])<<56 | uint64(value[1])<<48 | uint64(value[2])<<40 | uint64(value[3])<<32 |
+		uint64(value[4])<<24 | uint64(value[5])<<16 | uint64(value[6])<<8 | uint64(value[7])
+}
+
+func peerPaths(node *Node, address Address) []PeerPath {
+	for _, peer := range node.Peers() {
+		if peer.Address == address {
+			return peer.Paths
+		}
+	}
+	return nil
+}
+
+func activateTestRootPath(t *testing.T, node *Node, now time.Time) netip.AddrPort {
+	t.Helper()
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	for _, root := range node.planet.Roots {
+		peer := node.peers[root.Identity.Address()]
+		if peer == nil || len(root.Endpoints) == 0 {
+			continue
+		}
+		endpoint := root.Endpoints[0]
+		peer.lastReceive = now
+		node.addPeerPathLocked(peer, pathKey{localSocket: 3, endpoint: endpoint}, &peerPathState{lastReceive: now, latency: time.Millisecond, priority: 1}, now)
+		return endpoint
+	}
+	t.Fatal("planet has no usable root endpoint")
+	return netip.AddrPort{}
+}

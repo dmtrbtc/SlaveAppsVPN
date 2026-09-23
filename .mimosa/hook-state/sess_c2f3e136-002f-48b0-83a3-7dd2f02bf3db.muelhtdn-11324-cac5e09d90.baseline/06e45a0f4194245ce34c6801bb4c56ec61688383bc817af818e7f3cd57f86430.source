@@ -1,0 +1,788 @@
+package transport
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+	"github.com/metacubex/zerotier-go/tcpfallback"
+)
+
+type recordingPacketConn struct {
+	recordingReadBufferSetter
+	recordingWriteBufferSetter
+	local     net.Addr
+	closeOnce sync.Once
+	closed    chan struct{}
+	mu        sync.Mutex
+	writes    int
+	writeErr  error
+	writeSize int
+}
+
+// recordingReadBufferSetter exposes only receive-buffer configuration.
+type recordingReadBufferSetter struct {
+	readBytes int
+}
+
+func (s *recordingReadBufferSetter) SetReadBuffer(bytes int) error {
+	s.readBytes = bytes
+	return nil
+}
+
+// recordingWriteBufferSetter exposes only send-buffer configuration.
+type recordingWriteBufferSetter struct {
+	writeBytes int
+}
+
+func (s *recordingWriteBufferSetter) SetWriteBuffer(bytes int) error {
+	s.writeBytes = bytes
+	return nil
+}
+
+func newRecordingPacketConn(local net.Addr) *recordingPacketConn {
+	return &recordingPacketConn{local: local, closed: make(chan struct{})}
+}
+
+func (c *recordingPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	<-c.closed
+	return 0, nil, net.ErrClosed
+}
+
+func (c *recordingPacketConn) WriteTo(packet []byte, _ net.Addr) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+	}
+	c.mu.Lock()
+	c.writes++
+	err := c.writeErr
+	c.mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	if c.writeSize != 0 {
+		return c.writeSize, nil
+	}
+	return len(packet), nil
+}
+
+func (c *recordingPacketConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (c *recordingPacketConn) LocalAddr() net.Addr            { return c.local }
+func (*recordingPacketConn) SetDeadline(time.Time) error      { return nil }
+func (*recordingPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (*recordingPacketConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *recordingPacketConn) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type testTCPConn struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newTestTCPConn() *testTCPConn {
+	return &testTCPConn{closed: make(chan struct{})}
+}
+
+func (c *testTCPConn) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, net.ErrClosed
+}
+
+func (c *testTCPConn) Write(packet []byte) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+		return len(packet), nil
+	}
+}
+
+func (c *testTCPConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (*testTCPConn) LocalAddr() net.Addr              { return nil }
+func (*testTCPConn) RemoteAddr() net.Addr             { return nil }
+func (*testTCPConn) SetDeadline(time.Time) error      { return nil }
+func (*testTCPConn) SetReadDeadline(time.Time) error  { return nil }
+func (*testTCPConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *testTCPConn) isClosed() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type testDialer struct {
+	dial   func(context.Context, string, string) (net.Conn, error)
+	listen func(context.Context, string, string, netip.AddrPort) (net.PacketConn, error)
+}
+
+func (d testDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if d.dial == nil {
+		return nil, errors.New("test dial disabled")
+	}
+	return d.dial(ctx, network, address)
+}
+
+func (d testDialer) ListenPacket(ctx context.Context, network, address string, remote netip.AddrPort) (net.PacketConn, error) {
+	if d.listen == nil {
+		return nil, errors.New("test listen disabled")
+	}
+	return d.listen(ctx, network, address, remote)
+}
+
+func newStartedTransport(t *testing.T, config Config) *Transport {
+	t.Helper()
+	transport, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = transport.Start(context.Background(), &zerotier.Node{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = transport.Close()
+		transport.Wait()
+	})
+	return transport
+}
+
+func TestWireSocketSpecs(t *testing.T) {
+	tests := []struct {
+		id       wireSocketID
+		portSlot wirePortSlot
+		family   wireIPFamily
+		network  string
+		host     string
+	}{
+		{wireSocketPrimaryIPv4, wirePortPrimary, wireIPv4, "udp4", "0.0.0.0"},
+		{wireSocketPrimaryIPv6, wirePortPrimary, wireIPv6, "udp6", "::"},
+		{wireSocketSecondaryIPv4, wirePortSecondary, wireIPv4, "udp4", "0.0.0.0"},
+		{wireSocketSecondaryIPv6, wirePortSecondary, wireIPv6, "udp6", "::"},
+	}
+	if len(wireSocketSpecs) != len(tests) {
+		t.Fatalf("wire socket spec count = %d, want %d", len(wireSocketSpecs), len(tests))
+	}
+	seen := make(map[wireSocketID]struct{}, len(tests))
+	for _, test := range tests {
+		spec, ok := wireSocketSpecForID(test.id)
+		if !ok {
+			t.Fatalf("wire socket %v has no spec", test.id)
+		}
+		if _, exists := seen[spec.id]; exists {
+			t.Fatalf("duplicate wire socket ID %v", spec.id)
+		}
+		seen[spec.id] = struct{}{}
+		network, host := spec.family.listenAddress()
+		if spec.portSlot != test.portSlot || spec.family != test.family || network != test.network || host != test.host {
+			t.Fatalf("wire socket %v spec = %+v, %s, %s", test.id, spec, network, host)
+		}
+		if id, valid := wireSocketIDFromHandle(int64(test.id)); !valid || id != test.id {
+			t.Fatalf("wire socket %v handle did not round trip", test.id)
+		}
+		if spec.enabled(false) != (spec.portSlot == wirePortPrimary) || !spec.enabled(true) {
+			t.Fatalf("wire socket %v enablement does not match its port slot", test.id)
+		}
+	}
+	if _, ok := wireSocketIDFromHandle(zerotier.AnyLocalSocket); ok {
+		t.Fatal("AnyLocalSocket was treated as a shared UDP socket")
+	}
+}
+
+func TestDefaultInterfaceBlacklist(t *testing.T) {
+	tests := []struct {
+		goos string
+		name string
+		want bool
+	}{
+		{goos: "linux", name: "ztabcdef", want: true},
+		{goos: "linux", name: "tun0", want: true},
+		{goos: "linux", name: "eth0"},
+		{goos: "darwin", name: "utun4", want: true},
+		{goos: "freebsd", name: "zt0", want: true},
+		{goos: "windows", name: "ZeroTier One [17d709436c04d6bc]", want: true},
+		{goos: "windows", name: "zerotier-custom", want: true},
+		{goos: "windows", name: "Tailscale"},
+	}
+	for _, test := range tests {
+		if got := defaultInterfaceBlacklisted(test.goos, test.name); got != test.want {
+			t.Errorf("defaultInterfaceBlacklisted(%q, %q) = %t, want %t", test.goos, test.name, got, test.want)
+		}
+	}
+}
+
+func TestConfigValidation(t *testing.T) {
+	dialer := testDialer{}
+	for input, want := range map[string]TCPFallbackMode{"": TCPFallbackAuto, "auto": TCPFallbackAuto, "force": TCPFallbackForce, "disable": TCPFallbackDisabled} {
+		mode, err := ParseTCPFallbackMode(input)
+		if err != nil || mode != want || mode.String() == "" {
+			t.Fatalf("ParseTCPFallbackMode(%q) = %v, %v", input, mode, err)
+		}
+	}
+	if _, err := ParseTCPFallbackMode("invalid"); err == nil {
+		t.Fatal("invalid fallback mode was accepted")
+	}
+	for _, config := range []Config{
+		{Dialer: dialer, PrimaryPort: -1, SecondaryPort: -1},
+		{Dialer: dialer, PrimaryPort: 65536, SecondaryPort: -1},
+		{Dialer: dialer, SecondaryPort: -2},
+		{Dialer: dialer, SecondaryPort: 65536},
+		{Dialer: dialer, PrimaryPort: 9993, SecondaryPort: 9993},
+		{Dialer: dialer, RequireSharedUDP: true, SecondaryPort: -1},
+		{Dialer: dialer, SharedUDP: true, RequireSharedUDP: true, SecondaryPort: -1, TCPFallbackMode: TCPFallbackForce},
+	} {
+		if _, err := New(config); err == nil {
+			t.Fatalf("invalid transport config was accepted: %+v", config)
+		}
+	}
+	if _, err := New(Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackRelay: "invalid"}); err == nil {
+		t.Fatal("invalid fallback relay was accepted")
+	}
+}
+
+func TestPacketSocketSelectionUsesOpaqueHandle(t *testing.T) {
+	transport := newStartedTransport(t, Config{Dialer: testDialer{}, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	primaryIPv4 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 9993})
+	primaryIPv6 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv6zero, Port: 9993})
+	secondaryIPv4 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 29993})
+	secondaryIPv6 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv6zero, Port: 29993})
+	transport.mu.Lock()
+	transport.packetSockets = map[wireSocketID]net.PacketConn{
+		wireSocketPrimaryIPv4:   primaryIPv4,
+		wireSocketPrimaryIPv6:   primaryIPv6,
+		wireSocketSecondaryIPv4: secondaryIPv4,
+		wireSocketSecondaryIPv6: secondaryIPv6,
+	}
+	transport.mu.Unlock()
+	remoteIPv4 := netip.MustParseAddrPort("192.0.2.1:9993")
+	sockets, err := transport.packetSocketsForSend(int64(wireSocketSecondaryIPv4), remoteIPv4, nil)
+	if err != nil || len(sockets) != 1 || sockets[0].id != wireSocketSecondaryIPv4 {
+		t.Fatalf("selected IPv4 socket = %+v, %v", sockets, err)
+	}
+	sockets, err = transport.packetSocketsForSend(int64(wireSocketPrimaryIPv6), remoteIPv4, nil)
+	if err != nil || !sameSocketIDs(sockets, wireSocketPrimaryIPv4, wireSocketSecondaryIPv4) {
+		t.Fatalf("family fallback sockets = %+v, %v", sockets, err)
+	}
+	sockets, err = transport.packetSocketsForSend(zerotier.AnyLocalSocket, netip.MustParseAddrPort("[2001:db8::1]:9993"), nil)
+	if err != nil || !sameSocketIDs(sockets, wireSocketPrimaryIPv6, wireSocketSecondaryIPv6) {
+		t.Fatalf("IPv6 fallback sockets = %+v, %v", sockets, err)
+	}
+	packet := make([]byte, zerotier.PacketMinSize)
+	if err = transport.Send(int64(wireSocketSecondaryIPv4), remoteIPv4, packet); err != nil {
+		t.Fatal(err)
+	}
+	secondaryIPv4.mu.Lock()
+	secondaryWrites := secondaryIPv4.writes
+	secondaryIPv4.mu.Unlock()
+	primaryIPv4.mu.Lock()
+	primaryWrites := primaryIPv4.writes
+	primaryIPv4.mu.Unlock()
+	if secondaryWrites != 1 || primaryWrites != 0 {
+		t.Fatalf("preferred socket writes = primary %d secondary %d", primaryWrites, secondaryWrites)
+	}
+}
+
+func TestPacketSocketSendErrorDoesNotCloseBinding(t *testing.T) {
+	transport := newStartedTransport(t, Config{Dialer: testDialer{}, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	connection := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 9993})
+	writeErr := errors.New("temporary UDP send failure")
+	connection.writeErr = writeErr
+	transport.mu.Lock()
+	transport.packetSockets[wireSocketPrimaryIPv4] = connection
+	transport.mu.Unlock()
+
+	remote := netip.MustParseAddrPort("192.0.2.1:9993")
+	packet := make([]byte, zerotier.PacketMinSize)
+	if err := transport.Send(int64(wireSocketPrimaryIPv4), remote, packet); !errors.Is(err, writeErr) {
+		t.Fatalf("shared UDP send error = %v, want %v", err, writeErr)
+	}
+	transport.mu.Lock()
+	retained := transport.packetSockets[wireSocketPrimaryIPv4] == connection
+	transport.mu.Unlock()
+	if !retained || connection.isClosed() {
+		t.Fatal("one UDP send failure closed the shared binding")
+	}
+
+	connection.mu.Lock()
+	connection.writeErr = nil
+	connection.mu.Unlock()
+	if err := transport.Send(int64(wireSocketPrimaryIPv4), remote, packet); err != nil {
+		t.Fatalf("shared UDP send after transient error: %v", err)
+	}
+	connection.mu.Lock()
+	writes := connection.writes
+	connection.mu.Unlock()
+	if writes != 2 {
+		t.Fatalf("shared UDP writes = %d, want 2", writes)
+	}
+
+	connection.mu.Lock()
+	connection.writeSize = len(packet) - 1
+	connection.mu.Unlock()
+	if err := transport.Send(int64(wireSocketPrimaryIPv4), remote, packet); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("shared UDP short send error = %v, want %v", err, io.ErrShortWrite)
+	}
+	transport.mu.Lock()
+	retained = transport.packetSockets[wireSocketPrimaryIPv4] == connection
+	transport.mu.Unlock()
+	if !retained || connection.isClosed() {
+		t.Fatal("one short UDP send closed the shared binding")
+	}
+}
+
+func TestPacketSocketRequestsOfficialBufferSize(t *testing.T) {
+	connection := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 9993})
+	dialer := testDialer{listen: func(context.Context, string, string, netip.AddrPort) (net.PacketConn, error) {
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	if err := transport.openPacketSocket(wireSocketPrimaryIPv4); err != nil {
+		t.Fatal(err)
+	}
+	readBuf, writeBuf := connection.readBytes, connection.writeBytes
+	if readBuf != udpDesiredBufferSize || writeBuf != udpDesiredBufferSize {
+		t.Fatalf("UDP buffers = read %d write %d, want %d", readBuf, writeBuf, udpDesiredBufferSize)
+	}
+}
+
+func TestUDPSocketBufferCapabilitiesAreIndependent(t *testing.T) {
+	transport := &Transport{}
+	readSetter := &recordingReadBufferSetter{}
+	transport.configureUDPSocketBuffers(readSetter)
+	if readSetter.readBytes != udpDesiredBufferSize {
+		t.Fatalf("UDP read buffer = %d, want %d", readSetter.readBytes, udpDesiredBufferSize)
+	}
+
+	writeSetter := &recordingWriteBufferSetter{}
+	transport.configureUDPSocketBuffers(writeSetter)
+	if writeSetter.writeBytes != udpDesiredBufferSize {
+		t.Fatalf("UDP write buffer = %d, want %d", writeSetter.writeBytes, udpDesiredBufferSize)
+	}
+}
+
+func TestClosedTransportCannotInstallPacketSocket(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connection := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 29993})
+	dialer := testDialer{listen: func(context.Context, string, string, netip.AddrPort) (net.PacketConn, error) {
+		close(started)
+		<-release
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	result := make(chan error, 1)
+	go func() { result <- transport.openPacketSocket(wireSocketPrimaryIPv4) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("packet listen did not start")
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-result; !errors.Is(err, ErrClosed) {
+		t.Fatalf("closed packet listen error = %v", err)
+	}
+	if !connection.isClosed() || len(transport.packetSockets) != 0 {
+		t.Fatal("closed transport retained a late packet socket")
+	}
+}
+
+func TestPortGenerationRejectsLatePacketSocket(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connection := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 29993})
+	dialer := testDialer{listen: func(context.Context, string, string, netip.AddrPort) (net.PacketConn, error) {
+		close(started)
+		<-release
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: 29993, TCPFallbackMode: TCPFallbackDisabled})
+	result := make(chan error, 1)
+	go func() { result <- transport.openPacketSocket(wireSocketSecondaryIPv4) }()
+	<-started
+	transport.mu.Lock()
+	transport.portGeneration[wirePortSecondary]++
+	transport.mu.Unlock()
+	close(release)
+	if err := <-result; !errors.Is(err, errWireSocketBindSuperseded) {
+		t.Fatalf("late packet socket error = %v", err)
+	}
+	transport.mu.Lock()
+	installed := transport.packetSockets[wireSocketSecondaryIPv4]
+	port := transport.ports[wirePortSecondary]
+	transport.mu.Unlock()
+	if installed != nil || port != 29993 || !connection.isClosed() {
+		t.Fatalf("late packet socket state: installed=%t port=%d closed=%t", installed != nil, port, connection.isClosed())
+	}
+}
+
+func TestClosedTransportCannotInstallConnectedUDP(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connection := newTestTCPConn()
+	dialer := testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+		close(started)
+		<-release
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	result := make(chan error, 1)
+	go func() {
+		_, err := transport.connection(netip.MustParseAddrPort("192.0.2.1:9993"))
+		result <- err
+	}()
+	<-started
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-result; !errors.Is(err, ErrClosed) {
+		t.Fatalf("closed UDP dial error = %v", err)
+	}
+	if !connection.isClosed() || len(transport.connections) != 0 {
+		t.Fatal("closed transport retained a late connected UDP socket")
+	}
+}
+
+func TestConnectedUDPSocketCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	var connections []*testTCPConn
+	dialer := testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+		connection := newTestTCPConn()
+		connections = append(connections, connection)
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	address := netip.MustParseAddr("192.0.2.1")
+	remotes := make([]netip.AddrPort, maxConnectedUDPSockets)
+	for index := range remotes {
+		remotes[index] = netip.AddrPortFrom(address, uint16(10000+index))
+		if _, err := transport.connection(remotes[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Now().Add(-time.Hour)
+	transport.mu.Lock()
+	for index, remote := range remotes {
+		socket := transport.connections[remote]
+		socket.lastUsed = base.Add(time.Duration(index) * time.Second)
+		transport.connections[remote] = socket
+	}
+	transport.mu.Unlock()
+	if _, err := transport.connection(remotes[0]); err != nil {
+		t.Fatal(err)
+	}
+	newest := netip.AddrPortFrom(address, 20000)
+	if _, err := transport.connection(newest); err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	_, firstKept := transport.connections[remotes[0]]
+	_, oldestKept := transport.connections[remotes[1]]
+	_, newestKept := transport.connections[newest]
+	count := len(transport.connections)
+	transport.mu.Unlock()
+	if !firstKept || oldestKept || !newestKept || count != maxConnectedUDPSockets {
+		t.Fatalf("connected UDP cache: first=%t oldest=%t newest=%t count=%d", firstKept, oldestKept, newestKept, count)
+	}
+	if !connections[1].isClosed() {
+		t.Fatal("least recently used connected UDP socket was not closed")
+	}
+}
+
+func TestClosedTransportCannotInstallTCPFallback(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	connection := newTestTCPConn()
+	dialer := testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+		close(started)
+		<-release
+		return connection, nil
+	}}
+	transport := newStartedTransport(t, Config{Dialer: dialer, SecondaryPort: -1, TCPFallbackMode: TCPFallbackForce})
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	if err := transport.Send(zerotier.AnyLocalSocket, remote, make([]byte, zerotier.PacketMinSize)); !errors.Is(err, ErrTCPFallbackUnavailable) {
+		t.Fatalf("forced send error = %v", err)
+	}
+	<-started
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	deadline := time.After(time.Second)
+	for !connection.isClosed() {
+		select {
+		case <-deadline:
+			t.Fatal("closed transport retained a late TCP fallback")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	transport.mu.Lock()
+	fallback := transport.fallback
+	transport.mu.Unlock()
+	if fallback != nil {
+		t.Fatal("closed transport installed a TCP fallback")
+	}
+}
+
+func TestRetiredTCPFallbackCannotReportCurrentFailure(t *testing.T) {
+	var logMu sync.Mutex
+	var logCount int
+	transport := newStartedTransport(t, Config{
+		Dialer:          testDialer{},
+		SecondaryPort:   -1,
+		TCPFallbackMode: TCPFallbackForce,
+		Log: func(LogLevel, string, ...interface{}) {
+			logMu.Lock()
+			logCount++
+			logMu.Unlock()
+		},
+	})
+	retired, err := tcpfallback.NewSession(newTestTCPConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := tcpfallback.NewSession(newTestTCPConn())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	transport.fallback = current
+	transport.mu.Unlock()
+
+	transport.dropTCPFallback(retired, errors.New("retired fallback failed"))
+	logMu.Lock()
+	count := logCount
+	logMu.Unlock()
+	if count != 0 {
+		t.Fatalf("retired fallback emitted %d log messages", count)
+	}
+	transport.mu.Lock()
+	retained := transport.fallback
+	transport.mu.Unlock()
+	if retained != current {
+		t.Fatal("retired fallback changed the current session")
+	}
+}
+
+func TestDirectRecoveryDuringFallbackHandshakePreventsInstallation(t *testing.T) {
+	connection := newTestTCPConn()
+	var transport *Transport
+	var recoverOnce sync.Once
+	var logMu sync.Mutex
+	var logs []string
+	transport = newStartedTransport(t, Config{
+		Dialer: testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+			return connection, nil
+		}},
+		SecondaryPort:   -1,
+		TCPFallbackMode: TCPFallbackAuto,
+		Log: func(_ LogLevel, format string, _ ...interface{}) {
+			logMu.Lock()
+			logs = append(logs, format)
+			logMu.Unlock()
+			if format == "TCP fallback relay connection established to %s" {
+				recoverOnce.Do(func() {
+					transport.noteDirectGlobalReceive(netip.MustParseAddrPort("8.8.8.8:9993"), zerotier.FragmentHeaderSize+1, time.Now())
+				})
+			}
+		},
+	})
+	transport.mu.Lock()
+	transport.policy.Reset(time.Now().Add(-2 * tcpfallback.FallbackAfter))
+	transport.fallbackOpening = true
+	transport.mu.Unlock()
+
+	transport.openTCPFallback()
+	transport.mu.Lock()
+	fallback := transport.fallback
+	transport.mu.Unlock()
+	if fallback != nil || !connection.isClosed() {
+		t.Fatalf("recovered direct path retained fallback: installed=%t closed=%t", fallback != nil, connection.isClosed())
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if len(logs) != 1 || logs[0] != "TCP fallback relay connection established to %s" {
+		t.Fatalf("fallback transition logs = %v", logs)
+	}
+}
+
+func TestWaitForNodeWorkers(t *testing.T) {
+	transport := newStartedTransport(t, Config{Dialer: testDialer{}, SecondaryPort: -1, TCPFallbackMode: TCPFallbackDisabled})
+	transport.nodeWorkers.Add(1)
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan struct{})
+	go func() {
+		transport.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("Wait returned before node worker stopped")
+	case <-time.After(50 * time.Millisecond):
+	}
+	transport.nodeWorkers.Done()
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return after node worker stopped")
+	}
+}
+
+func TestForcedTCPFallbackErrors(t *testing.T) {
+	transport := newStartedTransport(t, Config{Dialer: testDialer{}, SecondaryPort: -1, TCPFallbackMode: TCPFallbackForce})
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	packet := make([]byte, zerotier.PacketMinSize)
+	if err := transport.Send(zerotier.AnyLocalSocket, remote, packet); !errors.Is(err, ErrTCPFallbackUnavailable) {
+		t.Fatalf("forced fallback without a session returned %v", err)
+	}
+	connection := newTestTCPConn()
+	fallback, err := tcpfallback.NewSession(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		err = fallback.Send(remote, packet)
+		if errors.Is(err, tcpfallback.ErrQueueFull) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport.mu.Lock()
+	transport.fallback = fallback
+	transport.mu.Unlock()
+	if err = transport.Send(zerotier.AnyLocalSocket, remote, packet); !errors.Is(err, tcpfallback.ErrQueueFull) {
+		t.Fatalf("forced fallback full queue returned %v", err)
+	}
+}
+
+func TestAutomaticTCPFallbackSuccessMasksDirectSendFailure(t *testing.T) {
+	directErr := errors.New("direct UDP unavailable")
+	transport := newStartedTransport(t, Config{
+		Dialer: testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, directErr
+		}},
+		SecondaryPort:   -1,
+		TCPFallbackMode: TCPFallbackAuto,
+	})
+	connection := newTestTCPConn()
+	fallback, err := tcpfallback.NewSession(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport.mu.Lock()
+	transport.fallback = fallback
+	transport.policy.Reset(time.Now().Add(-tcpfallback.FallbackAfter - time.Second))
+	transport.mu.Unlock()
+
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	if err = transport.Send(zerotier.AnyLocalSocket, remote, make([]byte, zerotier.PacketMinSize)); err != nil {
+		t.Fatalf("successful TCP fallback returned direct UDP failure: %v", err)
+	}
+}
+
+func TestAutomaticTCPFallbackWithoutSessionReturnsDirectSendFailure(t *testing.T) {
+	directErr := errors.New("direct UDP unavailable")
+	transport := newStartedTransport(t, Config{
+		Dialer: testDialer{dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, directErr
+		}},
+		SecondaryPort:   -1,
+		TCPFallbackMode: TCPFallbackAuto,
+	})
+	transport.mu.Lock()
+	transport.policy.Reset(time.Now().Add(-tcpfallback.FallbackAfter - time.Second))
+	transport.mu.Unlock()
+
+	remote := netip.MustParseAddrPort("8.8.8.8:9993")
+	err := transport.Send(zerotier.AnyLocalSocket, remote, make([]byte, zerotier.PacketMinSize))
+	if !errors.Is(err, directErr) {
+		t.Fatalf("automatic fallback without a session returned %v, want %v", err, directErr)
+	}
+}
+
+func TestDirectPathsUseInjectedInterfaces(t *testing.T) {
+	transport := newStartedTransport(t, Config{
+		Dialer:          testDialer{},
+		SecondaryPort:   -1,
+		TCPFallbackMode: TCPFallbackDisabled,
+		Interfaces: func() ([]Interface, error) {
+			return []Interface{
+				{Name: "eth0", Flags: net.FlagUp, Addresses: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24"), netip.MustParsePrefix("2001:db8::10/64")}},
+				{Name: "ztabcdef", Flags: net.FlagUp | net.FlagLoopback, Addresses: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")}},
+				{Name: "down0", Addresses: []netip.Prefix{netip.MustParsePrefix("203.0.113.10/24")}},
+			}, nil
+		},
+	})
+	v4 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv4zero, Port: 9993})
+	v6 := newRecordingPacketConn(&net.UDPAddr{IP: net.IPv6zero, Port: 9993})
+	transport.mu.Lock()
+	transport.packetSockets[wireSocketPrimaryIPv4] = v4
+	transport.packetSockets[wireSocketPrimaryIPv6] = v6
+	transport.mu.Unlock()
+	paths := transport.DirectPaths()
+	for _, wanted := range []netip.AddrPort{
+		netip.MustParseAddrPort("192.0.2.10:9993"),
+		netip.MustParseAddrPort("[2001:db8::10]:9993"),
+	} {
+		if !containsAddrPort(paths, wanted) {
+			t.Fatalf("direct paths %v do not contain %s", paths, wanted)
+		}
+	}
+	if containsAddrPort(paths, netip.MustParseAddrPort("198.51.100.10:9993")) || containsAddrPort(paths, netip.MustParseAddrPort("203.0.113.10:9993")) {
+		t.Fatalf("direct paths included a blacklisted or down interface: %v", paths)
+	}
+}
+
+func sameSocketIDs(sockets []packetSocket, wanted ...wireSocketID) bool {
+	if len(sockets) != len(wanted) {
+		return false
+	}
+	remaining := make(map[wireSocketID]struct{}, len(wanted))
+	for _, id := range wanted {
+		remaining[id] = struct{}{}
+	}
+	for _, socket := range sockets {
+		delete(remaining, socket.id)
+	}
+	return len(remaining) == 0
+}
+
+func containsAddrPort(addresses []netip.AddrPort, wanted netip.AddrPort) bool {
+	for _, address := range addresses {
+		if address == wanted {
+			return true
+		}
+	}
+	return false
+}

@@ -1,0 +1,115 @@
+import type { RoutingRule, RuleTargetType, RuleAction } from '../models/RoutingRule'
+import { RUSSIA_BYPASS_RULES, RUSSIA_BYPASS_PRIVATE_DIRECT } from '../data/bypass-rules'
+import { RU_DIRECT_RULES } from '../data/ru-direct'
+import { MESSENGER_PROXY_RULES } from '../data/messengers'
+import type { RoutingScenario } from './types'
+
+// Russia-specific direct routes for local services that MUST stay direct
+// (otherwise banking apps, gosuslugi, etc. break or trigger fraud detection).
+const RUSSIA_LOCAL_DIRECT_DOMAINS: readonly string[] = [
+  // Banking
+  'sberbank.ru', 'sber.ru', 'sbrf.ru', 'sberbank-online.ru', 'online.sberbank.ru',
+  'vtb.ru', 'tinkoff.ru', 'tcsbank.ru', 'tbank.ru',
+  'alfabank.ru', 'gazprombank.ru', 'rshb.ru', 'open.ru',
+  'raiffeisen.ru', 'mkb.ru', 'rosbank.ru', 'pochtabank.ru',
+  // Government
+  'gosuslugi.ru', 'gosuslugi.ru', 'rosreestr.ru', 'nalog.ru', 'pfr.gov.ru',
+  'mos.ru', 'mosreg.ru', 'fssp.gov.ru', 'gibdd.ru',
+  // Russian search & email
+  'yandex.ru', 'yandex.net', 'yandex.com', 'ya.ru',
+  'mail.ru', 'list.ru', 'inbox.ru', 'bk.ru',
+  'rambler.ru', 'sputnik.ru',
+  // Russian social
+  'vk.com', 'vk.ru', 'vkontakte.ru', 'ok.ru', 'odnoklassniki.ru',
+  // Russian marketplaces
+  'wildberries.ru', 'ozon.ru', 'avito.ru', 'aliexpress.ru', 'youla.ru',
+  'lamoda.ru', 'mvideo.ru', 'eldorado.ru', 'dns-shop.ru', 'citilink.ru',
+  // Russian delivery
+  'dostavista.ru', 'cdek.ru', 'pochta.ru', 'russianpost.ru',
+  // Russian utilities/media
+  'rt.com', 'ria.ru', 'tass.ru', 'kommersant.ru', 'rbc.ru', 'lenta.ru',
+  'kinopoisk.ru', 'ivi.ru', 'okko.tv', 'wink.ru', 'more.tv', 'amediateka.ru',
+  // Russian tech
+  'habr.com', 'tinkoff.ru', '1c.ru', 'kontur.ru',
+]
+
+let _id = 0
+function nextId(prefix: string): string {
+  return `${prefix}:${++_id}`
+}
+
+function rule(type: RuleTargetType, value: string, action: RuleAction, priority: number, category: string, noResolve = false): RoutingRule {
+  return {
+    id: nextId(`russia:${type}:${value}`),
+    target: { type, value },
+    action,
+    priority,
+    source: { provider: 'scenario:smart-russia-bypass', category },
+    ...(noResolve ? { noResolve: true } : {}),
+  }
+}
+
+function buildRules(): readonly RoutingRule[] {
+  const rules: RoutingRule[] = []
+
+  // Priority 100-499: private nets stay direct (must be first)
+  let p = 100
+  for (const r of RUSSIA_BYPASS_PRIVATE_DIRECT) {
+    rules.push({ ...r, priority: p++ })
+  }
+
+  // Priority 500-999: Russia local services → direct
+  p = 500
+  for (const domain of RUSSIA_LOCAL_DIRECT_DOMAINS) {
+    rules.push(rule('domain_suffix', domain, 'direct', p++, 'ru-local'))
+  }
+
+  // Priority 1300-1399: messengers → proxy (WhatsApp/Telegram/Signal/Discord/Viber)
+  // via BOTH geosite (domains) and geoip (call-media IP ranges). Critical for the
+  // «Только заблокированное» mode: a messenger app dials its media IPs DIRECTLY (no
+  // domain to match), so a domain-only list misses it → under a direct-default
+  // policy the call would go DIRECT and be RKN-throttled. geoip:telegram /
+  // geoip:facebook (WhatsApp media) catch the raw-IP media; geosite catches chat.
+  for (const r of MESSENGER_PROXY_RULES) rules.push(r)
+
+  // Priority 1500-1999: Blocked-in-RU services → proxy
+  // Reuse the existing curated list, reassigning priorities
+  p = 1500
+  for (const r of RUSSIA_BYPASS_RULES) {
+    rules.push({ ...r, priority: p++, source: { provider: 'scenario:smart-russia-bypass', category: 'blocked-in-ru' } })
+  }
+
+  // Priority 2400-2499: curated RU-direct (banks/gov/payments/RU streaming on
+  // foreign CDNs that geoip:RU can't catch). Shared with roscomvpn-default so the
+  // RU-direct guarantee is identical across the bypass bases.
+  for (const r of RU_DIRECT_RULES) rules.push(r)
+
+  // Priority 2500-2999: Geo-based — RU geoip → direct (catches the long tail of RU services)
+  rules.push({
+    id: nextId('russia:geoip:RU'),
+    target: { type: 'geoip', value: 'RU' },
+    action: 'direct',
+    priority: 2500,
+    noResolve: true,
+    source: { provider: 'scenario:smart-russia-bypass', category: 'geoip' },
+  })
+
+  return rules
+}
+
+export function createSmartRussiaBypassScenario(): RoutingScenario {
+  return {
+    id: 'smart-russia-bypass',
+    name: 'Smart Russia Bypass',
+    description: 'Заблокированное в РФ — через VPN. Российские сервисы и банки — напрямую.',
+    category: 'bypass',
+    icon: 'Map',
+    // Direct-default selective bypass: only RKN-list/AI traffic tunnels, the rest
+    // (incl. blocked sites not in a list) goes DIRECT. roscomvpn-default is the
+    // out-of-box default instead (proxy-default → blocked sites just work).
+    defaultEnabled: false,
+    composable: true,
+    rules: buildRules(),
+    defaultAction: 'direct',
+  }
+}

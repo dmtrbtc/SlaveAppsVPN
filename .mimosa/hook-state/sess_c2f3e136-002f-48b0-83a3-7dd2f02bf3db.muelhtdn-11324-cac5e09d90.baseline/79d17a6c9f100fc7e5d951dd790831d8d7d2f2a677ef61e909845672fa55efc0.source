@@ -1,0 +1,79 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/netip"
+	"testing"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+// TestPrintWatchEventOmitsAbsentAddresses verifies that zero-valued optional
+// event fields remain absent from JSON Lines output.
+func TestPrintWatchEventOmitsAbsentAddresses(t *testing.T) {
+	var output bytes.Buffer
+	printWatchEvent(&output, zerotier.Event{Type: zerotier.EventNetworkConfigPending, NetworkID: 1}, true)
+	var record map[string]interface{}
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := record["node"]; exists {
+		t.Fatalf("zero node address was emitted: %s", output.String())
+	}
+	if _, exists := record["peer"]; exists {
+		t.Fatalf("zero peer address was emitted: %s", output.String())
+	}
+}
+
+// TestPrintWatchEventIncludesPathDiagnostics verifies the additional stable
+// JSON fields used by path and surface events.
+func TestPrintWatchEventIncludesPathDiagnostics(t *testing.T) {
+	var output bytes.Buffer
+	printWatchEvent(&output, zerotier.Event{
+		Type: zerotier.EventLocalSurfaceChanged, ReporterAddress: zerotier.Address(1), PeerRole: zerotier.PeerRolePlanet,
+		PreviousEndpoint: netip.MustParseAddrPort("198.51.100.1:1000"),
+		Endpoint:         netip.MustParseAddrPort("198.51.100.2:2000"), PathCount: 3,
+	}, true)
+	var record map[string]interface{}
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["type"] != "local-surface-changed" || record["reporter"] != "0000000001" || record["peer_role"] != "planet" || record["previous_endpoint"] != "198.51.100.1:1000" || record["endpoint"] != "198.51.100.2:2000" || record["path_count"] != float64(3) {
+		t.Fatalf("path event record = %v", record)
+	}
+}
+
+// TestWatchStateAcceptsRecoveryTransitions verifies valid lifecycle recovery.
+func TestWatchStateAcceptsRecoveryTransitions(t *testing.T) {
+	state := watchState{}
+	for _, typ := range []zerotier.EventType{
+		zerotier.EventNodeUp,
+		zerotier.EventNodeOnline,
+		zerotier.EventNetworkConfigPending,
+		zerotier.EventNetworkConfigReady,
+		zerotier.EventNetworkConfigChanged,
+		zerotier.EventNodeOffline,
+		zerotier.EventNodeOnline,
+		zerotier.EventNetworkAuthenticationRequired,
+		zerotier.EventNetworkConfigReady,
+	} {
+		state.observe(zerotier.Event{Type: typ})
+	}
+	if len(state.violations) != 0 || !state.online || !state.ready {
+		t.Fatalf("watch state = %+v", state)
+	}
+}
+
+// TestWatchStateRejectsDuplicateReadyAndUpdateBeforeReady verifies the event
+// invariants intended to catch repeated readiness logging regressions.
+func TestWatchStateRejectsDuplicateReadyAndUpdateBeforeReady(t *testing.T) {
+	state := watchState{}
+	state.observe(zerotier.Event{Type: zerotier.EventNodeUp})
+	state.observe(zerotier.Event{Type: zerotier.EventNetworkConfigChanged})
+	state.observe(zerotier.Event{Type: zerotier.EventNetworkConfigReady})
+	state.observe(zerotier.Event{Type: zerotier.EventNetworkConfigReady})
+	if len(state.violations) != 2 {
+		t.Fatalf("violations = %v", state.violations)
+	}
+}

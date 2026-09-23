@@ -1,0 +1,343 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/netip"
+	"time"
+
+	zerotier "github.com/metacubex/zerotier-go"
+)
+
+const (
+	// tcpProtocol is the IP next-header number assigned to TCP.
+	tcpProtocol = byte(6)
+	// tcpHeaderSize is the size of a TCP header without options.
+	tcpHeaderSize = 20
+	// tcpFlagFIN marks the final sequence byte in a TCP stream.
+	tcpFlagFIN = byte(0x01)
+	// tcpFlagSYN establishes TCP sequence number synchronization.
+	tcpFlagSYN = byte(0x02)
+	// tcpFlagRST immediately resets a TCP connection or half-open attempt.
+	tcpFlagRST = byte(0x04)
+	// tcpFlagACK marks the acknowledgement field as valid.
+	tcpFlagACK = byte(0x10)
+	// tcpFlagPSH asks the receiver to promptly expose queued application data.
+	tcpFlagPSH = byte(0x08)
+	// tcpProbeRetryInterval is the delay between SYN retransmissions.
+	tcpProbeRetryInterval = time.Second
+)
+
+// tcpProbeStatus describes the observed state of a probed TCP port.
+type tcpProbeStatus string
+
+const (
+	// tcpProbeStatusOpen indicates that the target returned SYN-ACK.
+	tcpProbeStatusOpen tcpProbeStatus = "open"
+	// tcpProbeStatusClosed indicates that the target returned RST-ACK.
+	tcpProbeStatusClosed tcpProbeStatus = "closed"
+	// tcpProbeStatusTimeout indicates that no conclusive TCP reply arrived.
+	tcpProbeStatusTimeout tcpProbeStatus = "timeout"
+	// tcpProbeStatusError indicates a local probe construction or link failure.
+	tcpProbeStatusError tcpProbeStatus = "error"
+)
+
+// tcpProbeResult is the stable human-readable and JSON result of one TCP probe.
+type tcpProbeResult struct {
+	Node     string         `json:"node"`
+	Network  string         `json:"network"`
+	Source   string         `json:"source"`
+	Target   string         `json:"target"`
+	Status   tcpProbeStatus `json:"status"`
+	Attempts int            `json:"attempts"`
+	RTT      time.Duration  `json:"rtt,omitempty"`
+	Path     pathDiagnostic `json:"path"`
+	Mode     string         `json:"mode,omitempty"`
+}
+
+// runTCP joins a network and probes one managed TCP endpoint with SYN packets.
+func runTCP(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("tcp", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var options onlineOptions
+	addOnlineFlags(flags, &options)
+	networkText := flags.String("network", "", "16-digit network ID")
+	targetText := flags.String("target", "", "IPv4 or IPv6 destination")
+	port := flags.Int("port", 0, "TCP destination port")
+	attempts := flags.Int("count", 3, "maximum SYN attempts")
+	mode := flags.String("mode", "syn", "probe mode: syn or connect")
+	peerText := flags.String("peer", "", "expected 10-digit ZeroTier peer address")
+	requireDirect := flags.Bool("require-direct", false, "require an active direct path to the expected peer")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage, err
+	}
+	networkID, err := parseNetworkOption(*networkText, flags.NArg(), options.timeout)
+	if err != nil {
+		return exitUsage, err
+	}
+	target, err := netip.ParseAddr(*targetText)
+	if err != nil || target.IsUnspecified() || target.IsMulticast() || *port < 1 || *port > 65535 || *attempts <= 0 || (*mode != "syn" && *mode != "connect") {
+		return exitUsage, errors.New("tcp requires a unicast -target, a -port from 1 to 65535, a positive -count, and -mode syn or connect")
+	}
+	if *peerText != "" {
+		if _, err = zerotier.ParseAddress(*peerText); err != nil {
+			return exitUsage, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
+	defer cancel()
+	probe, code, err := startNetworkProbe(ctx, options, networkID, target, stdout, stderr)
+	if err != nil {
+		return code, err
+	}
+	defer probe.Close()
+	var result tcpProbeResult
+	var probeErr error
+	if *mode == "connect" {
+		result, probeErr = probe.runtime.connectTCP(ctx, probe.network.Config, netip.AddrPortFrom(target, uint16(*port)), *attempts)
+	} else {
+		result, probeErr = probe.runtime.probeTCP(ctx, probe.network.Config, target, uint16(*port), *attempts)
+	}
+	result.Mode = *mode
+	diagnostic, pathErr := diagnosePath(ctx, probe.runtime.node, probe.network.Config, target, *peerText, *requireDirect)
+	result.Path = diagnostic
+	if options.json {
+		_ = json.NewEncoder(stdout).Encode(result)
+	} else {
+		fmt.Fprintf(stdout, "node=%s network=%s source=%s target=%s mode=%s status=%s attempts=%d", result.Node, result.Network, result.Source, result.Target, result.Mode, result.Status, result.Attempts)
+		if result.RTT > 0 {
+			fmt.Fprintf(stdout, " rtt=%s", result.RTT)
+		}
+		fmt.Fprintln(stdout)
+		printPathDiagnostic(stdout, diagnostic)
+	}
+	if probeErr != nil {
+		return exitProbeFailed, probeErr
+	}
+	if pathErr != nil {
+		return exitProbeFailed, pathErr
+	}
+	return exitOK, nil
+}
+
+// connectTCP completes an active-open handshake through the diagnostic TCP
+// client and then closes it cleanly.
+func (p *probeRuntime) connectTCP(ctx context.Context, config zerotier.NetworkConfigData, target netip.AddrPort, maximumAttempts int) (tcpProbeResult, error) {
+	result := tcpProbeResult{
+		Node: p.node.Address().String(), Network: fmt.Sprintf("%016x", config.NetworkID), Target: target.String(), Status: tcpProbeStatusError,
+	}
+	connection, err := dialTCPClient(ctx, p, config, target, maximumAttempts)
+	if err != nil {
+		if errors.Is(err, errTCPConnectionRefused) {
+			result.Status = tcpProbeStatusClosed
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			result.Status = tcpProbeStatusTimeout
+		}
+		return result, err
+	}
+	result.Source = connection.LocalAddr().String()
+	info := connection.ConnectInfo()
+	result.Status, result.Attempts, result.RTT = tcpProbeStatusOpen, info.Attempts, info.RTT
+	if err = connection.Close(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// probeTCP sends bounded SYN retransmissions and waits for a matching SYN-ACK
+// or RST-ACK until ctx expires.
+func (p *probeRuntime) probeTCP(ctx context.Context, config zerotier.NetworkConfigData, target netip.Addr, targetPort uint16, maximumAttempts int) (tcpProbeResult, error) {
+	result := tcpProbeResult{
+		Node: p.node.Address().String(), Network: fmt.Sprintf("%016x", config.NetworkID),
+		Target: netip.AddrPortFrom(target, targetPort).String(), Status: tcpProbeStatusError,
+	}
+	if targetPort == 0 || maximumAttempts <= 0 {
+		return result, errors.New("TCP probe requires a destination port and positive attempt count")
+	}
+	p.linkMu.RLock()
+	link := p.link
+	p.linkMu.RUnlock()
+	if link == nil {
+		return result, errors.New("ZeroTier IP link is unavailable")
+	}
+	source, err := link.SourceFor(target)
+	if err != nil {
+		return result, err
+	}
+	sourcePort, sequence, err := randomTCPProbeState()
+	if err != nil {
+		return result, err
+	}
+	result.Source = netip.AddrPortFrom(source, sourcePort).String()
+	syn := tcpProbePacket(source, target, sourcePort, targetPort, sequence, 0, tcpFlagSYN)
+	if len(syn) == 0 {
+		return result, errors.New("TCP probe source and target address families differ")
+	}
+	var lastSent time.Time
+	sendSYN := func() error {
+		if err := link.WritePacket(syn); err != nil {
+			return err
+		}
+		lastSent = time.Now()
+		result.Attempts++
+		return nil
+	}
+	if err = sendSYN(); err != nil {
+		return result, err
+	}
+	retryTimer := time.NewTimer(tcpProbeRetryInterval)
+	defer func() {
+		if !retryTimer.Stop() {
+			select {
+			case <-retryTimer.C:
+			default:
+			}
+		}
+	}()
+	retry := retryTimer.C
+	for {
+		select {
+		case packet := <-p.packets:
+			status, serverNext, ok := parseTCPProbeReply(packet, source, target, sourcePort, targetPort, sequence)
+			if !ok {
+				if remoteErr, isError := parseProbeICMPError(packet); isError && matchTCPICMPError(remoteErr, source, target, sourcePort, targetPort, sequence) {
+					return result, remoteErr
+				}
+				continue
+			}
+			result.Status = status
+			result.RTT = time.Since(lastSent)
+			if status == tcpProbeStatusClosed {
+				return result, fmt.Errorf("TCP port %s is closed", result.Target)
+			}
+			reset := tcpProbePacket(source, target, sourcePort, targetPort, sequence+1, serverNext, tcpFlagRST|tcpFlagACK)
+			if len(reset) != 0 {
+				_ = link.WritePacket(reset)
+			}
+			return result, nil
+		case err := <-p.linkErrs:
+			return result, err
+		case <-retry:
+			if result.Attempts >= maximumAttempts {
+				retry = nil
+				continue
+			}
+			if err = sendSYN(); err != nil {
+				return result, err
+			}
+			retryTimer.Reset(tcpProbeRetryInterval)
+		case <-ctx.Done():
+			result.Status = tcpProbeStatusTimeout
+			return result, fmt.Errorf("TCP probe to %s timed out after %d attempts: %w", result.Target, result.Attempts, ctx.Err())
+		}
+	}
+}
+
+// matchTCPICMPError verifies that an ICMP error quotes this probe's SYN.
+func matchTCPICMPError(remoteErr probeICMPError, source, target netip.Addr, sourcePort, targetPort uint16, sequence uint32) bool {
+	if !remoteErr.Matches(source, target, tcpProtocol) || len(remoteErr.QuotedPayload) < 8 {
+		return false
+	}
+	tcp := remoteErr.QuotedPayload
+	return binary.BigEndian.Uint16(tcp[0:2]) == sourcePort && binary.BigEndian.Uint16(tcp[2:4]) == targetPort && binary.BigEndian.Uint32(tcp[4:8]) == sequence
+}
+
+// randomTCPProbeState returns a dynamic source port and unpredictable initial
+// sequence number.
+func randomTCPProbeState() (uint16, uint32, error) {
+	port, err := randomEphemeralPort()
+	if err != nil {
+		return 0, 0, err
+	}
+	var sequence [4]byte
+	if _, err = io.ReadFull(rand.Reader, sequence[:]); err != nil {
+		return 0, 0, err
+	}
+	return port, binary.BigEndian.Uint32(sequence[:]), nil
+}
+
+// tcpProbePacket builds a minimal IPv4 or IPv6 packet containing one TCP
+// control segment.
+func tcpProbePacket(source, target netip.Addr, sourcePort, targetPort uint16, sequence, acknowledgement uint32, flags byte) []byte {
+	return tcpPacket(source, target, sourcePort, targetPort, sequence, acknowledgement, flags, 65535, nil, nil)
+}
+
+// tcpPacket builds an IPv4 or IPv6 packet containing one TCP segment.
+func tcpPacket(source, target netip.Addr, sourcePort, targetPort uint16, sequence, acknowledgement uint32, flags byte, window uint16, options, payload []byte) []byte {
+	source, target = source.Unmap(), target.Unmap()
+	if !source.IsValid() || !target.IsValid() || source.Is4() != target.Is4() || len(options) > 40 {
+		return nil
+	}
+	headerSize := tcpHeaderSize + (len(options)+3)&^3
+	ipHeaderSize := 40
+	if source.Is4() {
+		ipHeaderSize = 20
+	}
+	if headerSize > 60 || ipHeaderSize+headerSize+len(payload) > 65535 {
+		return nil
+	}
+	tcp := make([]byte, headerSize+len(payload))
+	binary.BigEndian.PutUint16(tcp[0:2], sourcePort)
+	binary.BigEndian.PutUint16(tcp[2:4], targetPort)
+	binary.BigEndian.PutUint32(tcp[4:8], sequence)
+	binary.BigEndian.PutUint32(tcp[8:12], acknowledgement)
+	tcp[12], tcp[13] = byte(headerSize/4)<<4, flags
+	binary.BigEndian.PutUint16(tcp[14:16], window)
+	copy(tcp[tcpHeaderSize:headerSize], options)
+	copy(tcp[headerSize:], payload)
+	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(source, target, tcpProtocol, tcp))
+	if source.Is4() {
+		packet := make([]byte, 20+len(tcp))
+		packet[0] = 0x45
+		binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+		binary.BigEndian.PutUint16(packet[4:6], uint16(sequence))
+		binary.BigEndian.PutUint16(packet[6:8], 0x4000)
+		packet[8], packet[9] = 64, tcpProtocol
+		copy(packet[12:16], source.AsSlice())
+		copy(packet[16:20], target.AsSlice())
+		binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:20]))
+		copy(packet[20:], tcp)
+		return packet
+	}
+	packet := make([]byte, 40+len(tcp))
+	packet[0] = 0x60
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(tcp)))
+	packet[6], packet[7] = tcpProtocol, 64
+	copy(packet[8:24], source.AsSlice())
+	copy(packet[24:40], target.AsSlice())
+	copy(packet[40:], tcp)
+	return packet
+}
+
+// parseTCPProbeReply validates a TCP reply against the probe tuple and initial
+// sequence number and returns its conclusive port state.
+func parseTCPProbeReply(packet []byte, source, target netip.Addr, sourcePort, targetPort uint16, sequence uint32) (tcpProbeStatus, uint32, bool) {
+	packetSource, packetTarget, tcp, ok := ipProtocolPayload(packet, tcpProtocol)
+	if !ok || packetSource != target.Unmap() || packetTarget != source.Unmap() || len(tcp) < tcpHeaderSize ||
+		binary.BigEndian.Uint16(tcp[0:2]) != targetPort || binary.BigEndian.Uint16(tcp[2:4]) != sourcePort ||
+		transportChecksum(packetSource, packetTarget, tcpProtocol, tcp) != 0 {
+		return "", 0, false
+	}
+	headerSize := int(tcp[12]>>4) * 4
+	if headerSize < tcpHeaderSize || headerSize > len(tcp) || tcp[13]&tcpFlagACK == 0 || binary.BigEndian.Uint32(tcp[8:12]) != sequence+1 {
+		return "", 0, false
+	}
+	flags := tcp[13]
+	if flags&tcpFlagRST != 0 {
+		return tcpProbeStatusClosed, 0, true
+	}
+	if flags&tcpFlagSYN == 0 {
+		return "", 0, false
+	}
+	serverNext := binary.BigEndian.Uint32(tcp[4:8]) + uint32(len(tcp)-headerSize) + 1
+	if flags&tcpFlagFIN != 0 {
+		serverNext++
+	}
+	return tcpProbeStatusOpen, serverNext, true
+}

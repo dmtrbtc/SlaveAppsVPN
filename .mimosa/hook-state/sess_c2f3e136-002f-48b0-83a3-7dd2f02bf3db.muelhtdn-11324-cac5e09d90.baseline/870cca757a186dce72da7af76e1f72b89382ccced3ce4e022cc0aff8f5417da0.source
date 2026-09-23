@@ -1,0 +1,14 @@
+name: coverage
+on: push
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    name: Go test coverage
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-go@v4
+        with:
+          go-version: "stable"
+      - run: go test -coverprofile=coverage.txt -covermode=atomic
+      - uses: codecov/codecov-action@v3

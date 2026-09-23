@@ -1,0 +1,85 @@
+package main
+
+import (
+	"encoding/binary"
+	"net/netip"
+	"testing"
+	"time"
+)
+
+// TestProbeICMPErrorIPv4AndIPv6 verifies checksum, MTU, quote, and tuple
+// matching for both ICMP families.
+func TestProbeICMPErrorIPv4AndIPv6(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		source   netip.Addr
+		target   netip.Addr
+		reporter netip.Addr
+		typ      byte
+		code     byte
+		mtu      uint32
+	}{
+		{name: "IPv4", source: netip.MustParseAddr("192.0.2.1"), target: netip.MustParseAddr("192.0.2.2"), reporter: netip.MustParseAddr("192.0.2.254"), typ: 3, code: 4, mtu: 1400},
+		{name: "IPv6", source: netip.MustParseAddr("fd00::1"), target: netip.MustParseAddr("fd00::2"), reporter: netip.MustParseAddr("fd00::ff"), typ: 2, code: 0, mtu: 1280},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := udpPacket(test.source, test.target, 55000, 53, []byte("query"))
+			packet := makeICMPError(test.reporter, test.source, original, test.typ, test.code, test.mtu)
+			remoteErr, ok := parseProbeICMPError(packet)
+			if !ok || remoteErr.MTU != test.mtu || !remoteErr.Matches(test.source, test.target, udpProtocol) || !matchUDPICMPError(remoteErr, test.source, test.target, 55000, 53) {
+				t.Fatalf("ICMP error = %+v valid=%t", remoteErr, ok)
+			}
+			corrupt := append([]byte(nil), packet...)
+			corrupt[len(corrupt)-1] ^= 1
+			if _, ok = parseProbeICMPError(corrupt); ok {
+				t.Fatal("corrupt ICMP error was accepted")
+			}
+		})
+	}
+}
+
+// TestMatchPingAndTCPICMPErrors verifies protocol-specific quoted identifiers.
+func TestMatchPingAndTCPICMPErrors(t *testing.T) {
+	source := netip.MustParseAddr("192.0.2.1")
+	target := netip.MustParseAddr("192.0.2.2")
+	ping := echoRequest(source, target, 0x1234, 7)
+	pingError, ok := parseProbeICMPError(makeICMPError(netip.MustParseAddr("192.0.2.254"), source, ping, 3, 1, 0))
+	if !ok || !matchPingICMPError(pingError, source, target, 0x1234, map[uint16]time.Time{7: time.Now()}) {
+		t.Fatalf("ping ICMP error = %+v valid=%t", pingError, ok)
+	}
+	tcp := tcpProbePacket(source, target, 55000, 443, 0x10203040, 0, tcpFlagSYN)
+	tcpError, ok := parseProbeICMPError(makeICMPError(netip.MustParseAddr("192.0.2.254"), source, tcp, 3, 10, 0))
+	if !ok || !matchTCPICMPError(tcpError, source, target, 55000, 443, 0x10203040) {
+		t.Fatalf("TCP ICMP error = %+v valid=%t", tcpError, ok)
+	}
+}
+
+// makeICMPError constructs a valid ICMP error quoting original.
+func makeICMPError(reporter, destination netip.Addr, original []byte, typ, code byte, mtu uint32) []byte {
+	icmp := make([]byte, 8+len(original))
+	icmp[0], icmp[1] = typ, code
+	copy(icmp[8:], original)
+	if reporter.Is4() {
+		binary.BigEndian.PutUint16(icmp[6:8], uint16(mtu))
+		binary.BigEndian.PutUint16(icmp[2:4], checksum(icmp))
+		packet := make([]byte, 20+len(icmp))
+		packet[0] = 0x45
+		binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+		packet[8], packet[9] = 64, icmpv4Protocol
+		copy(packet[12:16], reporter.AsSlice())
+		copy(packet[16:20], destination.AsSlice())
+		binary.BigEndian.PutUint16(packet[10:12], checksum(packet[:20]))
+		copy(packet[20:], icmp)
+		return packet
+	}
+	binary.BigEndian.PutUint32(icmp[4:8], mtu)
+	binary.BigEndian.PutUint16(icmp[2:4], icmpv6Checksum(reporter, destination, icmp))
+	packet := make([]byte, 40+len(icmp))
+	packet[0] = 0x60
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(icmp)))
+	packet[6], packet[7] = icmpv6Protocol, 64
+	copy(packet[8:24], reporter.AsSlice())
+	copy(packet[24:40], destination.AsSlice())
+	copy(packet[40:], icmp)
+	return packet
+}

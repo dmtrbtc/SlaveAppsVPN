@@ -1,0 +1,68 @@
+package zerotier
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestAddressRoundTrip(t *testing.T) {
+	a, err := ParseAddress("8e4df28b72")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.String(); got != "8e4df28b72" {
+		t.Fatalf("address = %s", got)
+	}
+	b := a.Bytes()
+	parsed, err := AddressFromBytes(b[:])
+	if err != nil || parsed != a {
+		t.Fatalf("binary round trip = %v, %v", parsed, err)
+	}
+}
+
+func TestParseAddressRejectsReservedAddresses(t *testing.T) {
+	for _, text := range []string{"0000000000", "ff00000001"} {
+		if _, err := ParseAddress(text); !errors.Is(err, ErrInvalidAddress) {
+			t.Fatalf("ParseAddress(%q) = %v", text, err)
+		}
+	}
+	for _, address := range []Address{NewAddress(0), NewAddress(0xff00000001)} {
+		encoded := address.Bytes()
+		parsed, err := AddressFromBytes(encoded[:])
+		if err != nil || parsed != address || !parsed.IsReserved() {
+			t.Fatalf("AddressFromBytes(%s) = %s, %v", address, parsed, err)
+		}
+	}
+}
+
+func TestParseNetworkID(t *testing.T) {
+	const text = "17d709436c04d6bc"
+	networkID, err := ParseNetworkID(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if networkID != 0x17d709436c04d6bc || Controller(networkID) != NewAddress(0x17d709436c) {
+		t.Fatalf("network ID = %016x controller=%s", networkID, Controller(networkID))
+	}
+	adHoc, err := ParseNetworkID("ff00000000000001")
+	if err != nil || !IsAdHocNetworkID(adHoc) {
+		t.Fatalf("ad-hoc network ID = %016x, %v", adHoc, err)
+	}
+	for _, invalid := range []string{"", "17d709436c04d6b", "17d709436c04d6bg", "0000000000000000"} {
+		if _, err = ParseNetworkID(invalid); !errors.Is(err, ErrInvalidNetworkID) {
+			t.Fatalf("ParseNetworkID(%q) = %v", invalid, err)
+		}
+	}
+}
+
+func TestMACRoundTrip(t *testing.T) {
+	const networkID = uint64(0x8056c2e21c000001)
+	a := NewAddress(0x8e4df28b72)
+	m := MACForAddress(a, networkID)
+	if got := m.Address(networkID); got != a {
+		t.Fatalf("MAC %s decoded to %s", m, got)
+	}
+	if m.IsMulticast() || m.Uint64()&0x020000000000 == 0 {
+		t.Fatalf("MAC %s has invalid Ethernet flags", m)
+	}
+}
