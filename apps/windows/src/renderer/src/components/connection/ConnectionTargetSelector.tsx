@@ -4,6 +4,7 @@ import { Activity, Bot, Check, LoaderCircle, Wifi } from 'lucide-react'
 import { cn, countryFlagEmoji } from '../../lib/utils'
 import { IS_MOBILE } from '../../lib/platform'
 import { vpnApi } from '../../lib/api'
+import { resolveNodeLatency } from '../../lib/node-latency'
 import {
   useVpnStore,
   selectProxyList,
@@ -66,12 +67,11 @@ export function ConnectionTargetSelector() {
   }, [proxyCount, isConnected])
 
   const getNodeLatency = (name: string): number | null | undefined => {
-    // Priority: balancer probe (most recent) → live latency events → static proxy meta.
-    const score = balancerState?.nodes.find(n => n.name === name)
-    if (score?.latencyMs !== undefined && score.latencyMs !== null) return score.latencyMs
+    // A received failure (null) must not resurrect an older successful ping.
     const live = serverLatency[name]
-    if (live !== undefined) return live
-    return proxyList.find(p => p.name === name)?.latencyMs
+    if (live !== undefined) return resolveNodeLatency(live)
+    const score = balancerState?.nodes.find(n => n.name === name)
+    return resolveNodeLatency(score?.latencyMs, proxyList.find(p => p.name === name)?.latencyMs)
   }
 
   // The real leaf carrying traffic while in Auto (SLAVE-SELECT → SLAVE-AUTO → node).

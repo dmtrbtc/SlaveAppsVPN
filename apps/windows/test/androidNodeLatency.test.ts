@@ -34,7 +34,7 @@ test('connected Android measures the named node through mihomo URLTest', async (
 })
 
 test('native timeout, invalid values and bridge errors are shown as unavailable', async () => {
-  for (const delay of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  for (const delay of [-1, 65535, 70000, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.equal(
       await probeMihomoNodeLatency('Slave-PL', true, async () => ({ delay })),
       null,

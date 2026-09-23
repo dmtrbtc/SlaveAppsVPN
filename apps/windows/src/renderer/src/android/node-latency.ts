@@ -33,7 +33,7 @@ export async function probeMihomoNodeLatency(
       url: MIHOMO_LATENCY_TEST_URL,
       timeout: MIHOMO_LATENCY_TIMEOUT_MS,
     })
-    if (!Number.isFinite(delay) || delay < 0) return null
+    if (!Number.isFinite(delay) || delay < 0 || delay >= 65535) return null
     return Math.round(delay)
   } catch {
     return null
