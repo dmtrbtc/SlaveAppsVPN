@@ -1,6 +1,6 @@
 {
   "name": "@slave-vpn/windows",
-  "version": "0.2.41-dev.18",
+  "version": "0.2.41-dev.19",
   "description": "SLAVE VPN — Windows desktop client",
   "author": {
     "name": "SLAVE VPN",
@@ -9,12 +9,13 @@
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
+    "test:reality-compatibility": "node --test test/realityCompatibilitySettings.test.ts",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts test/androidSelectedProxy.test.ts test/connectionTarget.test.ts test/windowsSettingsStorage.test.ts test/isolatedSettingsSmoke.test.cjs",
+    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts test/nodeLatencyDisplay.test.ts test/androidSelectedProxy.test.ts test/connectionTarget.test.ts test/windowsSettingsStorage.test.ts test/isolatedSettingsSmoke.test.cjs",
     "test:queries": "pnpm test:renderer",
     "test:lifecycle": "node --test test/windowsLifecycle.test.cjs",
     "pack": "pnpm build && electron-builder --dir",

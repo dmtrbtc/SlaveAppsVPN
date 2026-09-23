@@ -13,6 +13,7 @@ import {
 } from './subscription-store'
 import { buildAggregatedYaml, buildAggregatedProxies } from './adapters/subscriptions'
 import { probeMihomoNodeLatency } from './node-latency'
+import { resolveNodeLatency } from '../lib/node-latency'
 import { ANDROID_AUTO_GROUP, resolveAvailableAndroidSelection } from './selected-proxy'
 import { listAndroidServers, invalidateServerCache } from './servers'
 import { detectClipboardLink } from './clipboard-detect'
@@ -650,7 +651,7 @@ function createAndroidEngineAdapter(adapters: AndroidDataAdapters): EngineAdapte
     closeConnection: (id: string) => closeNativeConnection(id),
     probeLatency: async (name: string, testUrl: string, timeoutMs: number) => {
       const { delay } = await SlaveVpn.testDelay({ name, url: testUrl, timeout: timeoutMs })
-      return delay >= 0 ? delay : null
+      return resolveNodeLatency(delay)
     },
     geositeCategories: () => getCachedGeoSiteCategories(adapters.storage),
     onEvent: (handler) => {
@@ -727,6 +728,7 @@ export function installAndroidBridge(): void {
             vpnMode: currentMode,
             ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
             utlsFingerprint: currentUtlsFingerprint,
+            realityCompatibilityNode: settings.realityCompatibilityNode ?? null,
             dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
             dnsPreset: settings.dnsPreset,
             dnsStrategy: settings.dnsStrategy,

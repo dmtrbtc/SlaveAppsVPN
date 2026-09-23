@@ -45,6 +45,7 @@ export interface ConnectionProfile {
    * ConfigGenerator/Compiler.
    */
   utlsFingerprint?: string
+  realityCompatibilityNode?: string | null
 }
 
 export interface TunHooks {

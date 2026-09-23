@@ -131,6 +131,24 @@ test('Android last-known-good nodes survive a later subscription fetch failure',
   assert.deepEqual(f.meta.at(-1), { id: 'a', patch: { lastError: 'network unavailable' } })
 })
 
+test('Reality key parameters survive subscription caching and an offline reload unchanged', async () => {
+  const original = node('synthetic-reality')
+  original.extra['client-fingerprint'] = 'chrome'
+  original.extra['reality-opts'] = {
+    'public-key': 'A'.repeat(43), 'short-id': 'a19c', 'spider-x': '/',
+    'mldsa65-verify': 'A'.repeat(2603),
+    'support-x25519mlkem768': true, 'fragment-client-hello': true,
+  }
+  const f = fixture({ fetchText: async () => buildClashYaml([original]) })
+  const online = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(online.error, null)
+  assert.deepEqual(online.proxies[0]?.extra, original.extra)
+  f.source.fetchText = async () => { throw new Error('offline') }
+  const offline = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(offline.error, 'offline')
+  assert.deepEqual(offline.proxies, online.proxies)
+})
+
 test('invalid Android last-known-good data cannot fabricate subscription nodes', async () => {
   const f = fixture({
     fetchText: async () => { throw new Error('network unavailable') },

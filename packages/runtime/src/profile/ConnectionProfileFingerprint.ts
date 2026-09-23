@@ -60,6 +60,7 @@ export function diffConnectionProfiles(
     'dnsProfile',
     'routingPolicy',
     'utlsFingerprint',
+    'realityCompatibilityNode',
   ]
   return fields.filter((field) => {
     const left = field === 'subscriptionYaml'

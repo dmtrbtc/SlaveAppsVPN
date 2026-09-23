@@ -7,7 +7,9 @@ import { Badge } from '../components/ui/badge'
 import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
 import { cn, countryFlagEmoji } from '../lib/utils'
+import { resolveNodeLatency } from '../lib/node-latency'
 import { useServers } from '../hooks/useServers'
+import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import {
   useVpnStore,
   selectVpnStatus,
@@ -101,7 +103,7 @@ function LatencyDisplay({ ms, probing }: { ms: number | null; probing?: boolean 
 
 interface ServerRowProps {
   server: Server
-  liveLatency: number | null
+  liveLatency: number | null | undefined
   isProbing: boolean
   isSelected: boolean
   isActive: boolean
@@ -116,7 +118,7 @@ function ServerRow({ server, liveLatency, isProbing, isSelected, isActive, isFav
   const avail = AVAILABILITY_BADGE[server.availability]
   const isOffline = server.availability === 'offline'
   const badges = protocolBadges(server)
-  const displayLatency = liveLatency ?? server.latencyMs
+  const displayLatency = resolveNodeLatency(liveLatency, server.latencyMs)
 
   return (
     <div
@@ -254,6 +256,8 @@ export function ServersPage() {
   const status = useVpnStore(selectVpnStatus)
   const { notify, serverFavorites, toggleServerFavorite } = useUIStore()
   const { data: servers = [], isLoading, error, refetch, isFetching } = useServers()
+  const { data: settings } = useSettings()
+  const settingsMutation = useSettingsMutation()
 
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('latency')
@@ -268,6 +272,18 @@ export function ServersPage() {
   const autoMode = useVpnStore(selectAutoMode)
   const balancerState = useVpnStore(selectBalancerState)
   const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
+  const compatibilityNode = settings?.realityCompatibilityNode
+  const realityTarget = servers.find(s => s.id === selectedProxy && s.securityType === 'reality' && s.proxyType === 'vless')
+  const canChangeCompatibility = status.state === 'disconnected' && !connectingId && !settingsMutation.isPending
+
+  const changeCompatibility = async (node: string | null): Promise<void> => {
+    try {
+      await settingsMutation.mutateAsync({ realityCompatibilityNode: node })
+      notify({ type: 'success', title: node ? 'Тестовый режим включён' : 'Обычная защита восстановлена', message: 'Настройка применится при следующем подключении' })
+    } catch (err) {
+      notify({ type: 'error', title: 'Настройка не сохранена', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
 
   const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
   const bestNode = useBestNode(servers, latencyMap)
@@ -289,8 +305,8 @@ export function ServersPage() {
       const bf = serverFavorites.includes(b.id) ? 0 : 1
       if (af !== bf) return af - bf
       if (sortKey === 'latency') {
-        const aMs = latencyMap.get(a.name) ?? a.latencyMs ?? 9999
-        const bMs = latencyMap.get(b.name) ?? b.latencyMs ?? 9999
+        const aMs = resolveNodeLatency(latencyMap.get(a.name), a.latencyMs) ?? Infinity
+        const bMs = resolveNodeLatency(latencyMap.get(b.name), b.latencyMs) ?? Infinity
         return aMs - bMs
       }
       if (sortKey === 'name') return a.name.localeCompare(b.name)
@@ -340,6 +356,20 @@ export function ServersPage() {
     <div className="flex h-full flex-col bg-bg-base">
 
       {/* Header */}
+      {settings && (IS_MOBILE || settings.selectedEngine === 'mihomo') && (realityTarget || compatibilityNode) && (
+        <section className="border-b border-border px-6 py-3 text-[12px]" aria-label="Совместимость REALITY">
+          <p className="font-medium">Совместимость с Hiddify — экспериментальный режим</p>
+          <p className="text-text-muted mt-1">
+            Только для ноды «{compatibilityNode || realityTarget?.name}». Отключает ML-KEM,
+            дробление рукопожатия и дополнительную проверку pqv. Основная проверка REALITY сохраняется.
+            Работоспособность не гарантируется. Для изменения отключите VPN.
+          </p>
+          <Button className="mt-2" variant="ghost" disabled={!canChangeCompatibility || (!compatibilityNode && autoActive)}
+            onClick={() => void changeCompatibility(compatibilityNode ? null : realityTarget?.name ?? null)}>
+            {compatibilityNode ? 'Отключить тестовый режим и вернуть pqv' : 'Включить для этой ноды без проверки pqv'}
+          </Button>
+        </section>
+      )}
       <div className="px-6 py-4 border-b border-border bg-bg-base shrink-0">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-baseline gap-2">
@@ -433,7 +463,7 @@ export function ServersPage() {
               >
                 <ServerRow
                   server={server}
-                  liveLatency={latencyMap.get(server.name) ?? null}
+                  liveLatency={latencyMap.get(server.name)}
                   isProbing={probing && !latencyMap.has(server.name)}
                   isSelected={!autoActive && selectedProxy === server.id}
                   isActive={status.state === 'connected' && (activeProxy === server.id || status.serverName === server.name)}

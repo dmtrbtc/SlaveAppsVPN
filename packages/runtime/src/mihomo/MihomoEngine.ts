@@ -449,6 +449,7 @@ export class MihomoEngine implements VPNEngine {
       ...(this.initConfig!.rulesDir ? { rulesDir: this.initConfig!.rulesDir } : {}),
       ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
       ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
+      ...(profile.realityCompatibilityNode !== undefined ? { realityCompatibilityNode: profile.realityCompatibilityNode } : {}),
     })
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
 

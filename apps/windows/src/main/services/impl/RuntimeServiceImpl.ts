@@ -475,6 +475,7 @@ export class RuntimeServiceImpl implements RuntimeService {
       dnsProfile: this.buildDnsProfileForEngine(settings),
       ...(routingPolicy ? { routingPolicy } : {}),
       utlsFingerprint: settings.utlsFingerprint ?? 'randomized',
+      realityCompatibilityNode: settings.realityCompatibilityNode ?? null,
     }
   }
 

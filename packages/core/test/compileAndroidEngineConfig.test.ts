@@ -37,6 +37,22 @@ const base = {
   apiSecret: 'test-secret',
 }
 
+test('Android passes explicit node compatibility to the shared compiler and restores pqv', async () => {
+  const input = { ...base, proxies: [{ ...proxy, securityType: 'reality', extra: {
+    ...proxy.extra, servername: 'cover.invalid', flow: 'xtls-rprx-vision',
+    'reality-opts': { 'public-key': 'synthetic', 'short-id': 'a19c',
+      'mldsa65-verify': 'synthetic-pqv', 'support-x25519mlkem768': true,
+      'fragment-client-hello': true },
+  } }] }
+  const normal = await compileAndroidEngineConfig(input)
+  const compatible = await compileAndroidEngineConfig({ ...input, realityCompatibilityNode: 'node-a' })
+  assert.match(normal.config, /mldsa65-verify: synthetic-pqv/)
+  assert.doesNotMatch(compatible.config, /mldsa65-verify/)
+  assert.match(compatible.config, /support-x25519mlkem768: false/)
+  assert.match(compatible.config, /public-key: synthetic/)
+  assert.equal((await compileAndroidEngineConfig({ ...input, realityCompatibilityNode: null })).config, normal.config)
+})
+
 test('Android compiler falls back to secure DNS for invalid persisted presets', async () => {
   const expected = await compileAndroidEngineConfig(base)
   for (const dnsPreset of ['google', '', 'unknown-preset', 42, {}]) {
