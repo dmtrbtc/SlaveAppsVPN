@@ -4,6 +4,40 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.19] — 2026-09-24
+
+### Fixed
+
+- Dev builds now always resolve updates from the Dev channel: a prerelease
+  install left on the default "stable" channel could never see any update
+  (every newer release is itself a prerelease), stranding installs on old
+  dev builds. Settings explains this on dev installs.
+- The Android updater no longer offers an APK from Windows-only releases:
+  the derived download URL is verified before the banner appears instead of
+  failing with 404.
+- Node balancer probes authenticate with the real runtime API secret (all
+  probes previously failed with HTTP 401) and the balanced node list is
+  populated from the aggregated subscription snapshot on every enable.
+- Crash-loop autodetection (3 launches within 45s) now actually gates the
+  bootstrap into safe mode instead of only logging.
+- A failed subscription hot-reload now surfaces as a
+  `subscriptions.reload_failed` event in the diagnostics journal instead of
+  silently keeping the previous node list.
+- A failed latency probe no longer resurrects the node's previous successful
+  ping value; mihomo sentinel delays are normalized to unavailable.
+
+### Added
+
+- Optional per-node REALITY compatibility toggle (Servers page, manual node,
+  disconnected only): temporarily disables the ML-KEM hybrid key share,
+  ML-DSA-65 verification and ClientHello fragmentation for that node's
+  handshake. Diagnostic aid for misbehaving servers; easily reversible.
+
+### Security
+
+- Hardened OS invocations (reg/netstat/taskkill via argv arrays, engine
+  binary path boundary check). No behavior change.
+
 ## [0.2.41-dev.18] — 2026-09-20
 
 ### Added

@@ -1,5 +1,4 @@
 import yaml from 'js-yaml'
-import { applyRealityCompatibility } from './realityCompatibility'
 import type { VPNMode } from '@slave-vpn/shared'
 import type { NormalizedPolicy } from '@slave-vpn/routing'
 import { MihomoRuleCompiler } from '@slave-vpn/routing'
@@ -71,7 +70,6 @@ export interface ConfigGenerationContext {
   // default — leaving provider-set explicit fingerprints alone). When set
   // explicitly, the value is forced onto every proxy.
   utlsFingerprint?: string
-  realityCompatibilityNode?: string | null
 }
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
@@ -123,7 +121,7 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     fingerprint: (ctx.utlsFingerprint as UtlsFingerprint | undefined) ?? 'randomized',
     override: ctx.utlsFingerprint ? 'always' : 'when-missing-or-chrome',
   })
-  profile.proxies = applyRealityCompatibility(rotatedProxies, ctx.realityCompatibilityNode)
+  profile.proxies = rotatedProxies
 
   const proxyNames = profile.proxies.map((p) => p.name)
 

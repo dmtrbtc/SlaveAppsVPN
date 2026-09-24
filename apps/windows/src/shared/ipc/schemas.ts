@@ -82,7 +82,6 @@ export const SettingsSetSchema = z
     balancerMode: z.enum(['latency', 'stability', 'balanced', 'manual']).optional(),
     autoSelectProxy: z.boolean().optional(),
     selectedProxy: z.string().nullable().optional(),
-    realityCompatibilityNode: z.string().min(1).max(512).nullable().optional(),
     splitProcessList: z.array(z.string()).optional(),
     enabledScenarios: z.array(z.string()).optional(),
     // «Свои правила» — user per-domain routing overrides. Domain length per
