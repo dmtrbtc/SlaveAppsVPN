@@ -111,6 +111,16 @@ export function registerDiagnosticsHandlers(): void {
           return { level: 'info', time: Date.now(), msg: line, session }
         }
       })
+      // Redact in the MAIN process across every string field (msg, err, url…),
+      // not just msg in the renderer: a copied diagnostics entry must never
+      // carry an unredacted token even from nested pino fields.
+      .map((entry) => {
+        const clean: Record<string, unknown> = {}
+        for (const [key, value] of Object.entries(entry)) {
+          clean[key] = typeof value === 'string' ? redactSecrets(value) : value
+        }
+        return clean
+      })
 
     return okResult(lines)
   })

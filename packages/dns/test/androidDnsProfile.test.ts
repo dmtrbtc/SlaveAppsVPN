@@ -44,12 +44,16 @@ test('fallback-filter geoip:RU present with the fallback pool', () => {
   assert.equal(p.leakPrevention.fallbackFilter?.geoipCode, 'RU')
 })
 
-test('ruDirectDns on (bypass/custom) → RU TLDs resolve via Russian resolvers', () => {
+test('ruDirectDns on (bypass/custom) → RU TLDs resolve via encrypted Yandex DoH #DIRECT', () => {
   const p = buildAndroidDnsProfile({ ...base, ruDirectDns: true })
   const ru = p.rules?.find(r => r.value === 'ru' && r.matchType === 'domain_suffix')
   assert.ok(ru, 'RU tld rule present')
   const tags = Array.isArray(ru!.resolverTag) ? ru!.resolverTag : [ru!.resolverTag]
-  assert.ok(tags.every(t => t.startsWith('77.88.8.')), 'RU resolves via Yandex (77.88.8.x) only')
+  assert.ok(tags.length > 0, 'resolver present')
+  assert.ok(
+    tags.every(t => t.startsWith('https://') && t.includes('yandex') && t.endsWith('#DIRECT')),
+    'RU-direct lookups are DoH-encrypted and carried directly (no plaintext, no tunnel hop)'
+  )
 })
 
 test('ruDirectDns off (full/split) → NO RU-direct DNS rule (RU tunnels via DoH)', () => {
