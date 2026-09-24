@@ -18,12 +18,19 @@ import type { DnsProfile, DnsResolver, DnsRule } from './DnsProfile'
  *     → system; each node domain → system+Google so it resolves before the tunnel.
  */
 
-// RU domains resolve via TWO Russian plaintext resolvers (both Yandex) so they
-// get RU-localised CDN IPs and stay DIRECT. Both are RU IPs → GeoIP(ru)→DIRECT,
-// so neither is routed through the proxy. (The old list mixed in Google 8.8.8.8,
-// a NON-RU IP that respect-rules sent through the tunnel → a parallel DNS dial
-// that the Yandex winner cancelled — "operation was canceled" log spam + leak.)
-const RU_DIRECT_RESOLVERS = ['77.88.8.8', '77.88.8.1'] as const
+// RU domains resolve via Yandex DoH carried DIRECTLY (the `#DIRECT` fragment
+// bypasses respect-rules proxying, exactly like the old plaintext IPs did),
+// so they stay encrypted end-to-end yet still get RU-localised CDN IPs and
+// route DIRECT (the DoH host resolves to RU IPs → GeoIP(ru)→DIRECT).
+// Plaintext remains ONLY in default-nameserver, where it bootstraps this
+// DoH hostname (and serves as the last-resort resolver) — every actual
+// lookup is DoH-encrypted. Yandex DoH is the single provider on purpose:
+// the old list mixed in Google 8.8.8.8, a NON-RU endpoint that
+// respect-rules sent through the tunnel → a parallel DNS dial the Yandex
+// winner cancelled ("operation was canceled" log spam + leak).
+const RU_DIRECT_RESOLVERS = [
+  'https://common.dot.dns.yandex.net/dns-query#DIRECT',
+] as const
 
 // Local/captive-portal entries that must never get a fake-ip. The RU entries
 // (+.ru/+.рф/category-ru) are appended only when ruDirectDns is on (bypass/custom)

@@ -87,13 +87,23 @@ test('v0.2.34: Android DNS has an IP-literal DoT fallback pool + RU fallback-fil
   assert.ok(ff && ff.geoip === true && ff['geoip-code'] === 'RU', 'fallback-filter geoip:RU present')
 })
 
-test('bypass mode: DNS nameserver-policy — RU TLDs via TWO Russian resolvers, no foreign plaintext', () => {
+test('bypass mode: DNS nameserver-policy — RU TLDs via encrypted Yandex DoH #DIRECT, no plaintext', () => {
   const doc = require('js-yaml').load(gen('bypass')) as { dns: Record<string, unknown> }
   const policy = doc.dns['nameserver-policy'] as Record<string, unknown>
-  // RU domains → two Russian (Yandex) resolvers, both direct — NO foreign 8.8.8.8
-  // (it's a non-RU IP that respect-rules sent through the tunnel → cancelled DNS).
-  assert.deepEqual(policy['+.ru'], ['77.88.8.8', '77.88.8.1'], '+.ru → Russian resolvers only')
-  assert.deepEqual(policy['+.рф'], ['77.88.8.8', '77.88.8.1'], '+.рф → Russian resolvers only')
+  // RU domains → Yandex DoH carried DIRECTLY (#DIRECT fragment): encrypted
+  // end-to-end, still RU-localised, never routed through the tunnel. No
+  // foreign 8.8.8.8 and no plaintext anywhere in the policy. (The compiler
+  // collapses a single resolver to a scalar.)
+  assert.equal(
+    policy['+.ru'],
+    'https://common.dot.dns.yandex.net/dns-query#DIRECT',
+    '+.ru → encrypted Yandex DoH #DIRECT only'
+  )
+  assert.equal(
+    policy['+.рф'],
+    'https://common.dot.dns.yandex.net/dns-query#DIRECT',
+    '+.рф → encrypted Yandex DoH #DIRECT only'
+  )
   // node domain resolved via the DoH pool (NOT `system`, which loops back through
   // the TUN and fails) — emitted as the DoH URL list (multiple) or scalar (one).
   const nodePolicy = policy['+.nl.example.online']
