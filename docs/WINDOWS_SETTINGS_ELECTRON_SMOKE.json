@@ -1,0 +1,20 @@
+{
+  "checkedAt": "2026-09-12T13:27:50.829Z",
+  "phases": [
+    {
+      "phase": "write",
+      "electron": "39.8.10"
+    },
+    {
+      "phase": "read",
+      "electron": "39.8.10"
+    }
+  ],
+  "processExitConfirmed": true,
+  "legacyFlatLoad": true,
+  "concurrentInitialization": true,
+  "orderedWrites": true,
+  "restartPersistence": true,
+  "realClientUI": false,
+  "vpnTested": false
+}

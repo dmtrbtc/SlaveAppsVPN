@@ -212,7 +212,7 @@ export function createCore(adapters: CoreAdapters, options: CreateCoreOptions = 
     },
 
     dispose: async () => {
-      for (const unsubscribe of [...subscriptions]) unsubscribe()
+      for (const unsubscribe of subscriptions) unsubscribe()
       await engine.stop().catch(() => undefined)
     },
   }

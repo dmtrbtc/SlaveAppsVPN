@@ -7,10 +7,6 @@ on:
         description: 'Release tag to attach installers to (e.g. v0.2.0-rc1)'
         required: false
         default: ''
-  push:
-    tags:
-      - 'v*'
-
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -19,6 +15,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # A manually attached installer must be built from the immutable tag,
+          # never from whichever branch happened to be selected in the UI.
+          ref: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || github.ref }}
 
       - uses: pnpm/action-setup@v6
 
@@ -27,23 +27,40 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+
       - name: Install deps
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       # Bake the git TAG into the app version BEFORE the build, so __APP_VERSION__,
       # the installer name and electron-updater's latest.yml carry the FULL version
       # (incl. a -dev.N prerelease suffix). A bare "0.2.29" on a dev build reads as
       # NEWER than any "0.2.29-dev.N" → the in-app updater never offers dev builds.
       - name: Sync app version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != ''
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.release_tag }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          TAG="${REQUESTED_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid release tag: $TAG"
+            exit 1
+          fi
+          VER="${TAG#v}"
           npm --prefix apps/windows pkg set version="$VER"
           echo "app version → $VER"
 
       - name: Download engine binaries + geo databases
         run: pnpm download:binaries
+
+      - name: Build patched Mihomo core
+        shell: pwsh
+        run: |
+          git clone --branch v1.19.30 --depth 1 https://github.com/MetaCubeX/mihomo.git "$env:RUNNER_TEMP/mihomo-v1.19.30"
+          ./scripts/build-mihomo-windows.ps1 -MihomoSource "$env:RUNNER_TEMP/mihomo-v1.19.30"
 
       - name: Build shared packages first
         run: pnpm --filter "./packages/**" build
@@ -60,13 +77,53 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
+      - name: Verify stable Authenticode signatures
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        run: |
+          $tag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { $env:GITHUB_REF_NAME }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Host "Prerelease/non-release build: Authenticode is reported but not a stable gate."
+            exit 0
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WIN_CSC_LINK)) {
+            throw "Stable release requires WIN_CSC_LINK."
+          }
+          $version = $tag.Substring(1)
+          $releaseDir = Join-Path 'apps/windows/release' $version
+          $files = @(
+            Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.exe'
+            Get-ChildItem -LiteralPath (Join-Path $releaseDir 'win-unpacked') -Recurse -File -Filter '*.exe'
+          )
+          if ($files.Count -eq 0) { throw "No Windows executables found for signature verification." }
+          $thumbprints = @()
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+              throw "Invalid Authenticode signature: $($file.Name) ($($signature.Status))"
+            }
+            $thumbprints += $signature.SignerCertificate.Thumbprint
+            Write-Host "valid signature: $($file.Name)"
+          }
+          if (($thumbprints | Sort-Object -Unique).Count -ne 1) {
+            throw "Stable Windows executables are not signed by one certificate."
+          }
+
       - name: Collect artifacts
         run: |
           mkdir artifacts
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe artifacts/
           Copy-Item apps/windows/release/*/SlaveAppsVPN-Portable-*.exe artifacts/
+          Copy-Item apps/windows/release/*/SlaveAppsVPN-Setup-*.exe.blockmap artifacts/
           # electron-updater metadata (generated even with --publish never).
           Copy-Item apps/windows/release/*/latest.yml artifacts/ -ErrorAction SilentlyContinue
+          $hashes = Get-ChildItem artifacts -File | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          Set-Content artifacts/SHA256SUMS.txt $hashes
         shell: pwsh
 
       - uses: actions/upload-artifact@v7
@@ -76,7 +133,7 @@ jobs:
           if-no-files-found: error
 
       - name: Attach to release (tag push)
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && github.event.inputs.release_tag == ''
         uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*

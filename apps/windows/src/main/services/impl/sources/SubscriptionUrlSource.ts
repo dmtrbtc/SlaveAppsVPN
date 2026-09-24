@@ -175,12 +175,11 @@ export class SubscriptionUrlSource implements ConfigSource {
         try {
           normalized = normalizeSubscriptionContent(text)
         } catch (parseErr) {
-          // Log first 600 chars of the response to diagnose server-side issues
+          // Parser messages and response bodies can contain subscription secrets.
           getLogger().warn({
             ua,
             status,
-            parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
-            responsePreview: text.slice(0, 600),
+            parseError: 'invalid-subscription-format',
             responseLength: text.length,
           }, 'subscription parse failed')
           // New content is invalid — keep stale cache if available

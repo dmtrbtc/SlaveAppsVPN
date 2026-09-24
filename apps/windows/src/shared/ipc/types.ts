@@ -248,6 +248,7 @@ export interface AppSettings {
   // remote servers. "randomized" rotates the Client Hello on every
   // handshake — anti-DPI baseline since ТСПУ behavioural filtering (2026).
   utlsFingerprint: UtlsFingerprintName
+  realityCompatibilityNode?: string | null
 }
 
 export type UtlsFingerprintName =
@@ -397,12 +398,17 @@ export type RuntimeEventKind =
   | 'proxy.tls_error'
   | 'proxy.dns_error'
   | 'proxy.connection_refused'
+  | 'proxy.network_unreachable'
+  | 'proxy.connection_reset'
   | 'proxy.timeout'
+  | 'proxy.authentication_error'
+  | 'proxy.selector_error'
   | 'proxy.encryption_error'
   | 'proxy.selected'
   | 'connection.opened'
   | 'connection.closed'
   | 'rules.updated'
+  | 'subscriptions.reload_failed'
 
 export interface RuntimeEvent {
   id: string

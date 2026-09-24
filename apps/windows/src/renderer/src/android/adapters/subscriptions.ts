@@ -6,6 +6,8 @@ import {
 import {
   listSubscriptions,
   getSubscriptionInput,
+  getSubscriptionCache,
+  setSubscriptionCache,
   updateSubscriptionMeta,
 } from '../subscription-store'
 import { fetchSubscriptionText, fetchSubscriptionTextUA } from '../native-fetch'
@@ -17,6 +19,8 @@ const fetcher = createSubscriptionFetcher({
   updateMeta: async (id, patch) => { await updateSubscriptionMeta(id, patch) },
   fetchText: fetchSubscriptionText,
   fetchTextWithUserAgent: fetchSubscriptionTextUA,
+  getCachedText: getSubscriptionCache,
+  setCachedText: setSubscriptionCache,
 })
 
 async function loadEntries() {

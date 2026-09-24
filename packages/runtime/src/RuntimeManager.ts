@@ -4,6 +4,9 @@ import { createEngine } from './engine/EngineFactory'
 import type { EngineType, EngineInitConfig, ConnectionProfile, VPNEngine } from './engine/VPNEngine.interface'
 import type { EngineEventName, EngineEventHandler, Unsubscribe } from './engine/EngineEvents'
 import { EMPTY_HEALTH, type RuntimeState, type HealthStatus, type StopReason, type HotReloadType } from './state/RuntimeState'
+import { fingerprintConnectionProfile } from './profile/ConnectionProfileFingerprint'
+
+type EngineFactory = (engineType: EngineType) => VPNEngine
 
 export class RuntimeManager {
   private engine: VPNEngine | null = null
@@ -11,15 +14,34 @@ export class RuntimeManager {
   private reconnectAttempts = 0
   private reconnectAborted = false
   private disposed = false
+  private appliedProfileHash: string | null = null
+  private profileUpdateTail: Promise<void> = Promise.resolve()
+  private lifecycleRevision = 0
+  private connectionDesired = false
+
+  private enqueue<T>(action: () => Promise<T>): Promise<T> {
+    const operation = this.profileUpdateTail.then(action)
+    this.profileUpdateTail = operation.then(() => undefined, () => undefined)
+    return operation
+  }
+
+  constructor(
+    private readonly engineFactory: EngineFactory = createEngine,
+    private readonly options: { autoReconnect?: boolean } = {},
+  ) {}
+
+  isConnectionDesired(): boolean {
+    return this.connectionDesired && !this.disposed
+  }
 
   async initialize(engineType: EngineType, config: EngineInitConfig): Promise<void> {
     if (this.engine) throw new Error('RuntimeManager already initialized')
 
-    this.engine = createEngine(engineType)
+    this.engine = this.engineFactory(engineType)
     await this.engine.initialize(config)
 
     this.engine.on('stopped', ({ reason }) => {
-      if (reason === 'crashed' && !this.disposed && !this.reconnectAborted) {
+      if (reason === 'crashed' && this.options.autoReconnect !== false && this.isConnectionDesired() && !this.reconnectAborted) {
         void this.scheduleReconnect()
       }
     })
@@ -27,23 +49,55 @@ export class RuntimeManager {
 
   async connect(profile: ConnectionProfile): Promise<void> {
     this.requireEngine()
+    this.connectionDesired = true
     this.reconnectAttempts = 0
     this.reconnectAborted = false
-    this.currentProfile = profile
-    await this.engine!.start(profile)
+    const revision = ++this.lifecycleRevision
+    const snapshot = structuredClone(profile)
+    await this.enqueue(async () => {
+      if (revision !== this.lifecycleRevision || this.disposed) return
+      if (this.engine!.getState() === 'crashed') await this.engine!.stop('crashed')
+      if (revision !== this.lifecycleRevision || this.disposed) return
+      await this.engine!.start(snapshot)
+      this.currentProfile = snapshot
+      this.appliedProfileHash = fingerprintConnectionProfile(snapshot)
+    })
   }
 
   async disconnect(reason: StopReason = 'intentional'): Promise<void> {
+    this.connectionDesired = false
     this.reconnectAborted = true
     this.reconnectAttempts = 0
-    this.currentProfile = null
-    await this.engine?.stop(reason)
+    ++this.lifecycleRevision
+    await this.enqueue(async () => {
+      await this.engine?.stop(reason)
+      this.currentProfile = null
+      this.appliedProfileHash = null
+    })
   }
 
   async updateProfile(profile: ConnectionProfile): Promise<HotReloadType> {
     this.requireEngine()
-    this.currentProfile = profile
-    return this.engine!.updateProfile(profile)
+    const snapshot = structuredClone(profile)
+    const nextHash = fingerprintConnectionProfile(snapshot)
+    const revision = this.lifecycleRevision
+    return this.enqueue(async () => {
+      if (revision !== this.lifecycleRevision || this.disposed) return 'none' as const
+      if (this.appliedProfileHash === nextHash) return 'none' as const
+      const result = await this.engine!.updateProfile(snapshot)
+      // Only advance the last-known-good profile after the engine accepted it.
+      this.currentProfile = snapshot
+      this.appliedProfileHash = nextHash
+      return result
+    })
+  }
+
+  getCurrentProfile(): ConnectionProfile | null {
+    return this.currentProfile ? structuredClone(this.currentProfile) : null
+  }
+
+  getCurrentProfileHash(): string | null {
+    return this.appliedProfileHash
   }
 
   getState(): RuntimeState {
@@ -80,14 +134,20 @@ export class RuntimeManager {
   }
 
   async dispose(): Promise<void> {
+    this.connectionDesired = false
     this.disposed = true
     this.reconnectAborted = true
-    await this.engine?.dispose()
-    this.engine = null
-    this.currentProfile = null
+    ++this.lifecycleRevision
+    await this.enqueue(async () => {
+      await this.engine?.dispose()
+      this.engine = null
+      this.currentProfile = null
+      this.appliedProfileHash = null
+    })
   }
 
   private async scheduleReconnect(): Promise<void> {
+    const revision = this.lifecycleRevision
     const maxAttempts = VPN.RECONNECT_ATTEMPTS
 
     if (this.reconnectAttempts >= maxAttempts) {
@@ -101,13 +161,16 @@ export class RuntimeManager {
 
     await sleep(delayMs)
 
-    if (this.disposed || this.reconnectAborted || !this.currentProfile) return
+    if (revision !== this.lifecycleRevision || this.disposed || this.reconnectAborted || !this.currentProfile) return
 
     try {
-      await this.engine!.restart('crashed')
+      await this.enqueue(async () => {
+        if (revision !== this.lifecycleRevision || this.disposed || this.reconnectAborted) return
+        await this.engine!.restart('crashed')
+      })
       this.reconnectAttempts = 0
     } catch {
-      if (!this.disposed && !this.reconnectAborted) {
+      if (revision === this.lifecycleRevision && !this.disposed && !this.reconnectAborted) {
         void this.scheduleReconnect()
       }
     }

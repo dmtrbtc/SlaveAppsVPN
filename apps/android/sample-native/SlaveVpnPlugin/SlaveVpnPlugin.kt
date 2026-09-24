@@ -337,8 +337,12 @@ class SlaveVpnPlugin : Plugin() {
     /** Close every active connection («закрыть все»). */
     @PluginMethod
     fun closeAllConnections(call: PluginCall) {
-        ClashBridge.closeAllConnections()
-        call.resolve()
+        try {
+            ClashBridge.closeAllConnections()
+            call.resolve()
+        } catch (e: Exception) {
+            call.reject("close connections failed: ${e.message}")
+        }
     }
 
     /** Current rule-providers (bypass lists) status JSON, without refreshing. */

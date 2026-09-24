@@ -38,7 +38,7 @@ export async function aggregateSubscriptionProxies(
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new Error('Subscription concurrency must be a positive integer')
   }
-  const results: FetchedEntry[] = new Array(enabled.length)
+  const results: FetchedEntry[] = Array.from({ length: enabled.length })
   let nextIndex = 0
   const worker = async (): Promise<void> => {
     while (nextIndex < enabled.length) {

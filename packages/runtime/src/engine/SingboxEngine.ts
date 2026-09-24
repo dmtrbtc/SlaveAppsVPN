@@ -12,6 +12,7 @@ import { SingboxProcessManager } from '../singbox/SingboxProcessManager'
 import { MihomoApiClient } from '../mihomo/MihomoApiClient'  // Clash API is compatible
 import { HealthMonitor } from '../mihomo/HealthMonitor'
 import { TrafficMonitor } from '../mihomo/TrafficMonitor'
+import { connectionProfilesEqual } from '../profile/ConnectionProfileFingerprint'
 
 const API_READY_TIMEOUT_MS = 20_000  // sing-box can be slower on first start (cert generation etc.)
 const API_POLL_INTERVAL_MS = 500
@@ -170,22 +171,32 @@ export class SingboxEngine implements VPNEngine {
     if (!this.currentProfile) throw new Error('Engine not started')
     if (this.fsm.state !== 'running') throw new Error(`Cannot update profile in state: ${this.fsm.state}`)
 
-    const reloadType = this.classifyProfileChange(this.currentProfile, profile)
-    this.currentProfile = profile
+    const previousProfile = this.currentProfile
+    if (connectionProfilesEqual(previousProfile, profile)) return 'none'
+    const reloadType = this.classifyProfileChange(previousProfile, profile)
 
-    switch (reloadType) {
-      case 'hot':
-        if (profile.selectedProxy) {
-          await this.api!.selectProxy(getSingboxSelectGroup(), profile.selectedProxy)
-        }
-        break
+    try {
+      switch (reloadType) {
+        case 'none':
+          break
+        case 'hot':
+          if (profile.selectedProxy) {
+            await this.api!.selectProxy(getSingboxSelectGroup(), profile.selectedProxy)
+          }
+          break
 
-      case 'reconnect':
-      case 'full_restart':
-        // sing-box's clash-api does not expose a clean live config swap in the
-        // same way Mihomo does — easiest reliable path is full process restart.
-        await this.restart('config_reload')
-        break
+        case 'reconnect':
+        case 'full_restart':
+          // sing-box's clash-api does not expose a clean live config swap in the
+          // same way Mihomo does — easiest reliable path is full process restart.
+          this.currentProfile = profile
+          await this.restart('config_reload')
+          break
+      }
+      this.currentProfile = profile
+    } catch (error) {
+      this.currentProfile = previousProfile
+      throw error
     }
 
     this.events.emit('reloadCompleted', { type: reloadType })
@@ -239,7 +250,6 @@ export class SingboxEngine implements VPNEngine {
     await fs.writeFile(this.configPath(), json, 'utf-8')
 
     console.log(`[SingboxEngine] config written to: ${this.configPath()}`)
-    console.log(`[SingboxEngine] config preview (first 2000 chars):\n${json.slice(0, 2000)}`)
   }
 
   private async waitForApi(): Promise<void> {

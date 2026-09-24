@@ -8,6 +8,8 @@ import { SingleProxySource, parseProxyLink } from './sources/SingleProxySource'
 import { RemnawaveKeySource } from './sources/RemnawaveKeySource'
 import { normalizeSubscriptionContent } from './sources/subscriptionNormalizer'
 import { buildSubscriptionHeaders, getEngineUserAgents } from './sources/subscriptionHeaders'
+import { canonicalSubscriptionSource } from '@slave-vpn/core'
+import { isProxyUri, normalizeProxyUriInput } from '@slave-vpn/config'
 
 const STORAGE_KEY = 'config-source'
 
@@ -15,12 +17,15 @@ const STORAGE_KEY = 'config-source'
 // tuic://, …) vs a subscription URL (http/https). When the user pastes a KEY into
 // the URL field, treat it as 'single-proxy' — otherwise SubscriptionUrlSource
 // tries to GET "vless://…" and fails. Mirrors the Android subscription-store fix.
-const PROXY_URI_RE = /^(vless|vmess|ss|ssr|trojan|hysteria2?|hy2|tuic|wireguard|socks5?|anytls|mieru):\/\//i
 function effectiveType(type: ConfigSourceType, input: string): ConfigSourceType {
-  if ((type === 'subscription-url' || type === 'single-proxy') && PROXY_URI_RE.test(input.trim())) {
+  if ((type === 'subscription-url' || type === 'single-proxy') && isProxyUri(input)) {
     return 'single-proxy'
   }
   return type
+}
+
+function normalizeInput(type: ConfigSourceType, input: string): string {
+  return type === 'single-proxy' ? normalizeProxyUriInput(input) : input.trim()
 }
 
 interface StoredConfigSource {
@@ -121,23 +126,37 @@ class ConfigSourceService {
     }
   }
 
+  /** Stable comparison key for migration/aggregation. Never log or expose it. */
+  getCanonicalSourceIdentity(): string | null {
+    const raw = getSecureStorage().read(STORAGE_KEY)
+    if (!raw) return null
+    try {
+      const stored = JSON.parse(raw) as StoredConfigSource
+      if (!stored.type || !stored.input) return null
+      return canonicalSubscriptionSource(stored.type, stored.input)
+    } catch {
+      return null
+    }
+  }
+
   async validate(typeArg: ConfigSourceType, input: string): Promise<ConfigSourceValidateResult> {
     const log = getLogger()
     const type = effectiveType(typeArg, input)  // auto-detect a pasted proxy-URI key
+    const normalizedInput = normalizeInput(type, input)
 
     if (type === 'provider') {
       return { valid: false, error: 'Provider type cannot be set via config source API' }
     }
 
-    if (!input.trim()) {
+    if (!normalizedInput) {
       return { valid: false, error: 'Input is empty' }
     }
 
     try {
       switch (type) {
         case 'subscription-url': {
-          new URL(input)  // throws if invalid URL
-          const probe = await probeUrl(input)
+          new URL(normalizedInput)  // throws if invalid URL
+          const probe = await probeUrl(normalizedInput)
           return {
             valid: true,
             displayName: `${probe.displayName} · ${probe.proxyCount} ${serversWord(probe.proxyCount)}`,
@@ -148,7 +167,7 @@ class ConfigSourceService {
         }
 
         case 'single-proxy': {
-          const parsed = parseProxyLink(input)
+          const parsed = parseProxyLink(normalizedInput)
           const badge = parsed.securityType === 'reality' ? 'REALITY'
             : parsed.transport === 'ws' ? 'WS'
             : parsed.transport === 'grpc' ? 'gRPC'
@@ -168,11 +187,11 @@ class ConfigSourceService {
         }
 
         case 'remnawave-key': {
-          if (input.trim().length < 8) {
+          if (normalizedInput.length < 8) {
             return { valid: false, error: 'Access key is too short' }
           }
           const settings = getSettingsStore()
-          const url = `${settings.get('apiBaseUrl').replace(/\/$/, '')}/sub/${input.trim()}`
+          const url = `${settings.get('apiBaseUrl').replace(/\/$/, '')}/sub/${normalizedInput}`
           const probe = await probeUrl(url)
           return {
             valid: true,
@@ -192,7 +211,8 @@ class ConfigSourceService {
 
   async set(typeArg: ConfigSourceType, input: string): Promise<ConfigSourceMeta> {
     const type = effectiveType(typeArg, input)  // auto-detect a pasted proxy-URI key
-    const result = await this.validate(type, input)
+    const normalizedInput = normalizeInput(type, input)
+    const result = await this.validate(type, normalizedInput)
     if (!result.valid) {
       throw new Error(result.error ?? 'Validation failed')
     }
@@ -202,10 +222,10 @@ class ConfigSourceService {
     let proxyProtocol: string | undefined
 
     if (type === 'subscription-url') {
-      try { urlDomain = new URL(input).hostname } catch { /* ignore */ }
+      try { urlDomain = new URL(normalizedInput).hostname } catch { /* ignore */ }
     } else if (type === 'single-proxy') {
       try {
-        const parsed = parseProxyLink(input)
+        const parsed = parseProxyLink(normalizedInput)
         proxyProtocol = parsed.type
       } catch { /* ignore */ }
     } else if (type === 'remnawave-key') {
@@ -215,8 +235,8 @@ class ConfigSourceService {
 
     const stored: StoredConfigSource = {
       type,
-      input: input.trim(),
-      displayName: result.displayName ?? input.trim(),
+      input: normalizedInput,
+      displayName: result.displayName ?? normalizedInput,
       addedAt: Date.now(),
       ...(urlDomain ? { urlDomain } : {}),
       ...(proxyProtocol ? { proxyProtocol } : {}),

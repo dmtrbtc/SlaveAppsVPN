@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { cn } from '../../lib/utils'
 import { useConnectionHealth, useConnectionQualityTier } from '../../hooks/useConnectionHealth'
 import { HEALTH_STATE_LABELS } from '../../lib/health'
 import type { QualityTier } from '../../lib/health'
+import { useVpnStore, selectVpnStatus } from '../../stores/vpn.store'
 
 const TIER_CONFIG: Record<QualityTier, {
   bars: 1 | 2 | 3 | 4
@@ -23,12 +25,23 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
   const health = useConnectionHealth()
   const tier = useConnectionQualityTier()
   const config = TIER_CONFIG[tier]
+  const connectedAt = useVpnStore(selectVpnStatus).connectedAt
+  const [now, setNow] = useState(() => Date.now())
+  const verifying = !!health && health.state === 'offline' && !!connectedAt && now - connectedAt < 60_000
+
+  useEffect(() => {
+    if (!verifying) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [verifying])
 
   // Don't fabricate a quality reading: with no real health data (e.g. before the
   // first health probe lands) show nothing rather than a misleading «Хорошее».
   if (!health) return null
 
   const label = HEALTH_STATE_LABELS[health.state]
+  const visibleConfig = verifying ? TIER_CONFIG.fair : config
+  const elapsedSeconds = connectedAt ? Math.max(0, Math.floor((now - connectedAt) / 1_000)) : 0
 
   return (
     <motion.div
@@ -38,6 +51,7 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
       transition={{ duration: 0.25 }}
       className={cn(
         'flex items-center gap-2 rounded-xl border border-border/60 bg-bg-primary/80 px-3 py-2',
+        verifying && 'animate-pulse',
         className
       )}
     >
@@ -48,7 +62,7 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
             key={bar}
             className={cn(
               'w-1 rounded-sm transition-colors duration-500',
-              bar <= config.bars ? config.barColor : 'bg-bg-tertiary'
+              bar <= visibleConfig.bars ? visibleConfig.barColor : 'bg-bg-tertiary'
             )}
             style={{ height: `${bar * 25}%` }}
             initial={{ scaleY: 0 }}
@@ -60,12 +74,12 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
 
       {/* Label */}
       <div className="flex flex-col leading-none">
-        <span className={cn('text-[11px] font-medium', config.color)}>
-          {label} качество
+        <span className={cn('text-[11px] font-medium', visibleConfig.color)}>
+          {verifying ? 'Проверяем соединение' : `${label} качество`}
         </span>
         {health && (
           <span className="text-[10px] text-text-muted font-mono mt-0.5">
-            {health.score}/100
+            {verifying ? `${elapsedSeconds} с · повторяем проверку` : `${health.score}/100`}
           </span>
         )}
       </div>

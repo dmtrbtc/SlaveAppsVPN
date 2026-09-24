@@ -1,4 +1,3 @@
-import crypto from 'crypto'
 import { app } from 'electron'
 import { openDatabase, CacheManager, SubscriptionRepository, UserRepository } from '@slave-vpn/state-sync'
 import { RuntimeManager } from '@slave-vpn/runtime'
@@ -13,13 +12,16 @@ import { getSettingsStore } from './services/SettingsStore'
 import { RecoveryCoordinator } from './services/RecoveryCoordinator'
 import { getSafeModeManager } from './services/SafeModeManager'
 import { getNodeHealthManager } from './services/NodeHealthManager'
+import { getRuntimeApiSecret } from './services/runtimeApiSecret'
 import { getSubscriptionStore } from './services/SubscriptionStore'
 import { getSubscriptionScheduler } from './services/SubscriptionScheduler'
+import { getSubscriptionAggregator } from './services/SubscriptionAggregatorService'
 import { getNodeBalancerService } from './services/NodeBalancerService'
 import { getProfileStore } from './services/ProfileStore'
 import { getGeoUpdaterService } from './services/GeoUpdaterService'
 import { setTrayActions, updateTrayStatus, updateTrayMode, updateTraySelectedProxy, updateTrayProxyList, updateTrayBalancer, updateTrayProfiles } from './tray'
 import { VPN } from '@slave-vpn/shared'
+import { getProxyNamesFromYaml } from '@slave-vpn/config'
 import { services } from './ipc/registry'
 import { sendToRenderer } from './window'
 import { IpcChannel } from '../shared/ipc/channels'
@@ -83,11 +85,17 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const tokenStorage = new ElectronTokenStorage()
 
   // ─── Runtime (VPN Engine) ─────────────────────────────────────────────────
-  const apiSecret = crypto.randomBytes(16).toString('hex')
-  const selectedEngine = settings.get('selectedEngine') ?? 'mihomo'
+  const apiSecret = getRuntimeApiSecret()
+  const requestedEngine = settings.get('selectedEngine') ?? 'mihomo'
+  // Older builds exposed the unfinished Xray placeholder in Settings. It has no
+  // compiler/runtime and selecting it makes every connection fail immediately.
+  // Recover those persisted values to the supported Mihomo path at startup.
+  const selectedEngine = requestedEngine === 'xray' ? 'mihomo' : requestedEngine
+  if (requestedEngine === 'xray') await settings.patch({ selectedEngine: 'mihomo' })
   const engineConfig = createWindowsEngineConfig(userDataPath, apiSecret, selectedEngine)
 
-  runtimeManager = new RuntimeManager()
+  // Windows recovery is owned by RecoveryCoordinator through RuntimeService.
+  runtimeManager = new RuntimeManager(undefined, { autoReconnect: false })
   await runtimeManager.initialize(selectedEngine, engineConfig)
   log.debug({ engine: selectedEngine }, 'RuntimeManager initialized')
 
@@ -148,6 +156,8 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
     apiSecret,
     binaryPath: engineConfig.binaryPath,
     workingDir: engineConfig.workingDir,
+    setSettings: async (patch) => { await settings.patch(patch) },
+    waitForSettings: () => settings.waitForPersistence(),
   })
 
   recoveryCoordinator = new RecoveryCoordinator(runtimeManager)
@@ -191,7 +201,13 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
 // Wires tray menu actions and live updates to the runtime / balancer.
 function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSettingsStore>): void {
   const log = getLogger()
-  const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, settings.get('apiBaseUrl') ?? '')
+  const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, getRuntimeApiSecret())
+  // The balancer needs the aggregated proxy names; resolve them lazily from
+  // the subscription snapshot so a fresh node list is picked up on every enable.
+  balancer.setProxyNamesProvider(async () => {
+    const snapshot = await getSubscriptionAggregator().getSnapshotOrFetch()
+    return getProxyNamesFromYaml(snapshot.yaml)
+  })
 
   const profileStore = getProfileStore()
 
@@ -199,14 +215,17 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
     connect: () => runtime.connect(),
     disconnect: () => runtime.disconnect(),
     setMode: (mode) => runtime.setMode(mode),
-    setProxy: (proxyName) => runtime.setSelectedProxy(proxyName).catch(async () => {
-      // If VPN is not running, persist the selection so the next connect uses it.
-      await import('./services/SettingsStore').then(({ getSettingsStore: getS }) =>
-        getS().patch({ selectedProxy: proxyName }))
-    }),
+    setProxy: async (proxyName) => {
+      if (runtime.getState() !== 'running') {
+        await settings.patch({ selectedProxy: proxyName })
+      } else {
+        // A running selection failure must not be mistaken for an offline save.
+        await runtime.setSelectedProxy(proxyName)
+      }
+    },
     setBalancerEnabled: async (enabled) => {
       await balancer.setEnabled(enabled)
-      settings.patch({ balancerEnabled: enabled })
+      await settings.patch({ balancerEnabled: enabled })
       updateTrayBalancer(enabled)
     },
     applyProfile: async (id) => {
@@ -221,12 +240,12 @@ function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSe
       if (snap.selectedProxy !== undefined)    patch.selectedProxy = snap.selectedProxy
       if (snap.vpnMode !== undefined)          patch.vpnMode = snap.vpnMode
       if (snap.balancerEnabled !== undefined)  patch.balancerEnabled = snap.balancerEnabled
-      if (Object.keys(patch).length > 0) settings.patch(patch)
+      if (Object.keys(patch).length > 0) await settings.patch(patch)
+      if (runtime.getState() === 'running') {
+        await runtime.notifySubscriptionsChanged('profile-apply')
+      }
       profileStore.markApplied(id)
       updateTrayProfiles(profileStore.list(), profileStore.getActiveId())
-      if (runtime.getState() === 'running') {
-        runtime.notifySubscriptionsChanged().catch(() => undefined)
-      }
     },
   })
 
@@ -283,6 +302,7 @@ export function updateRuntimeConfigSource(): void {
   const source = configSourceService.createConfigSource()
   if (source && runtimeService) {
     runtimeService.setConfigSource(source)
+    getSubscriptionAggregator().invalidateConfigSource()
     getLogger().info('Runtime config source updated')
   }
 }
@@ -320,6 +340,5 @@ export async function triggerReconnect(): Promise<void> {
   if (state !== 'running') return
   const log = getLogger()
   log.info('triggerReconnect: forcing reconnect after sleep/wake')
-  await runtimeService.disconnect()
-  await runtimeService.connect()
+  await runtimeService.reconnectAfterResume()
 }

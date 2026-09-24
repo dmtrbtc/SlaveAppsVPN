@@ -51,11 +51,13 @@ export function registerDnsHandlers(): void {
   handleIpc(IpcChannel.DNS_SET_PROFILE, DnsSetProfileSchema, async ({ profile }) => {
     try {
       const settings = getSettingsStore()
-      settings.patch({ dnsPreset: profile.preset as any })
       // Persist custom DNS profile (with G.1-G.4 fields) for ALL presets — not
       // only 'custom'. This lets users layer custom resolvers/rules/prefetch on
       // top of preset baselines.
-      settings.patch({ customDnsProfile: profile as any })
+      await settings.patch({
+        dnsPreset: profile.preset as any,
+        customDnsProfile: profile as any,
+      })
       return okResult(undefined)
     } catch (err) {
       return errResult('DNS_ERROR', err instanceof Error ? err.message : String(err))

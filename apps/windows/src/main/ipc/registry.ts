@@ -1,8 +1,9 @@
 import { ipcMain, type IpcMainInvokeEvent } from 'electron'
 import { type ZodSchema } from 'zod'
 import { validated } from '../security/IpcValidator'
-import { type IpcResult } from '../../shared/ipc/types'
-import { type IpcChannel } from '../../shared/ipc/channels'
+import { errResult, type IpcResult } from '../../shared/ipc/types'
+import { IpcChannel } from '../../shared/ipc/channels'
+import { isolatedSettingsSmoke } from '../isolatedSettingsSmoke'
 import { getLogger } from '../logger'
 
 type ServiceFactory<T> = () => T
@@ -34,9 +35,12 @@ export function handleIpc<TInput, TOutput>(
   schema: ZodSchema<TInput>,
   handler: (data: TInput, event: IpcMainInvokeEvent) => Promise<IpcResult<TOutput>>
 ): void {
-  const wrappedHandler = validated(schema, handler)
+  const wrappedHandler = validated(schema, handler, channel)
 
   ipcMain.handle(channel, (event, rawData: unknown) => {
+    if (isolatedSettingsSmoke && channel !== IpcChannel.SETTINGS_GET && channel !== IpcChannel.SETTINGS_SET) {
+      return errResult('NOT_INITIALIZED', 'Only settings IPC is available in isolated settings smoke')
+    }
     getLogger().debug({ channel }, 'IPC invoke')
     return wrappedHandler(event, rawData)
   })

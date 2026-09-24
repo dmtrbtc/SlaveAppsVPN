@@ -57,6 +57,7 @@ export {
   parseProxyUriSafe,
   parseProxyUriList,
   isProxyUri,
+  normalizeProxyUriInput,
   isSingBoxJson,
   parseSingBoxJson,
   buildClashYaml,

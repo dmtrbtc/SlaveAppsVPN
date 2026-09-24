@@ -27,15 +27,16 @@ import { createMirroredStringStore } from './adapters/mirrored-string-store'
  *
  * Fix: localStorage is now the DURABLE PRIMARY (synchronous, always present in
  * a WebView, persists across launches). Preferences is a best-effort mirror
- * written/read after localStorage, so we still benefit from
- * EncryptedSharedPreferences when available but never depend on it for
- * correctness. Reads prefer localStorage and fall back to Preferences only
- * when localStorage is empty (e.g. first launch after an OS WebView wipe but
- * the encrypted store survived).
+ * written/read after localStorage, so we still have a native Preferences copy
+ * but never depend on it for correctness. Reads prefer localStorage and fall
+ * back to Preferences only
+ * when localStorage is empty (e.g. first launch after an OS WebView reset but
+ * the native Preferences copy survived).
  */
 
 const INDEX_KEY = 'slave.subscriptions.index.v1'
 const INPUT_KEY = (id: string): string => `slave.subscriptions.input.v1.${id}`
+const CACHE_KEY = (id: string): string => `slave.subscriptions.cache.v1.${id}`
 
 export type AndroidSubscriptionType = SubscriptionSourceType
 export type AndroidSubscriptionEntry = SubscriptionEntry
@@ -67,16 +68,20 @@ function randomId(): string {
   return `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 }
 
-async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
-  const value = await storage.get(INDEX_KEY)
-  if (!value) return []
+function parseIndex(value: string): AndroidSubscriptionEntry[] | null {
   try {
     const parsed = JSON.parse(value)
-    if (Array.isArray(parsed)) return parsed as AndroidSubscriptionEntry[]
+    return Array.isArray(parsed) ? parsed as AndroidSubscriptionEntry[] : null
   } catch {
-    /* fall through */
+    return null
   }
-  return []
+}
+
+async function readIndex(): Promise<AndroidSubscriptionEntry[]> {
+  // Invalid local data must not permanently shadow a valid native mirror.
+  const value = await storage.getValidated(INDEX_KEY, raw => parseIndex(raw) !== null)
+  if (!value) return []
+  return parseIndex(value) ?? []
 }
 
 async function writeIndex(entries: AndroidSubscriptionEntry[]): Promise<void> {
@@ -99,7 +104,7 @@ async function repairIndex(): Promise<AndroidSubscriptionEntry[]> {
   })))
   const { entries: repaired, duplicateIds } = deduplicateSubscriptionSources(records)
   if (JSON.stringify(repaired) !== JSON.stringify(original)) await writeIndex(repaired)
-  for (const id of duplicateIds) storage.remove(INPUT_KEY(id))
+  for (const id of duplicateIds) await storage.remove(INPUT_KEY(id))
   return repaired
 }
 
@@ -113,6 +118,14 @@ export async function listSubscriptions(): Promise<AndroidSubscriptionEntry[]> {
 
 export async function getSubscriptionInput(id: string): Promise<string | null> {
   return storage.get(INPUT_KEY(id))
+}
+
+export async function getSubscriptionCache(id: string): Promise<string | null> {
+  return storage.get(CACHE_KEY(id))
+}
+
+export async function setSubscriptionCache(id: string, yaml: string): Promise<void> {
+  await storage.set(CACHE_KEY(id), yaml)
 }
 
 export interface AddSubscriptionOptions {
@@ -179,7 +192,8 @@ export async function removeSubscription(id: string): Promise<void> {
   return serializeMutation(async () => {
     const entries = await repairIndex()
     await writeIndex(normalizeSubscriptionPriorities(entries.filter(e => e.id !== id)))
-    storage.remove(INPUT_KEY(id))
+    await storage.remove(INPUT_KEY(id))
+    await storage.remove(CACHE_KEY(id))
   })
 }
 

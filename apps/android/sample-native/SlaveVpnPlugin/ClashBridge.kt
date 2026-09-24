@@ -91,8 +91,35 @@ object ClashBridge {
         // reaches the core and what the active leaf is before/after.
         val before = currentProxy(group)
         SlaveVpnService.appendLog("[selector] selectProxy($group, $name) — current before=$before")
-        Clashbox.selectProxy(group, name)
-        SlaveVpnService.appendLog("[selector] selectProxy done — current after=${currentProxy(group)}")
+        try {
+            Clashbox.selectProxy(group, name)
+            val after = currentProxy(group)
+            if (after != name) {
+                throw IllegalStateException("selector did not activate requested proxy: requested=$name active=$after")
+            }
+
+            // Mihomo only applies a selector change to NEW connections. Android apps
+            // commonly keep HTTP/2, QUIC and push sockets alive for minutes, which
+            // made the UI show the new server while traffic kept using the old one.
+            // Drop the tracked sessions after the selector has changed so clients
+            // reconnect through the requested node immediately.
+            closeAllConnections()
+            SlaveVpnService.appendLog("[selector] selectProxy done — current after=$after; old connections closed")
+        } catch (error: Throwable) {
+            // Keep native state aligned with the UI when the second half of the
+            // switch fails. Best-effort rollback is safe even when the first PUT
+            // was rejected before changing anything.
+            if (before.isNotBlank() && before != name) {
+                try {
+                    Clashbox.selectProxy(group, before)
+                    closeAllConnections()
+                    SlaveVpnService.appendLog("[selector] rollback restored $before")
+                } catch (rollback: Throwable) {
+                    SlaveVpnService.appendLog("[selector] rollback failed: ${rollback.message}")
+                }
+            }
+            throw error
+        }
     }
 
     /** Effective active proxy (leaf node) of a group, "" if unknown / not running. */
@@ -113,7 +140,7 @@ object ClashBridge {
 
     /** Close every tracked connection. */
     fun closeAllConnections() {
-        try { Clashbox.closeAllConnections() } catch (_: Throwable) { }
+        Clashbox.closeAllConnections()
     }
 
     /** Proxy latency (ms) via URL test; -1 on error/timeout. */

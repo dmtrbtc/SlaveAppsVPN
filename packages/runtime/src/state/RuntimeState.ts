@@ -16,6 +16,7 @@ export type StopReason =
   | 'health_failure'
 
 export type HotReloadType =
+  | 'none'          // semantically identical profile — no engine mutation
   | 'hot'           // PATCH /configs — no disconnect
   | 'reconnect'     // PUT /configs + reconnect (proxy changed)
   | 'full_restart'  // kill + restart (TUN/ports changed)

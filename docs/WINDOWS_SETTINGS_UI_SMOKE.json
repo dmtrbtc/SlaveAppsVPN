@@ -1,0 +1,22 @@
+{
+  "checkedAt": "2026-09-12T13:27:57.026Z",
+  "phases": [
+    {
+      "phase": "write",
+      "settingsPage": true,
+      "realSettingsIPC": true,
+      "integrationsCalled": 0,
+      "sandbox": true
+    },
+    {
+      "phase": "read",
+      "settingsPage": true,
+      "realSettingsIPC": true,
+      "integrationsCalled": 0,
+      "sandbox": true
+    }
+  ],
+  "processExitsConfirmed": true,
+  "vpnTested": false,
+  "safeModeBootstrap": true
+}

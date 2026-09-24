@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc } from '../registry'
 import { getNodeBalancerService } from '../../services/NodeBalancerService'
+import { getRuntimeApiSecret } from '../../services/runtimeApiSecret'
 import { getSettingsStore } from '../../services/SettingsStore'
 import { EmptySchema } from '../../../shared/ipc/schemas'
 import { VPN } from '@slave-vpn/shared'
@@ -14,7 +15,7 @@ const BalancerSetModeSchema = z.object({ mode: z.enum(['latency', 'stability', '
 export function registerBalancerHandlers(): void {
   const settings = getSettingsStore()
   const apiPort = VPN.MIHOMO_API_PORT
-  const apiSecret = ''  // fetched from settings or generated at runtime
+  const apiSecret = getRuntimeApiSecret()
 
   handleIpc(IpcChannel.VPN_GET_BALANCER_STATE, EmptySchema, async () => {
     const svc = getNodeBalancerService(apiPort, apiSecret)
@@ -25,7 +26,7 @@ export function registerBalancerHandlers(): void {
     try {
       const svc = getNodeBalancerService(apiPort, apiSecret)
       await svc.setEnabled(payload.enabled)
-      settings.patch({ balancerEnabled: payload.enabled })
+      await settings.patch({ balancerEnabled: payload.enabled })
       return okResult(undefined)
     } catch (err) {
       return errResult('BALANCER_ERROR', err instanceof Error ? err.message : String(err))
@@ -36,7 +37,7 @@ export function registerBalancerHandlers(): void {
     try {
       const svc = getNodeBalancerService(apiPort, apiSecret)
       await svc.setMode(payload.mode as any)
-      settings.patch({ balancerMode: payload.mode as any })
+      await settings.patch({ balancerMode: payload.mode as any })
       return okResult(undefined)
     } catch (err) {
       return errResult('BALANCER_ERROR', err instanceof Error ? err.message : String(err))

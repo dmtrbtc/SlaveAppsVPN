@@ -3,6 +3,9 @@ import {
   parseGitHubReleasesAtom,
   type GitHubRelease,
 } from '@shared/update/parseGitHubReleasesAtom'
+import { effectiveUpdateChannel, isPrereleaseVersion } from '../lib/update-channel'
+
+export { effectiveUpdateChannel, isPrereleaseVersion }
 
 /**
  * Lightweight in-app update check for the Android build — "notify + by button".
@@ -89,26 +92,18 @@ export function getCurrentVersion(): string {
 /**
  * Release notes for the CURRENTLY INSTALLED version — powers the post-update
  * «Что нового» card. Finds the GitHub release whose tag matches this build's
- * version exactly (x.y.z, ignoring the `v` prefix; a -dev/-rc prerelease of the
- * same x.y.z does NOT match, so a stable build shows the stable notes). Returns
- * null when offline, no match, or the release has an empty body. Never throws.
+ * version exactly (ignoring only the optional `v` prefix). A dev/rc build must
+ * never show notes from another prerelease of the same x.y.z. Returns null when
+ * offline, unpublished, unmatched, or the release has an empty body. Never throws.
  */
 export async function getInstalledVersionNotes(): Promise<{ version: string; notes: string; releaseUrl: string } | null> {
   try {
-    const inst = parseVer(getCurrentVersion())
+    const currentVersion = getCurrentVersion()
+    const inst = parseVer(currentVersion)
     if (!inst) return null
-    // Match by x.y.z (ignore any -dev/-rc suffix): __APP_VERSION__ is the bare
-    // package version (e.g. "0.2.29"), while the release tag may be a prerelease
-    // ("v0.2.29-dev.1") when no stable is cut yet. Among same-x.y.z releases prefer
-    // the stable one; else the newest prerelease (API returns newest-first) — so a
-    // -dev test build still finds its own notes.
-    const sameXyz = (await fetchReleases())
+    const match = (await fetchReleases())
       .filter(r => !r.draft)
-      .filter(r => {
-        const pv = parseVer(r.tag_name)
-        return pv !== null && pv.rel[0] === inst.rel[0] && pv.rel[1] === inst.rel[1] && pv.rel[2] === inst.rel[2]
-      })
-    const match = sameXyz.find(r => parseVer(r.tag_name)?.pre.length === 0) ?? sameXyz[0]
+      .find(r => parseVer(r.tag_name) !== null && cmpVer(r.tag_name, currentVersion) === 0)
     if (!match || !match.body || !match.body.trim()) return null
     return { version: match.tag_name || getCurrentVersion(), notes: match.body, releaseUrl: match.html_url }
   } catch {
@@ -152,60 +147,89 @@ async function fetchReleases(): Promise<GitHubRelease[]> {
  * Channel filtering: 'stable' considers only final releases (`prerelease:false`);
  * 'beta' (the "Dev" channel) also considers prereleases. A stable user therefore
  * never sees a -dev/-rc build; a Dev user gets whichever is newest.
+ *
+ * A prerelease BUILD always resolves to 'beta' regardless of the stored
+ * preference — otherwise a dev install left on the default 'stable' channel
+ * would never see any update (every newer release is itself a prerelease).
  */
 export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise<UpdateInfo | null> {
   try {
+    channel = effectiveUpdateChannel(channel, getCurrentVersion())
     const releases = (await fetchReleases())
       .filter(r => !r.draft)
       .filter(r => channel === 'beta' || !r.prerelease)
-    if (releases.length === 0) return null
-    // API returns newest first; after channel filtering [0] is the newest
-    // release this channel is allowed to offer.
-    const latest = releases[0]!
-    const publishedAt = new Date(latest.published_at).getTime()
-    if (!Number.isFinite(publishedAt)) return null
-
-    // Primary: compare the release TAG to the installed version (semver). Reliable
-    // across rapid dev builds, where the published_at+1h heuristic below wrongly
-    // suppressed a release cut <1h after the running build (two dev tags an hour
-    // apart never surfaced). Fall back to the timestamp buffer only when a version
-    // can't be parsed (e.g. an oddly-named tag).
-    const installed = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
-    if (parseVer(latest.tag_name) && parseVer(installed)) {
-      if (cmpVer(latest.tag_name, installed) <= 0) return null // not newer than what's installed
-    } else {
-      const built = buildTimestampMs()
-      if (built > 0 && publishedAt <= built + NEWER_BUFFER_MS) return null // we're current
-    }
-
-    // Pick the asset for THIS platform: .apk on Android, the Windows installer
-    // (Setup .exe) on desktop.
     const native = Capacitor.isNativePlatform()
-    const asset = native
-      ? latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
-      : (latest.assets.find(a => /setup.*\.exe$/i.test(a.name)) ?? latest.assets.find(a => a.name.toLowerCase().endsWith('.exe')))
 
-    // Asset names are FIXED by CI, so when the scan comes up empty — the atom feed
-    // carries no assets at all, or the release is published while the asset is
-    // still uploading — derive the deterministic GitHub download URL from the tag
-    // (Android APK / Windows Setup) instead of dropping to the browser. Keeps
-    // «Обновить» in-app; a not-yet-uploaded asset just 404s and the user retries.
-    const tag = latest.tag_name
-    const derivedUrl = tag
-      ? native
-        ? `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Android.apk`
-        : `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Setup-${tag}.exe`
-      : null
+    // Newest-first: skip releases that are not newer than this build, and on
+    // Android skip ones without a real APK asset. The atom feed carries no
+    // assets, so the APK URL is derived from the tag — on a Windows-only
+    // release that URL 404s and used to surface a dead banner.
+    for (const latest of releases) {
+      const publishedAt = new Date(latest.published_at).getTime()
+      if (!Number.isFinite(publishedAt)) continue
 
-    return {
-      version: latest.tag_name || latest.name || 'новая версия',
-      notes: latest.body ?? '',
-      releaseUrl: latest.html_url,
-      downloadUrl: asset?.browser_download_url ?? derivedUrl,
-      publishedAt,
+      // Primary: compare the release TAG to the installed version (semver). Reliable
+      // across rapid dev builds, where the published_at+1h heuristic below wrongly
+      // suppressed a release cut <1h after the running build (two dev tags an hour
+      // apart never surfaced). Fall back to the timestamp buffer only when a version
+      // can't be parsed (e.g. an oddly-named tag).
+      const installed = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : ''
+      if (parseVer(latest.tag_name) && parseVer(installed)) {
+        if (cmpVer(latest.tag_name, installed) <= 0) return null // not newer than what's installed
+      } else {
+        const built = buildTimestampMs()
+        if (built > 0 && publishedAt <= built + NEWER_BUFFER_MS) return null // we're current
+      }
+
+      // Pick the asset for THIS platform: .apk on Android, the Windows installer
+      // (Setup .exe) on desktop.
+      const asset = native
+        ? latest.assets.find(a => a.name.toLowerCase().endsWith('.apk'))
+        : (latest.assets.find(a => /setup.*\.exe$/i.test(a.name)) ?? latest.assets.find(a => a.name.toLowerCase().endsWith('.exe')))
+
+      // Asset names are FIXED by CI, so when the scan comes up empty — the atom feed
+      // carries no assets at all, or the release is published while the asset is
+      // still uploading — derive the deterministic GitHub download URL from the tag
+      // (Android APK / Windows Setup) instead of dropping to the browser. Keeps
+      // «Обновить» in-app; a not-yet-uploaded asset just 404s and the user retries.
+      const tag = latest.tag_name
+      const derivedUrl = tag
+        ? native
+          ? `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Android.apk`
+          : `${RELEASE_DOWNLOAD_BASE}/${tag}/SlaveAppsVPN-Setup-${tag}.exe`
+        : null
+
+      // On Android the derived URL must actually exist before we surface the
+      // banner: Windows-only releases (no APK attached) would otherwise show an
+      // update that 404s on download. Fail-open on network errors so a flaky
+      // probe never hides a real update; desktop keeps the historical behavior
+      // (its releases always carry the Setup asset).
+      if (native && !asset && derivedUrl && !(await androidAssetExists(derivedUrl))) continue
+
+      return {
+        version: latest.tag_name || latest.name || 'новая версия',
+        notes: latest.body ?? '',
+        releaseUrl: latest.html_url,
+        downloadUrl: asset?.browser_download_url ?? derivedUrl,
+        publishedAt,
+      }
     }
+    return null
   } catch {
     return null
+  }
+}
+
+/** HEAD-probe a derived asset URL on Android. Never throws; network failures count as "exists". */
+async function androidAssetExists(url: string): Promise<boolean> {
+  try {
+    const res = await CapacitorHttp.request({
+      url, method: 'HEAD', headers: { 'User-Agent': 'SlaveVPN-update' },
+      connectTimeout: 8000, readTimeout: 8000,
+    } as Parameters<typeof CapacitorHttp.request>[0])
+    return typeof res.status === 'number' ? res.status >= 200 && res.status < 400 : true
+  } catch {
+    return true // fail-open: a broken probe must not hide a real update
   }
 }
 

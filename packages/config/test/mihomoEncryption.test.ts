@@ -39,6 +39,8 @@ proxies:
     reality-opts:
       public-key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       short-id: 0123456789abcdef
+      spider-x: /
+      support-x25519mlkem768: true
 `.trim()
 
 const baseSettings = {
@@ -76,9 +78,11 @@ test('mihomo Reality node: client-fingerprint present, NO bare fingerprint (cert
     utlsFingerprint: 'randomized',
   })
   assert.ok(/client-fingerprint:/.test(out), 'must emit client-fingerprint')
+  assert.ok(/client-fingerprint: chrome/.test(out), 'modern Reality ML-KEM must force the compatible chrome fingerprint')
   // A line that is `fingerprint:` NOT preceded by `client-` would be the
   // cert-pinning field mihomo rejects. It must be absent.
   assert.ok(!/(^|\n)[ \t]*fingerprint:/.test(out), 'must NOT emit a bare `fingerprint` field')
+  assert.ok(/support-x25519mlkem768: true/.test(out), 'must preserve the modern Reality ML-KEM flag')
 })
 
 test('sing-box compiler still SKIPS enc nodes (libbox cannot represent them)', () => {

@@ -17,6 +17,7 @@
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
 *.ps1   text eol=crlf
+*.patch text eol=lf -whitespace
 
 # Binary files — no line ending conversion
 *.exe   binary
@@ -30,3 +31,4 @@
 *.dat   binary
 *.p12   binary
 *.pfx   binary
+*.aar   binary

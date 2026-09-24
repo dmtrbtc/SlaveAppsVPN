@@ -86,6 +86,10 @@ export class MihomoApiClient {
     await this.put(`/proxies/${encodeURIComponent(groupName)}`, { name: proxyName })
   }
 
+  async getProxyGroup(groupName: string): Promise<{ all: string[] }> {
+    return this.get<{ all: string[] }>(`/proxies/${encodeURIComponent(groupName)}`)
+  }
+
   // GET /proxies/{tag}/delay?timeout={ms}&url={testUrl}
   // Returns latency in ms, or null if timeout/error.
   async getProxyDelay(tag: string, testUrl: string, timeoutMs: number): Promise<number | null> {

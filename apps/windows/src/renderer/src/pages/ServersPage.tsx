@@ -1,15 +1,25 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Search, Star, RefreshCw, Check, Zap } from 'lucide-react'
+import { Activity, Bot, Search, Star, RefreshCw, Check, Zap } from 'lucide-react'
 import { Input } from '../components/ui/input'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
 import { cn, countryFlagEmoji } from '../lib/utils'
+import { resolveNodeLatency } from '../lib/node-latency'
 import { useServers } from '../hooks/useServers'
-import { useVpnStore, selectVpnStatus, selectSelectedProxy } from '../stores/vpn.store'
+import { useSettings, useSettingsMutation } from '../hooks/useSettings'
+import {
+  useVpnStore,
+  selectVpnStatus,
+  selectSelectedProxy,
+  selectActiveProxy,
+  selectAutoMode,
+  selectBalancerState,
+} from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
+import { IS_MOBILE } from '../lib/platform'
 import type { Server, ServerAvailability } from '@slave-vpn/shared'
 import type { ServerLatencyPayload } from '../../../shared/ipc/types'
 
@@ -93,21 +103,22 @@ function LatencyDisplay({ ms, probing }: { ms: number | null; probing?: boolean 
 
 interface ServerRowProps {
   server: Server
-  liveLatency: number | null
+  liveLatency: number | null | undefined
   isProbing: boolean
   isSelected: boolean
+  isActive: boolean
   isFav: boolean
   isConnecting: boolean
   onSelect: () => void
   onFav: (e: React.MouseEvent) => void
 }
 
-function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
+function ServerRow({ server, liveLatency, isProbing, isSelected, isActive, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
   const flag = countryFlagEmoji(server.countryCode)
   const avail = AVAILABILITY_BADGE[server.availability]
   const isOffline = server.availability === 'offline'
   const badges = protocolBadges(server)
-  const displayLatency = liveLatency ?? server.latencyMs
+  const displayLatency = resolveNodeLatency(liveLatency, server.latencyMs)
 
   return (
     <div
@@ -128,9 +139,12 @@ function ServerRow({ server, liveLatency, isProbing, isSelected, isFav, isConnec
         <div className="flex items-center gap-1.5">
           <span className="text-[13px] font-medium text-text-primary truncate">{server.name}</span>
           {isSelected && <Check className="h-3 w-3 text-accent shrink-0" />}
+          {isActive && <Activity className="h-3 w-3 text-connected shrink-0" />}
         </div>
         <div className="flex items-center gap-1 mt-0.5 flex-wrap">
           <span className="text-[11px] text-text-muted">{server.countryName}</span>
+          {isSelected && <Badge tone="neutral" className="text-[9px] py-0 px-1 h-[14px] leading-none">Выбран</Badge>}
+          {isActive && <Badge tone="ok" className="text-[9px] py-0 px-1 h-[14px] leading-none">Активен</Badge>}
           {badges.map(b => (
             <Badge key={b.label} tone={b.tone} className="text-[9px] py-0 px-1 h-[14px] leading-none">
               {b.label}
@@ -242,6 +256,8 @@ export function ServersPage() {
   const status = useVpnStore(selectVpnStatus)
   const { notify, serverFavorites, toggleServerFavorite } = useUIStore()
   const { data: servers = [], isLoading, error, refetch, isFetching } = useServers()
+  const { data: settings } = useSettings()
+  const settingsMutation = useSettingsMutation()
 
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('latency')
@@ -250,7 +266,24 @@ export function ServersPage() {
 
   const connect = useVpnStore(s => s.connect)
   const setProxy = useVpnStore(s => s.setProxy)
+  const selectAuto = useVpnStore(s => s.selectAuto)
   const selectedProxy = useVpnStore(selectSelectedProxy)
+  const activeProxy = useVpnStore(selectActiveProxy)
+  const autoMode = useVpnStore(selectAutoMode)
+  const balancerState = useVpnStore(selectBalancerState)
+  const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
+  const compatibilityNode = settings?.realityCompatibilityNode
+  const realityTarget = servers.find(s => s.id === selectedProxy && s.securityType === 'reality' && s.proxyType === 'vless')
+  const canChangeCompatibility = status.state === 'disconnected' && !connectingId && !settingsMutation.isPending
+
+  const changeCompatibility = async (node: string | null): Promise<void> => {
+    try {
+      await settingsMutation.mutateAsync({ realityCompatibilityNode: node })
+      notify({ type: 'success', title: node ? 'Тестовый режим включён' : 'Обычная защита восстановлена', message: 'Настройка применится при следующем подключении' })
+    } catch (err) {
+      notify({ type: 'error', title: 'Настройка не сохранена', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
 
   const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
   const bestNode = useBestNode(servers, latencyMap)
@@ -272,8 +305,8 @@ export function ServersPage() {
       const bf = serverFavorites.includes(b.id) ? 0 : 1
       if (af !== bf) return af - bf
       if (sortKey === 'latency') {
-        const aMs = latencyMap.get(a.name) ?? a.latencyMs ?? 9999
-        const bMs = latencyMap.get(b.name) ?? b.latencyMs ?? 9999
+        const aMs = resolveNodeLatency(latencyMap.get(a.name), a.latencyMs) ?? Infinity
+        const bMs = resolveNodeLatency(latencyMap.get(b.name), b.latencyMs) ?? Infinity
         return aMs - bMs
       }
       if (sortKey === 'name') return a.name.localeCompare(b.name)
@@ -305,10 +338,38 @@ export function ServersPage() {
     }
   }
 
+  const handleAuto = async (): Promise<void> => {
+    if (connectingId) return
+    setConnectingId('SLAVE-AUTO')
+    try {
+      await selectAuto()
+      notify({ type: 'success', title: 'Автовыбор включён', message: 'Будет использован лучший доступный узел' })
+      if (status.state !== 'connected') await connect()
+    } catch (err) {
+      notify({ type: 'error', title: 'Ошибка автовыбора', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setConnectingId(null)
+    }
+  }
+
   return (
     <div className="flex h-full flex-col bg-bg-base">
 
       {/* Header */}
+      {settings && (IS_MOBILE || settings.selectedEngine === 'mihomo') && (realityTarget || compatibilityNode) && (
+        <section className="border-b border-border px-6 py-3 text-[12px]" aria-label="Совместимость REALITY">
+          <p className="font-medium">Совместимость с Hiddify — экспериментальный режим</p>
+          <p className="text-text-muted mt-1">
+            Только для ноды «{compatibilityNode || realityTarget?.name}». Отключает ML-KEM,
+            дробление рукопожатия и дополнительную проверку pqv. Основная проверка REALITY сохраняется.
+            Работоспособность не гарантируется. Для изменения отключите VPN.
+          </p>
+          <Button className="mt-2" variant="ghost" disabled={!canChangeCompatibility || (!compatibilityNode && autoActive)}
+            onClick={() => void changeCompatibility(compatibilityNode ? null : realityTarget?.name ?? null)}>
+            {compatibilityNode ? 'Отключить тестовый режим и вернуть pqv' : 'Включить для этой ноды без проверки pqv'}
+          </Button>
+        </section>
+      )}
       <div className="px-6 py-4 border-b border-border bg-bg-base shrink-0">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-baseline gap-2">
@@ -324,6 +385,15 @@ export function ServersPage() {
             )}
           </div>
           <div className="flex items-center gap-1.5">
+            <Button
+              variant={autoActive ? 'primary' : 'ghost'}
+              size="sm"
+              onClick={() => void handleAuto()}
+              disabled={connectingId !== null}
+            >
+              <Bot className="h-3.5 w-3.5" />
+              {connectingId === 'SLAVE-AUTO' ? 'Включение...' : autoActive ? 'Автовыбор включён' : 'Автовыбор'}
+            </Button>
             {probing && (
               <span className="text-[11px] text-text-muted animate-pulse">Проверка пинга...</span>
             )}
@@ -393,9 +463,10 @@ export function ServersPage() {
               >
                 <ServerRow
                   server={server}
-                  liveLatency={latencyMap.get(server.name) ?? null}
+                  liveLatency={latencyMap.get(server.name)}
                   isProbing={probing && !latencyMap.has(server.name)}
-                  isSelected={selectedProxy === server.id || status.serverName === server.name}
+                  isSelected={!autoActive && selectedProxy === server.id}
+                  isActive={status.state === 'connected' && (activeProxy === server.id || status.serverName === server.name)}
                   isFav={serverFavorites.includes(server.id)}
                   isConnecting={connectingId === server.id}
                   onSelect={() => void handleSelect(server)}

@@ -4,8 +4,122 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.18] — 2026-09-20
+
+### Added
+
+- A local interoperability harness now exercises the packaged Mihomo client
+  against Xray 26.9.9 with hybrid X25519/ML-KEM, ML-DSA-65 verification,
+  ClientHello fragmentation, and a server-enforced minimum client version.
+
+### Fixed
+
+- Modern REALITY sessions now advertise client version `26.9.9` instead of
+  `26.3.27`, so current Xray servers using `minClientVer` no longer silently
+  reject an otherwise valid VLESS connection and fall back to timeout/EOF.
+- Windows and Android ship the same corrected native handshake implementation.
+
+## [0.2.41-dev.17] — 2026-09-20
+
+### Added
+
+- VLESS REALITY profiles carrying `pqv` now enable narrowly scoped TLS-record
+  fragmentation for their enlarged hybrid X25519/ML-KEM ClientHello.
+- The fragmentation implementation and payload-preservation behavior are
+  covered by native Mihomo tests and shipped in both Windows and Android cores.
+
+### Fixed
+
+- Hybrid REALITY handshakes can traverse mobile networks and middleboxes that
+  silently discard an oversized ClientHello spanning ordinary TCP segments.
+- Profiles without `pqv` retain the upstream handshake path unchanged.
+
+## [0.2.41-dev.16] — 2026-09-20
+
+### Added
+
+- The bundled Windows and Android Mihomo cores now declare the modern REALITY
+  client version required by current Xray servers and verify optional ML-DSA-65
+  certificate signatures supplied through the standard `pqv` share-link field.
+- Native core patches are pinned to the exact Mihomo source tag, tested, and
+  rebuilt reproducibly for both platforms.
+
+### Fixed
+
+- VLESS REALITY subscriptions carrying `pqv` no longer discard the verification
+  key during import.
+- Connections to modern REALITY servers are no longer silently rejected because
+  the client advertised the legacy `1.8.2` compatibility version.
+
+## [0.2.41-dev.15] — 2026-09-19
+
+### Added
+
+- Windows and Android now classify common selector, REALITY, encryption, TLS,
+  DNS, authentication, reset, unreachable-network, timeout, and TUN failures
+  into privacy-safe diagnostics without exposing raw subscription data.
+- REALITY validation accepts canonical 43-character Xray base64url public keys
+  and enforces the official eight-byte short-id limit.
+
+### Fixed
+
+- Switching a server now activates the new selector before closing existing
+  sessions, so long-lived HTTP/2, QUIC, and push connections cannot continue
+  through the previously selected node.
+- Failed selector changes restore both the active profile and the saved choice;
+  Android no longer hides a native failure or presents a rejected node as
+  selected.
+- Android resets a saved node that disappeared from refreshed subscriptions to
+  `SLAVE-AUTO` before starting the native core.
+- REALITY links requesting X25519/ML-KEM force the compatible `chrome` uTLS
+  fingerprint even when a global rotation setting requested another profile.
+- Server selection now works before connection, disables desktop autobalancing
+  when a manual node is chosen, and distinguishes the saved choice from the node
+  currently carrying traffic. A single visible Auto action is available on the
+  dashboard and full server list.
+- The unfinished Xray placeholder is no longer offered as a selectable engine;
+  stale saved Xray choices recover to Mihomo instead of failing every startup.
+
+## [0.2.41-dev.14] — 2026-09-14
+
+### Added
+
+- Dev validation build for Windows and Android, including unified routing/DNS
+  configuration, durable Android subscriptions, native Android node latency,
+  deterministic source priority, and hardened update handling.
+- Markdown-escaped VLESS Reality links can be pasted directly or through the
+  subscription-URL flow. Reality `spx` is preserved and `pqv` enables Mihomo's
+  hybrid X25519/ML-KEM handshake support.
+- Release workflows validate immutable tag checkout, production Android
+  signing, Windows Authenticode signatures, prepared notes, and version
+  consistency before publication.
+
+### Fixed
+
+- A removed saved Windows node now falls back to AUTO and persists that recovery
+  only after Mihomo accepts the profile, preventing repeated
+  `Selector update error: proxy not exist` failures during mode changes.
+- Release builds can no longer attach Windows artifacts from an unrelated branch
+  or silently attach an unsigned debug Android APK to a requested release tag.
+- Repository lint now performs real JavaScript/TypeScript analysis and fails on
+  warnings instead of reporting an empty Turbo task as successful.
+
+## [0.2.41-dev.13] — 2026-09-13
+
 ### Changed
 
+- Connection quality now shows staged progress while the first VPN/DNS checks
+  settle instead of displaying a premature no-internet result.
+- Android subscription data uses local WebView storage as the durable primary
+  copy and Capacitor Preferences as a recoverable native mirror.
+- A manually dispatched Android release build now checks out the requested tag
+  and derives both application versions from it before producing an APK.
+- The Android “What’s new” dialog now requires an exact release version match,
+  so an unpublished dev build cannot display notes from an older prerelease.
+- Windows settings now use the shared `@slave-vpn/core` `SettingsStore` through
+  a platform `StorageAdapter`, while preserving the existing flat
+  `userData/settings.json` format. All settings mutations are awaited and
+  concurrent writes are serialised to prevent stale snapshots from winning.
 - Android now compiles the selected shared DNS preset, IPv4/IPv6 strategy and
   advanced resolver/rule/prefetch settings instead of always using one fixed
   mobile DNS profile. Built-in profiles retain Android node anti-loop, RU-direct
@@ -23,6 +137,30 @@ All notable changes to SLAVE VPN are documented here.
 - Windows CI now validates generated Windows and Android configurations with the pinned real core via `mihomo -t`, covering VLESS Encryption/ML-KEM, Reality/Vision, Hysteria2, TUIC, TUN/gVisor, fake-IP and Android routing/DNS modes.
 
 ### Fixed
+
+- Android repairs a corrupt or temporarily unavailable subscription index from
+  its native mirror and preserves last-known-good nodes during transient fetch,
+  TLS, DNS, or parser failures.
+- Subscription mutations wait for ordered mirror writes, closing the restart
+  window in which a newly added source could appear to disappear.
+- Equivalent subscription sources and compatibility sources no longer produce
+  duplicate server rows; source priority remains deterministic.
+- Windows recovery, DNS startup checks, IPC diagnostics, saved-node fallback,
+  and TUN restart handling are stabilised for the dev channel.
+- Settings persistence is now resilient to older supported Android WebViews
+  without `structuredClone`; unknown persisted DNS presets safely use the
+  `secure` profile rather than aborting VPN compilation.
+- Runtime profile/DNS/routing composition now uses an immutable acknowledged
+  settings snapshot, preventing a later optimistic edit from reaching the
+  engine before it is persisted.
+- Android settings smoke checks refuse configured or active test targets, so
+  diagnostics cannot overwrite an existing subscription or VPN settings.
+- Windows lifecycle fixes packaged locally as `0.2.41-dev.11`: serialize engine
+  mutations, skip semantically identical profiles, retain manual/AUTO intent,
+  and restore the previous configuration after failed updates.
+- Windows recovery now has one owner and respects explicit disconnects;
+  process termination must be confirmed before restarting. Subscription
+  refreshes preserve last-good data and discard stale asynchronous results.
 
 - IPv6 DNS strategies now enable Mihomo globally as well as inside its DNS
   section; legacy Android config callers safely fall back to the secure IPv4

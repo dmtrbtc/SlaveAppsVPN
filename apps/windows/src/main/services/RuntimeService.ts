@@ -1,5 +1,6 @@
 import type { VPNStatus, VPNMode } from '@slave-vpn/shared'
 import type { VPNConnectivityInfo, ProxyEntry, ActiveConnectionsSnapshot } from '../../shared/ipc/types'
+import type { ConfigUpdateReason } from './impl/RuntimeServiceImpl'
 
 export interface RuntimeService {
   connect(): Promise<void>
@@ -14,6 +15,6 @@ export interface RuntimeService {
   getProxyList(): Promise<ProxyEntry[]>
   getConnections(): Promise<ActiveConnectionsSnapshot | null>
   closeConnection(id: string): Promise<void>
-  notifySubscriptionsChanged(): Promise<void>
+  notifySubscriptionsChanged(reason?: ConfigUpdateReason): Promise<void>
   dispose(): Promise<void>
 }

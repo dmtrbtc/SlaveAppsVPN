@@ -1,4 +1,5 @@
-import { registerPlugin, Capacitor, type PluginListenerHandle } from '@capacitor/core'
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core'
+import { getSlaveVpnPlugin } from './slave-vpn-plugin'
 
 /**
  * Android in-app updater — thin wrapper over the native SlaveVpn plugin's
@@ -16,7 +17,7 @@ interface NativeUpdater {
   ): Promise<PluginListenerHandle>
 }
 
-const Native = registerPlugin<NativeUpdater>('SlaveVpn')
+const Native = getSlaveVpnPlugin<NativeUpdater>()
 
 /** Thrown (as message substring) by the native side when the install-unknown-apps grant is missing. */
 export const NEEDS_INSTALL_PERMISSION = 'NEEDS_INSTALL_PERMISSION'

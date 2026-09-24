@@ -4,14 +4,16 @@ import { initLogger, getLogger, setCrashLogPath, writeCrashLog } from './logger'
 import { createMainWindow, showMainWindow } from './window'
 import { createTray, destroyTray } from './tray'
 import { registerAllHandlers } from './ipc/registry'
-import { getSettingsStore } from './services/SettingsStore'
+import { getSettingsStore, initSettingsStore } from './services/SettingsStore'
 import { bootstrap, shutdownBootstrap, triggerReconnect } from './bootstrap'
 import { getUpdateService } from './services/UpdateService'
 import { getSafeModeManager } from './services/SafeModeManager'
 import { startupTracker } from './startup-tracker'
 import { registerDeepLinkProtocol, captureLaunchDeepLink, dispatchDeepLink } from './deeplink'
+import { initializeSettingsSmoke, isolatedSettingsSmoke } from './isolatedSettingsSmoke'
 
 // ─── Security: enforce before app ready ───────────────────────────────────────
+initializeSettingsSmoke()
 app.commandLine.appendSwitch('disable-http-cache')
 
 if (!app.requestSingleInstanceLock()) {
@@ -20,7 +22,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 // Register the slavevpn:// custom protocol (subscription import deep links).
-registerDeepLinkProtocol()
+if (!isolatedSettingsSmoke) registerDeepLinkProtocol()
 
 // ─── Crash safety ─────────────────────────────────────────────────────────────
 
@@ -54,7 +56,11 @@ getSafeModeManager().init()
 
 const log = getLogger()
 
-const isSafeModeFlag = process.argv.includes('--safe-mode')
+const isSafeModeFlag = isolatedSettingsSmoke || process.argv.includes('--safe-mode')
+// Crash-loop autodetection (3 launches within 45s) from the pre-ready
+// SafeModeManager must gate the bootstrap exactly like the manual flag,
+// otherwise a crash-looping install keeps booting the full runtime.
+const isSafeModeActive = isSafeModeFlag || getSafeModeManager().isSafeMode()
 
 log.info({
   version: app.getVersion(),
@@ -65,7 +71,7 @@ log.info({
   electron: process.versions.electron,
   node: process.versions.node,
   env: app.isPackaged ? 'packaged' : 'dev',
-  safeMode: isSafeModeFlag || getSafeModeManager().isSafeMode(),
+  safeMode: isSafeModeActive,
   pid: process.pid,
 }, 'SLAVE VPN starting')
 
@@ -78,8 +84,14 @@ app.whenReady().then(async () => {
   setCrashLogPath(userDataPath)
 
   startupTracker.begin('app_ready', 'App ready')
-  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeFlag }, 'App ready')
+  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeActive }, 'App ready')
   startupTracker.complete('app_ready')
+
+  // Hydrate the shared core SettingsStore before any IPC handler, window,
+  // updater or bootstrap service can read settings. The Windows adapter keeps
+  // the existing userData/settings.json format intact.
+  await initSettingsStore()
+  logger.info({ phase: 'settings_loaded' }, 'Settings store loaded')
 
   // PHASE 2: Register IPC handlers (dynamic imports of handler chunks)
   startupTracker.begin('ipc_register', 'Register IPC handlers')
@@ -92,18 +104,20 @@ app.whenReady().then(async () => {
   startupTracker.begin('window_create', 'Create main window')
   logger.info({ phase: 'window_create_start' }, 'Creating main window')
   createMainWindow()
-  createTray()
+  if (!isolatedSettingsSmoke) createTray()
   startupTracker.complete('window_create')
   logger.info({ phase: 'window_create_done' }, 'Main window created')
 
-  setupAutoStart()
-  setupAutoUpdater()
-  setupPowerMonitor()
+  if (!isolatedSettingsSmoke) {
+    setupAutoStart()
+    setupAutoUpdater()
+    setupPowerMonitor()
+  }
 
   // PHASE 4: Provider/runtime bootstrap (fire-and-forget, degraded mode on failure)
   startupTracker.begin('bootstrap', 'Provider & runtime bootstrap')
-  logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeFlag }, 'Starting provider bootstrap')
-  bootstrap(isSafeModeFlag)
+  logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeActive }, 'Starting provider bootstrap')
+  bootstrap(isSafeModeActive)
     .then(() => {
       startupTracker.complete('bootstrap')
       startupTracker.markComplete()
@@ -118,11 +132,11 @@ app.whenReady().then(async () => {
   app.on('second-instance', (_event, argv) => {
     showMainWindow()
     // A `slavevpn://import/...` link launched a second instance — forward it.
-    dispatchDeepLink(argv)
+    if (!isolatedSettingsSmoke) dispatchDeepLink(argv)
   })
 
   // Cold start: stash a launch deep link for the renderer to pull once mounted.
-  captureLaunchDeepLink(process.argv)
+  if (!isolatedSettingsSmoke) captureLaunchDeepLink(process.argv)
 
   app.on('activate', () => {
     showMainWindow()

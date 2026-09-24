@@ -20,7 +20,7 @@ import { useVpnStore, selectConnectionState } from '../stores/vpn.store'
 import { useUIStore, type ThemeMode } from '../stores/ui.store'
 import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import { useSubscription } from '../hooks/useSubscription'
-import { checkForUpdate, openUpdate, type UpdateInfo } from '../android/update-check'
+import { checkForUpdate, openUpdate, isPrereleaseVersion, type UpdateInfo } from '../android/update-check'
 import { useInAppUpdate } from '../hooks/useInAppUpdate'
 import { configSourceApi, cacheApi, vpnApi } from '../lib/api'
 import { IS_MOBILE } from '../lib/platform'
@@ -501,6 +501,12 @@ function UpdateSection() {
               ? 'Dev-канал: ранние тестовые сборки (alpha/rc), могут быть нестабильны'
               : 'Только стабильные релизы'}
           </p>
+          {channel === 'stable' && isPrereleaseVersion(String(__APP_VERSION__)) && (
+            <p className="text-[11px] text-text-muted">
+              Установлена Dev-сборка — её обновления публикуются только в Dev-канале,
+              поэтому проверка идёт там.
+            </p>
+          )}
         </div>
 
         {info && (
@@ -759,8 +765,8 @@ export function SettingsPage() {
                 <p className="text-[11px] text-text-muted">
                   <b>REALITY-серверы:</b> <code>randomized</code>/<code>random</code> ломают REALITY (рандомный
                   key_share → «nil ecdheKey»), поэтому для таких узлов автоматически используется{' '}
-                  <code>chrome</code>. Именованные отпечатки (<code>firefox</code>, <code>safari</code>,{' '}
-                  <code>edge</code>, <code>ios</code>, <code>android</code>) с REALITY работают и применяются как есть.
+                  <code>chrome</code>. Для современных ключей с X25519/ML-KEM приложение также принудительно
+                  использует <code>chrome</code>, даже если глобально выбран другой отпечаток.
                 </p>
                 {isKeyPending('utlsFingerprint') && (
                   <p className="text-[11px] text-text-muted">Сохранение...</p>
@@ -779,16 +785,15 @@ export function SettingsPage() {
                   options={[
                     { value: 'mihomo',  label: 'Mihomo' },
                     { value: 'singbox', label: 'Sing-box' },
-                    { value: 'xray',    label: 'Xray' },
                   ]}
-                  value={settings.selectedEngine ?? 'mihomo'}
+                  value={settings.selectedEngine === 'xray' ? 'mihomo' : (settings.selectedEngine ?? 'mihomo')}
                   onChange={handleEngineChange}
                   size="sm"
                 />
                 <p className="text-[11px] text-text-muted">
-                  {(settings.selectedEngine === 'singbox' || settings.selectedEngine === 'xray')
-                    ? 'Экспериментальный движок — применится при следующем подключении'
-                    : 'Mihomo — стабильный движок для роутинга трафика'}
+                  {settings.selectedEngine === 'singbox'
+                    ? 'Экспериментальный движок: некоторые новые REALITY и VLESS Encryption ключи не поддерживаются'
+                    : 'Mihomo — рекомендуемый движок, включая новые VLESS REALITY ключи'}
                 </p>
                 {isKeyPending('selectedEngine') && (
                   <p className="text-[11px] text-text-muted">Сохранение...</p>

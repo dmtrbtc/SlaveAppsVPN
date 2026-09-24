@@ -8,7 +8,11 @@ import {
   XRAY_HANDSHAKE,
   SINGBOX_HANDSHAKE,
 } from '../src/encryption/vlessEncryption.ts'
-import { parseProxyUri } from '../src/subscription/uriParser.ts'
+import {
+  isProxyUri,
+  normalizeProxyUriInput,
+  parseProxyUri,
+} from '../src/subscription/uriParser.ts'
 
 // Synthetic placeholder keys (base64url charset) — NOT real key material.
 // Long enough to satisfy the "has a key" heuristic; values are fabricated.
@@ -123,4 +127,27 @@ test('uriParser: type=raw normalised to tcp; encryption=none not captured', () =
   const proxy = parseProxyUri(uri)
   assert.equal(proxy.transport, 'tcp')
   assert.equal(proxy.extra.encryption, undefined)
+})
+
+test('uriParser: accepts Markdown-escaped Reality links with pqv', () => {
+  const escaped = String.raw`vless\://00000000-0000-4000-8000-000000000000\@node.example:11821?type=tcp&encryption=none&security=reality&pbk=Synthetic-Public-Key-With\_Underscore&fp=chrome&sni=www\.example.com&sid=a19c&spx=%2F&pqv=Synthetic-MLDSA65-Verify\_Value#EscapedNode`
+  const normalized = normalizeProxyUriInput(escaped)
+  assert.equal(isProxyUri(escaped), true)
+  assert.equal(normalized.includes('\\'), false)
+
+  const proxy = parseProxyUri(escaped)
+  assert.equal(proxy.name, 'EscapedNode')
+  assert.equal(proxy.server, 'node.example')
+  assert.equal(proxy.port, 11821)
+  assert.equal(proxy.securityType, 'reality')
+  assert.equal(proxy.extra.servername, 'www.example.com')
+  assert.equal(proxy.extra['client-fingerprint'], 'chrome')
+  assert.deepEqual(proxy.extra['reality-opts'], {
+    'public-key': 'Synthetic-Public-Key-With_Underscore',
+    'short-id': 'a19c',
+    'spider-x': '/',
+    'mldsa65-verify': 'Synthetic-MLDSA65-Verify_Value',
+    'support-x25519mlkem768': true,
+    'fragment-client-hello': true,
+  })
 })

@@ -35,6 +35,11 @@ export class ProcessManager {
 
   constructor(private readonly events: EngineEventBus) {}
 
+  private log(event: string, pid: number | null, reason?: StopReason): void {
+    this.events.emit('logLine', { level: event === 'mihomo.exit_timeout' ? 'error' : 'info',
+      message: JSON.stringify({ event, pid, ...(reason ? { reason } : {}) }) })
+  }
+
   configure(config: ProcessManagerConfig): void {
     this.config = config
   }
@@ -69,6 +74,7 @@ export class ProcessManager {
     })
 
     this.process = proc
+    this.log('mihomo.spawn', proc.pid ?? null)
 
     proc.stdout?.on('data', (chunk: Buffer) => {
       const lines = chunk.toString().split('\n').filter(Boolean)
@@ -86,6 +92,7 @@ export class ProcessManager {
     })
 
     this.watcher.attach(proc, (reason, code) => {
+      this.log('mihomo.exit', proc.pid ?? null, reason)
       this.process = null
       onExit(reason, code)
     })
@@ -95,22 +102,32 @@ export class ProcessManager {
     if (!this.process) return
 
     this.watcher.setNextStopReason(reason)
+    this.log('mihomo.stop.requested', this.getPid(), reason)
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const proc = this.process!
-
-      const timeout = setTimeout(() => {
-        proc.kill('SIGKILL')
-        resolve()
-      }, 5_000)
-
-      proc.once('exit', () => {
+      let timeout: ReturnType<typeof setTimeout>
+      const cleanup = () => {
         clearTimeout(timeout)
-        this.process = null
+        proc.off('exit', onExit)
+      }
+      const fail = (error: unknown) => { cleanup(); reject(error) }
+      const onExit = () => {
+        cleanup()
+        if (this.process === proc) this.process = null
         resolve()
-      })
-
-      proc.kill('SIGTERM')
+      }
+      proc.once('exit', onExit)
+      timeout = setTimeout(() => {
+        // Sending a signal does not prove exit. Retain the process reference on
+        // timeout so a subsequent start cannot overwrite a live process config.
+        timeout = setTimeout(() => {
+          this.log('mihomo.exit_timeout', proc.pid ?? null, reason)
+          fail(new Error('Mihomo process exit not confirmed after termination'))
+        }, 5_000)
+        try { this.log('mihomo.sigkill', proc.pid ?? null, reason); proc.kill('SIGKILL') } catch (error) { fail(error) }
+      }, 5_000)
+      try { this.log('mihomo.sigterm', proc.pid ?? null, reason); proc.kill('SIGTERM') } catch (error) { fail(error) }
     })
   }
 

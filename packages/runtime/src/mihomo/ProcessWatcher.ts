@@ -10,8 +10,11 @@ export class ProcessWatcher {
   attach(proc: ChildProcess, onExit: ExitHandler): void {
     this.process = proc
     this.pendingStopReason = 'crashed'
+    let exited = false
 
     proc.on('exit', (code, signal) => {
+      if (exited) return
+      exited = true
       const reason = this.classifyExit(code, signal)
       this.pendingStopReason = 'crashed'
       this.process = null
@@ -19,6 +22,10 @@ export class ProcessWatcher {
     })
 
     proc.on('error', (err) => {
+      // A kill/send failure on a spawned child is not evidence of its death.
+      // Only spawn failure (no PID) or the exit event releases ownership.
+      if (exited || proc.pid !== undefined) return
+      exited = true
       this.process = null
       onExit('crashed', null, null)
       void err

@@ -39,14 +39,17 @@ function fixture(overrides: Partial<SubscriptionSourceAdapter> = {}) {
   const meta: { id: string; patch: SubscriptionFetchMeta }[] = []
   const uas: string[] = []
   const requests: string[] = []
+  const cache = new Map<string, string>()
   const source: SubscriptionSourceAdapter = {
     getInput: async (id) => `https://subscription.example/${id}`,
     updateMeta: async (id, patch) => { meta.push({ id, patch }) },
     fetchText: async (input) => { requests.push(input); return buildClashYaml([node()]) },
     fetchTextWithUserAgent: async (_input, ua) => { uas.push(ua); return null },
+    getCachedText: async id => cache.get(id) ?? null,
+    setCachedText: async (id, yaml) => { cache.set(id, yaml) },
     ...overrides,
   }
-  return { source, fetcher: createSubscriptionFetcher(source), meta, uas, requests }
+  return { source, fetcher: createSubscriptionFetcher(source), meta, uas, requests, cache }
 }
 
 test('URL pipeline preserves primary encryption and records success after recovery attempts', async () => {
@@ -106,6 +109,54 @@ test('network or parser failure records only lastError (retains previous success
     assert.deepEqual(f.meta, [{ id: 'a', patch: { lastError: result.error } }])
     assert.deepEqual(f.uas, [])
   }
+})
+
+test('Android last-known-good nodes survive a later subscription fetch failure', async () => {
+  let fail = false
+  const f = fixture({
+    fetchText: async () => {
+      if (fail) throw new Error('network unavailable')
+      return buildClashYaml([node('saved')])
+    },
+  })
+  const first = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(first.error, null)
+  assert.equal(first.proxies[0]?.name, 'saved')
+  assert.ok(f.cache.has('a'))
+
+  fail = true
+  const fallback = await f.fetcher.fetchEntry(entry('a', { nodeCount: 1, lastFetchedAt: 123 }))
+  assert.equal(fallback.error, 'network unavailable')
+  assert.equal(fallback.proxies[0]?.name, 'saved')
+  assert.deepEqual(f.meta.at(-1), { id: 'a', patch: { lastError: 'network unavailable' } })
+})
+
+test('Reality key parameters survive subscription caching and an offline reload unchanged', async () => {
+  const original = node('synthetic-reality')
+  original.extra['client-fingerprint'] = 'chrome'
+  original.extra['reality-opts'] = {
+    'public-key': 'A'.repeat(43), 'short-id': 'a19c', 'spider-x': '/',
+    'mldsa65-verify': 'A'.repeat(2603),
+    'support-x25519mlkem768': true, 'fragment-client-hello': true,
+  }
+  const f = fixture({ fetchText: async () => buildClashYaml([original]) })
+  const online = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(online.error, null)
+  assert.deepEqual(online.proxies[0]?.extra, original.extra)
+  f.source.fetchText = async () => { throw new Error('offline') }
+  const offline = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(offline.error, 'offline')
+  assert.deepEqual(offline.proxies, online.proxies)
+})
+
+test('invalid Android last-known-good data cannot fabricate subscription nodes', async () => {
+  const f = fixture({
+    fetchText: async () => { throw new Error('network unavailable') },
+    getCachedText: async () => 'not cached yaml',
+  })
+  const result = await f.fetcher.fetchEntry(entry('a'))
+  assert.equal(result.error, 'network unavailable')
+  assert.deepEqual(result.proxies, [])
 })
 
 test('Xray recovery dedups Hysteria2 and stops after first useful format', async () => {
@@ -210,7 +261,7 @@ test('duplicate subscription migration keeps the highest-priority source', () =>
 
 test('aggregation uses explicit subscription priority for duplicate-node winner', async () => {
   const fetcher: SubscriptionFetcher = {
-    fetchEntry: async e => ({ proxies: [node('duplicate')], error: null }),
+    fetchEntry: async _e => ({ proxies: [node('duplicate')], error: null }),
   }
   const result = await aggregateSubscriptionProxies([
     entry('low', { priority: 20 }), entry('high', { priority: 10 }),

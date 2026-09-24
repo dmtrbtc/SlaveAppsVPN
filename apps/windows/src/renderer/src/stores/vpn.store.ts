@@ -5,10 +5,11 @@ import { INITIAL_VPN_STATUS, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
 import type { VpnHealthPayload, ProxyEntry, BalancerState, BalancerMode } from '@shared/ipc/types'
 import { vpnApi, settingsApi, events } from '../lib/api'
 import { IS_MOBILE } from '../lib/platform'
+import { CONNECTION_AUTO_GROUP, autoTargetUsesProxyGroup, planManualTarget } from './connection-target'
 
 // Must match SLAVE_AUTO_GROUP in @slave-vpn/config. Selecting it points
 // SLAVE-SELECT at the url-test autobalancer instead of a fixed node.
-export const AUTO_GROUP = 'SLAVE-AUTO'
+export const AUTO_GROUP = CONNECTION_AUTO_GROUP
 
 interface VpnStore {
   status: VPNStatus
@@ -40,6 +41,7 @@ interface VpnStore {
   setEngineVersion: (v: string | null) => void
   fetchProxyList: () => Promise<void>
   setProxy: (name: string) => Promise<void>
+  selectAuto: () => Promise<void>
   setBalancerEnabled: (enabled: boolean) => Promise<void>
   setBalancerMode: (mode: BalancerMode) => Promise<void>
   subscribeToEvents: () => () => void
@@ -161,22 +163,36 @@ export const useVpnStore = create<VpnStore>()(
     },
 
     setProxy: async (name: string) => {
-      try {
-        const vpnState = get().status.state
-        if (vpnState === 'connected') {
-          await vpnApi.setProxy({ proxyName: name })
-        } else if (IS_MOBILE) {
-          // Android: settingsApi has no main process to read it on connect, so
-          // route through the bridge (it persists the choice + applies it on the
-          // next connect; the live-switch is a safe no-op while disconnected).
-          await vpnApi.setProxy({ proxyName: name })
-        } else {
-          await settingsApi.set({ selectedProxy: name })
-        }
-        set({ selectedProxy: name })
-      } catch {
-        // Non-fatal
+      const plan = planManualTarget(name, IS_MOBILE)
+      if (plan.disableDesktopBalancer) {
+        await vpnApi.setBalancerEnabled({ enabled: false })
+        const balancerState = await vpnApi.getBalancerState()
+        set({ balancerState })
       }
+      const vpnState = get().status.state
+      if (vpnState === 'connected') {
+        await vpnApi.setProxy({ proxyName: plan.proxyName })
+      } else if (IS_MOBILE) {
+        // Android: settingsApi has no main process to read it on connect, so
+        // route through the bridge (it persists the choice + applies it on the
+        // next connect; the live-switch is a safe no-op while disconnected).
+        await vpnApi.setProxy({ proxyName: plan.proxyName })
+      } else {
+        await settingsApi.set({ selectedProxy: plan.proxyName })
+      }
+      // Commit the optimistic UI state only after the platform accepted the
+      // selection. Rejections propagate to the page and show an error toast.
+      set({ selectedProxy: plan.proxyName })
+    },
+
+    selectAuto: async () => {
+      if (autoTargetUsesProxyGroup(IS_MOBILE)) {
+        await get().setProxy(AUTO_GROUP)
+        return
+      }
+      await vpnApi.setBalancerEnabled({ enabled: true })
+      const balancerState = await vpnApi.getBalancerState()
+      set({ balancerState })
     },
 
     setBalancerEnabled: async (enabled: boolean) => {

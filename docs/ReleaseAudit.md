@@ -114,7 +114,7 @@ Pre-release verification for SLAVE VPN Windows client.
 | Risk | Severity | Status |
 |------|----------|--------|
 | WinTUN requires admin for first install | Medium | workaround: asInvoker, docs needed |
-| Code signing not yet configured | High | users may see SmartScreen warning |
+| Stable Windows artifact signing | High | CI now rejects stable artifacts unless every EXE has one valid Authenticode certificate; final tagged run still requires verification |
 | Custom NSH WinTUN installer not implemented | Medium | manual driver install required |
 | Binary SHA256 not verified on startup | Low | supply chain risk, future work |
 | Staged rollout not tested | Low | GitHub Releases channels available |

@@ -22,12 +22,18 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
+      - name: Validate release source and prepared notes
+        run: node scripts/validate-release-readiness.mjs "${GITHUB_REF_NAME#v}"
+
       - name: Create draft release
         uses: actions/github-script@v9
         with:
           script: |
+            const fs = require('fs')
             const tag = '${{ steps.version.outputs.VERSION }}'
             const isPrerelease = tag.includes('-alpha') || tag.includes('-beta') || tag.includes('-rc') || tag.includes('-dev')
+            const notesPath = `docs/releases/${tag}.md`
+            const hasPreparedNotes = fs.existsSync(notesPath)
             await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -35,5 +41,6 @@ jobs:
               name: tag,
               draft: true,
               prerelease: isPrerelease,
-              generate_release_notes: true,
+              body: hasPreparedNotes ? fs.readFileSync(notesPath, 'utf8') : undefined,
+              generate_release_notes: !hasPreparedNotes,
             })

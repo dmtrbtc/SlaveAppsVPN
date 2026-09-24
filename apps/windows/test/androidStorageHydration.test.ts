@@ -58,6 +58,26 @@ test('transient null/error results retry and hydrate local storage', async () =>
   assert.equal(f.calls.mirrorGets, 3)
 })
 
+test('validated read repairs corrupt local data from a valid native mirror', async () => {
+  const restored = '[{"id":"restored"}]'
+  const f = fixture({ localValue: '{broken', mirrorReads: [restored] })
+  const value = await f.store.getValidated('key', raw => {
+    try { return Array.isArray(JSON.parse(raw)) } catch { return false }
+  })
+  assert.equal(value, restored)
+  assert.equal(f.local.get('key'), restored)
+  assert.equal(f.calls.mirrorGets, 1)
+})
+
+test('validated read does not replace corrupt local data with an invalid mirror', async () => {
+  const f = fixture({ localValue: '{broken', mirrorReads: ['also-broken', null, null, null] })
+  const value = await f.store.getValidated('key', raw => {
+    try { return Array.isArray(JSON.parse(raw)) } catch { return false }
+  })
+  assert.equal(value, null)
+  assert.equal(f.local.get('key'), '{broken')
+})
+
 test('parallel reads share a single hydration', async () => {
   let release!: (value: string | null) => void
   const firstRead = new Promise<string | null>(resolve => { release = resolve })
@@ -148,6 +168,29 @@ test('mirror is best-effort when local writes, but required when local storage f
   await assert.rejects(failed.set('key', 'value'), /Both localStorage and Preferences failed/)
 })
 
+test('a subscription acknowledged during a Preferences outage survives an app restart', async () => {
+  const local = new Map<string, string>()
+  const unavailableMirror: AsyncStringMirror = {
+    get: async () => { throw new Error('Preferences is starting') },
+    set: async () => { throw new Error('Preferences is starting') },
+    remove: async () => { throw new Error('Preferences is starting') },
+  }
+  const createStore = () => createMirroredStringStore({
+    get: key => local.get(key) ?? null,
+    set: (key, value) => { local.set(key, value); return true },
+    remove: key => { local.delete(key) },
+  }, unavailableMirror, { retryDelaysMs: [], delay: async () => undefined })
+
+  await createStore().set('slave.subscriptions.index.v1', '[{"id":"saved"}]')
+
+  // A new store instance models a WebView/app restart. localStorage is the
+  // primary copy, so a native plugin outage cannot hide an acknowledged item.
+  assert.equal(
+    await createStore().getValidated('slave.subscriptions.index.v1', raw => Array.isArray(JSON.parse(raw))),
+    '[{"id":"saved"}]',
+  )
+})
+
 test('mirror mutations stay ordered when remove follows a slow best-effort set', async () => {
   const local = new Map<string, string>()
   const mirrored = new Map<string, string>()
@@ -174,11 +217,13 @@ test('mirror mutations stay ordered when remove follows a slow best-effort set',
     },
   })
 
-  await store.set('key', 'value')
+  const setting = store.set('key', 'value')
   await setStarted
-  store.remove('key')
   releaseSet()
+  await setting
+  const removing = store.remove('key')
   await removeFinished
+  await removing
 
   assert.equal(local.has('key'), false)
   assert.equal(mirrored.has('key'), false)

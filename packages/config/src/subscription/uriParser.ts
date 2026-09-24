@@ -44,11 +44,26 @@ function parseVless(url: URL): ProxyEntry {
   if (fp) extra['client-fingerprint'] = fp
 
   if (security === 'reality') {
-    const realityOpts: Record<string, string> = {}
+    const realityOpts: Record<string, string | boolean> = {}
     const pbk = p.get('pbk')
     const sid = p.get('sid')
+    const spx = p.get('spx')
+    const pqv = p.get('pqv')
     if (pbk) realityOpts['public-key'] = pbk
     if (sid !== null) realityOpts['short-id'] = sid
+    if (spx) realityOpts['spider-x'] = spx
+    // Xray share links use pqv for the ML-DSA-65 verification key. The bundled
+    // core carries the corresponding mldsa65-verify extension and modern Xray
+    // deployments also require the hybrid ML-KEM key share.
+    if (pqv) {
+      realityOpts['mldsa65-verify'] = pqv
+      realityOpts['support-x25519mlkem768'] = true
+      // Modern Xray requires the hybrid ML-KEM key share, which makes the
+      // ClientHello larger than a typical mobile-path MTU. Some carrier
+      // middleboxes silently drop that multi-packet hello. Ask our patched
+      // core to split only this handshake into small TLS records.
+      realityOpts['fragment-client-hello'] = true
+    }
     extra['reality-opts'] = realityOpts
   }
 
@@ -342,12 +357,23 @@ function parseWireGuard(url: URL): ProxyEntry {
 
 const PROXY_SCHEME_RE = /^(vless|vmess|trojan|ss|hysteria2?|hy2|tuic|wireguard|wg):\/\//i
 
+// Links copied from Markdown-aware chats can contain presentation escapes such
+// as `vless\://`, `user\@host`, `www\.example.com`, and base64url `\_`.
+// Remove only backslashes that quote URI punctuation, and only keep the result
+// when it reveals a supported proxy scheme. Ordinary URLs and credentials that
+// legitimately contain a backslash are otherwise left untouched.
+export function normalizeProxyUriInput(input: string): string {
+  const trimmed = input.trim()
+  const unescaped = trimmed.replace(/\\([:/@._~?#[\]!$&'()*+,;=%-])/g, '$1')
+  return PROXY_SCHEME_RE.test(unescaped) ? unescaped : trimmed
+}
+
 export function isProxyUri(s: string): boolean {
-  return PROXY_SCHEME_RE.test(s.trim())
+  return PROXY_SCHEME_RE.test(normalizeProxyUriInput(s))
 }
 
 export function parseProxyUri(link: string): ProxyEntry {
-  const trimmed = link.trim()
+  const trimmed = normalizeProxyUriInput(link)
   const lower = trimmed.toLowerCase()
 
   if (lower.startsWith('vmess://')) return parseVmess(trimmed)

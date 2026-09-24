@@ -1,0 +1,125 @@
+diff --git a/adapter/outbound/reality.go b/adapter/outbound/reality.go
+index 70c7bc7..d68d6aa 100644
+--- a/adapter/outbound/reality.go
++++ b/adapter/outbound/reality.go
+@@ -11,8 +11,9 @@ import (
+ )
+ 
+ type RealityOptions struct {
+-	PublicKey string `proxy:"public-key"`
+-	ShortID   string `proxy:"short-id,omitempty"`
++	PublicKey     string `proxy:"public-key"`
++	ShortID       string `proxy:"short-id,omitempty"`
++	Mldsa65Verify string `proxy:"mldsa65-verify,omitempty"`
+ 
+ 	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
+ }
+@@ -21,6 +22,13 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
+ 	if o.PublicKey != "" {
+ 		config := new(tlsC.RealityConfig)
+ 		config.SupportX25519MLKEM768 = o.SupportX25519MLKEM768
++		if o.Mldsa65Verify != "" {
++			var decodeErr error
++			config.Mldsa65Verify, decodeErr = base64.RawURLEncoding.DecodeString(o.Mldsa65Verify)
++			if decodeErr != nil || len(config.Mldsa65Verify) != 1952 {
++				return nil, errors.New("invalid REALITY ML-DSA-65 verify key")
++			}
++		}
+ 
+ 		const x25519ScalarSize = 32
+ 		publicKey, err := base64.RawURLEncoding.DecodeString(o.PublicKey)
+diff --git a/component/tls/reality.go b/component/tls/reality.go
+index ff6a0a3..c30b619 100644
+--- a/component/tls/reality.go
++++ b/component/tls/reality.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/metacubex/mihomo/log"
+ 	"github.com/metacubex/mihomo/ntp"
+ 
++	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
+ 	"github.com/metacubex/http"
+ 	"github.com/metacubex/randv2"
+ 	utls "github.com/metacubex/utls"
+@@ -28,9 +29,24 @@ import (
+ 
+ const RealityMaxShortIDLen = 8
+ 
++var realityClientVersion = [3]byte{26, 9, 9}
++
++func applyRealityClientVersion(sessionID []byte) {
++	copy(sessionID, realityClientVersion[:])
++}
++
++func verifyMldsa65(publicKey, message, signature []byte) bool {
++	var verify mldsa65.PublicKey
++	if err := verify.UnmarshalBinary(publicKey); err != nil {
++		return false
++	}
++	return mldsa65.Verify(&verify, message, nil, signature)
++}
++
+ type RealityConfig struct {
+-	PublicKey *ecdh.PublicKey
+-	ShortID   [RealityMaxShortIDLen]byte
++	PublicKey     *ecdh.PublicKey
++	ShortID       [RealityMaxShortIDLen]byte
++	Mldsa65Verify []byte
+ 
+ 	SupportX25519MLKEM768 bool
+ }
+@@ -38,7 +54,8 @@ type RealityConfig struct {
+ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHelloID, serverName string, realityConfig *RealityConfig) (net.Conn, error) {
+ 	for retry := 0; ; retry++ {
+ 		verifier := &realityVerifier{
+-			serverName: serverName,
++			serverName:    serverName,
++			mldsa65Verify: realityConfig.Mldsa65Verify,
+ 		}
+ 		uConfig := &utls.Config{
+ 			Time:                   ntp.Now,
+@@ -71,9 +88,7 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
+ 		binary.BigEndian.PutUint64(hello.SessionId, uint64(ntp.Now().Unix()))
+ 
+ 		copy(hello.SessionId[8:], realityConfig.ShortID[:])
+-		hello.SessionId[0] = 1
+-		hello.SessionId[1] = 8
+-		hello.SessionId[2] = 2
++		applyRealityClientVersion(hello.SessionId)
+ 
+ 		//log.Debugln("REALITY hello.sessionId[:16]: %v", hello.SessionId[:16])
+ 
+@@ -166,9 +181,10 @@ func realityClientFallback(uConn net.Conn, serverName string, fingerprint utls.C
+ 
+ type realityVerifier struct {
+ 	*utls.UConn
+-	serverName string
+-	authKey    []byte
+-	verified   bool
++	serverName    string
++	authKey       []byte
++	verified      bool
++	mldsa65Verify []byte
+ }
+ 
+ func (c *realityVerifier) VerifyConnection(state utls.ConnectionState) error {
+@@ -178,8 +194,18 @@ func (c *realityVerifier) VerifyConnection(state utls.ConnectionState) error {
+ 		h := hmac.New(sha512.New, c.authKey)
+ 		h.Write(pub)
+ 		if bytes.Equal(h.Sum(nil), certs[0].Signature) {
+-			c.verified = true
+-			return nil
++			if len(c.mldsa65Verify) == 0 {
++				c.verified = true
++				return nil
++			}
++			if len(certs[0].Extensions) > 0 {
++				h.Write(c.HandshakeState.Hello.Raw)
++				h.Write(c.HandshakeState.ServerHello.Raw)
++				if verifyMldsa65(c.mldsa65Verify, h.Sum(nil), certs[0].Extensions[0].Value) {
++					c.verified = true
++					return nil
++				}
++			}
+ 		}
+ 	}
+ 	opts := x509.VerifyOptions{

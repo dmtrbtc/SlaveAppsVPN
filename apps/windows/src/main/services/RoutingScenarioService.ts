@@ -8,7 +8,7 @@ import { composeRoutingPolicy, resolveRoutingPolicyForMode } from '@slave-vpn/co
 import type { VPNMode } from '@slave-vpn/shared'
 import { getSettingsStore } from './SettingsStore'
 import { getLogger } from '../logger'
-import type { RoutingScenarioInfo } from '../../shared/ipc/types'
+import type { AppSettings, RoutingScenarioInfo } from '../../shared/ipc/types'
 
 export class RoutingScenarioService {
   list(): RoutingScenarioInfo[] {
@@ -16,10 +16,10 @@ export class RoutingScenarioService {
     return listScenarioMetadata().map(m => this.toInfo(m, enabled.has(m.id)))
   }
 
-  setEnabled(ids: string[]): RoutingScenarioInfo[] {
+  async setEnabled(ids: string[]): Promise<RoutingScenarioInfo[]> {
     const valid = new Set(listScenarioMetadata().map(m => m.id))
     const filtered = ids.filter((id): id is ScenarioId => valid.has(id as ScenarioId))
-    getSettingsStore().patch({ enabledScenarios: filtered })
+    await getSettingsStore().patch({ enabledScenarios: filtered })
     getLogger().info({ enabled: filtered }, 'Routing scenarios updated')
     return this.list()
   }
@@ -37,13 +37,12 @@ export class RoutingScenarioService {
   // custom = the user's enabled scenarios. Fixes the "Полный VPN не работает,
   // трафик идёт раздельно" bug where a scenario policy always overrode the mode.
   // User per-domain overrides («Свои правила») ride on top in every mode.
-  composePolicyForMode(mode: VPNMode): NormalizedPolicy | null {
-    const store = getSettingsStore()
-    const { policy, warnings, valid, errors } = resolveRoutingPolicyForMode(mode, this.getEnabledIds(), {
-      customRules: store.get('customRoutingRules') ?? [],
+  composePolicyForMode(mode: VPNMode, settings: AppSettings = getSettingsStore().getAll()): NormalizedPolicy | null {
+    const { policy, warnings, valid, errors } = resolveRoutingPolicyForMode(mode, this.getEnabledIds(settings.enabledScenarios ?? []), {
+      customRules: settings.customRoutingRules ?? [],
       // Windows split routes by PROCESS-NAME — pass the allow-list so a
       // user-rules split policy keeps the legacy direct-default semantics.
-      splitProcesses: store.get('splitProcessList') ?? [],
+      splitProcesses: settings.splitProcessList ?? [],
     })
     this.logComposition(warnings, valid, errors)
     return policy
@@ -61,8 +60,7 @@ export class RoutingScenarioService {
     }
   }
 
-  private getEnabledIds(): ScenarioId[] {
-    const raw = getSettingsStore().get('enabledScenarios') ?? []
+  private getEnabledIds(raw = getSettingsStore().get('enabledScenarios') ?? []): ScenarioId[] {
     const valid = new Set(listScenarioMetadata().map(m => m.id))
     return raw.filter((id): id is ScenarioId => valid.has(id as ScenarioId))
   }

@@ -14,11 +14,18 @@ const VALID_FLOWS = new Set([
   '',
 ])
 
-// Curve25519 public key: 32 bytes = 64 hex chars
-const REALITY_PBK_RE = /^[0-9a-fA-F]{64}$/
+// Xray share links encode the 32-byte x25519 public key as unpadded base64url
+// (43 characters). Keep accepting the legacy 64-hex representation used by a
+// few Clash providers, but never reject the canonical Xray form.
+const REALITY_PBK_BASE64URL_RE = /^[A-Za-z0-9_-]{43}$/
+const REALITY_PBK_HEX_RE = /^[0-9a-fA-F]{64}$/
 
-// Reality short-id: 0–16 bytes = 0–32 hex chars (even length)
-const REALITY_SID_RE = /^([0-9a-fA-F]{2})*$/
+// Xray REALITY shortId is at most 8 bytes = 16 hex characters, even length.
+const REALITY_SID_RE = /^(?:[0-9a-fA-F]{2}){0,8}$/
+
+// ML-DSA-65 public keys are 1952 bytes. Xray share links carry them as
+// unpadded base64url, which is exactly 2603 characters.
+const REALITY_MLDSA65_VERIFY_RE = /^[A-Za-z0-9_-]{2603}$/
 
 function validateVlessReality(proxy: ProxyEntry): ValidationIssue[] {
   const issues: ValidationIssue[] = []
@@ -36,11 +43,11 @@ function validateVlessReality(proxy: ProxyEntry): ValidationIssue[] {
   const pbk = realityOpts['public-key'] as string | undefined
   if (!pbk) {
     issues.push({ severity: 'error', field: 'reality-opts.public-key', message: 'Reality public key (pbk) is required' })
-  } else if (!REALITY_PBK_RE.test(pbk)) {
+  } else if (!REALITY_PBK_BASE64URL_RE.test(pbk) && !REALITY_PBK_HEX_RE.test(pbk)) {
     issues.push({
       severity: 'error',
       field: 'reality-opts.public-key',
-      message: `Reality public key must be 64 hex chars (Curve25519), got ${pbk.length} chars`,
+      message: `Reality public key must be 43-char base64url (or legacy 64-char hex), got ${pbk.length} chars`,
     })
   }
 
@@ -49,7 +56,16 @@ function validateVlessReality(proxy: ProxyEntry): ValidationIssue[] {
     issues.push({
       severity: 'error',
       field: 'reality-opts.short-id',
-      message: `Reality short-id must be hex with even length (0–32 chars), got: "${sid}"`,
+      message: `Reality short-id must be hex with even length (0–16 chars), got: "${sid}"`,
+    })
+  }
+
+  const mldsa65Verify = realityOpts['mldsa65-verify'] as string | undefined
+  if (mldsa65Verify !== undefined && !REALITY_MLDSA65_VERIFY_RE.test(mldsa65Verify)) {
+    issues.push({
+      severity: 'error',
+      field: 'reality-opts.mldsa65-verify',
+      message: `Reality ML-DSA-65 verify key must be 1952-byte base64url (2603 chars), got ${mldsa65Verify.length} chars`,
     })
   }
 

@@ -157,12 +157,10 @@ export class UpdateService {
     })
   }
 
-  setChannel(channel: UpdateChannel): void {
+  async setChannel(channel: UpdateChannel): Promise<void> {
+    await getSettingsStore().patch({ updateChannel: channel })
     this.channel = channel
     this.applyChannel()
-    try {
-      getSettingsStore().patch({ updateChannel: channel })
-    } catch { /* ignore */ }
   }
 
   getStatus(): UpdateStatus {

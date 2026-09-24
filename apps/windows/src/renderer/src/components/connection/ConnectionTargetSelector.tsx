@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Bot, Wifi } from 'lucide-react'
+import { Activity, Bot, Check, LoaderCircle, Wifi } from 'lucide-react'
 import { cn, countryFlagEmoji } from '../../lib/utils'
 import { IS_MOBILE } from '../../lib/platform'
 import { vpnApi } from '../../lib/api'
+import { resolveNodeLatency } from '../../lib/node-latency'
 import {
   useVpnStore,
   selectProxyList,
@@ -15,6 +16,7 @@ import {
   selectServerLatency,
   AUTO_GROUP,
 } from '../../stores/vpn.store'
+import { useUIStore } from '../../stores/ui.store'
 
 function LatencyBadge({ ms }: { ms: number | null | undefined }) {
   if (ms === undefined || ms === null) {
@@ -37,7 +39,9 @@ export function ConnectionTargetSelector() {
   const serverLatency = useVpnStore(selectServerLatency)
   const fetchProxyList = useVpnStore(s => s.fetchProxyList)
   const setProxy = useVpnStore(s => s.setProxy)
-  const setBalancerEnabled = useVpnStore(s => s.setBalancerEnabled)
+  const selectAuto = useVpnStore(s => s.selectAuto)
+  const notify = useUIStore(s => s.notify)
+  const [switchingTarget, setSwitchingTarget] = useState<string | null>(null)
 
   const isConnected = state === 'connected'
   const balancerEnabled = balancerState?.enabled ?? false
@@ -63,12 +67,11 @@ export function ConnectionTargetSelector() {
   }, [proxyCount, isConnected])
 
   const getNodeLatency = (name: string): number | null | undefined => {
-    // Priority: balancer probe (most recent) → live latency events → static proxy meta.
-    const score = balancerState?.nodes.find(n => n.name === name)
-    if (score?.latencyMs !== undefined && score.latencyMs !== null) return score.latencyMs
+    // A received failure (null) must not resurrect an older successful ping.
     const live = serverLatency[name]
-    if (live !== undefined) return live
-    return proxyList.find(p => p.name === name)?.latencyMs
+    if (live !== undefined) return resolveNodeLatency(live)
+    const score = balancerState?.nodes.find(n => n.name === name)
+    return resolveNodeLatency(score?.latencyMs, proxyList.find(p => p.name === name)?.latencyMs)
   }
 
   // The real leaf carrying traffic while in Auto (SLAVE-SELECT → SLAVE-AUTO → node).
@@ -76,18 +79,46 @@ export function ConnectionTargetSelector() {
   const autoLeafLatency = autoLeaf ? getNodeLatency(autoLeaf) : undefined
   const autoLeafFlag = autoLeaf ? countryFlagEmoji(proxyList.find(p => p.name === autoLeaf)?.countryCode) : ''
 
-  const toggleAuto = (): void => {
-    if (IS_MOBILE) {
-      if (autoMode) {
-        // Auto → Manual: pin the current leaf (or the first node) explicitly.
-        const target = autoLeaf ?? proxyList[0]?.name
-        if (target) void setProxy(target)
-      } else {
-        // Manual → Auto: select the url-test SLAVE-AUTO group.
-        void setProxy(AUTO_GROUP)
-      }
-    } else {
-      void setBalancerEnabled(!balancerEnabled)
+  const chooseNode = async (name: string): Promise<void> => {
+    if (switchingTarget) return
+    setSwitchingTarget(name)
+    try {
+      await setProxy(name)
+      notify({
+        type: 'success',
+        title: isConnected ? 'Сервер переключён' : 'Сервер выбран',
+        message: name,
+      })
+    } catch (error) {
+      notify({
+        type: 'error',
+        title: 'Не удалось выбрать сервер',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setSwitchingTarget(null)
+    }
+  }
+
+  const toggleAuto = async (): Promise<void> => {
+    if (switchingTarget) return
+    if (autoActive) {
+      const target = autoLeaf ?? proxyList[0]?.name
+      if (target) await chooseNode(target)
+      return
+    }
+    setSwitchingTarget(AUTO_GROUP)
+    try {
+      await selectAuto()
+      notify({ type: 'success', title: 'Автовыбор включён', message: 'Приложение выберет лучший доступный узел' })
+    } catch (error) {
+      notify({
+        type: 'error',
+        title: 'Не удалось включить автовыбор',
+        message: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setSwitchingTarget(null)
     }
   }
 
@@ -99,7 +130,8 @@ export function ConnectionTargetSelector() {
           Сервер
         </span>
         <button
-          onClick={toggleAuto}
+          onClick={() => void toggleAuto()}
+          disabled={switchingTarget !== null}
           className={cn(
             'flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-all duration-150',
             autoActive
@@ -108,8 +140,10 @@ export function ConnectionTargetSelector() {
           )}
           title={autoActive ? 'Авто-выбор быстрейшего узла (нажмите для ручного)' : 'Включить авто-выбор быстрейшего узла'}
         >
-          <Bot className="h-3 w-3" />
-          {autoActive ? 'Авто' : 'Ручной'}
+          {switchingTarget === AUTO_GROUP
+            ? <LoaderCircle className="h-3 w-3 animate-spin" />
+            : <Bot className="h-3 w-3" />}
+          {autoActive ? 'Автовыбор включён' : 'Включить автовыбор'}
         </button>
       </div>
 
@@ -143,7 +177,8 @@ export function ConnectionTargetSelector() {
             const isSelected = !autoActive && (selectedProxy === proxy.name || (!selectedProxy && i === 0))
             // While auto, highlight the leaf actually in use.
             const isAutoSelected = autoActive && (autoLeaf === proxy.name || currentBest === proxy.name)
-            const active = isSelected || isAutoSelected
+            const isActuallyActive = isConnected && activeProxy === proxy.name
+            const active = isSelected || isAutoSelected || isActuallyActive
             const flag = countryFlagEmoji(proxy.countryCode)
 
             return (
@@ -152,17 +187,13 @@ export function ConnectionTargetSelector() {
                 initial={{ opacity: 0, x: 6 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.04, duration: 0.15 }}
-                onClick={() => {
-                  // Tapping a node always means "manual, this one".
-                  if (isConnected) void setProxy(proxy.name)
-                }}
+                onClick={() => void chooseNode(proxy.name)}
+                disabled={switchingTarget !== null}
                 className={cn(
                   'flex items-center gap-2 px-2 py-1.5 rounded-md text-left w-full transition-all duration-150 group',
                   active
                     ? 'bg-accent/10 border border-accent/25'
-                    : isConnected
-                      ? 'hover:bg-bg-secondary border border-transparent cursor-pointer'
-                      : 'border border-transparent cursor-default opacity-70'
+                    : 'hover:bg-bg-secondary border border-transparent cursor-pointer'
                 )}
               >
                 <span className="text-sm leading-none shrink-0">{flag || '🌐'}</span>
@@ -178,6 +209,17 @@ export function ConnectionTargetSelector() {
                 {isAutoSelected && (
                   <Bot className="h-3 w-3 text-accent shrink-0" />
                 )}
+                {isSelected && !autoActive && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-accent shrink-0">
+                    <Check className="h-2.5 w-2.5" /> выбран
+                  </span>
+                )}
+                {isActuallyActive && (
+                  <span className="flex items-center gap-0.5 text-[9px] text-connected shrink-0">
+                    <Activity className="h-2.5 w-2.5" /> активен
+                  </span>
+                )}
+                {switchingTarget === proxy.name && <LoaderCircle className="h-3 w-3 animate-spin text-accent shrink-0" />}
                 <LatencyBadge ms={latency} />
               </motion.button>
             )

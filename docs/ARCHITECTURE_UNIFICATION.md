@@ -215,6 +215,16 @@ interface CoreFacade {
 - **P3 — Единые списки обхода + настройки.** Один стор за `StorageAdapter`.
   RKN-geosite follow-up (geosite-runetfreedom → rule-providers) решается здесь
   один раз для обеих платформ. Раз-гейтить UI (убрать IS_MOBILE-форки).
+  - Первый срез переводит Windows с отдельной реализации `SettingsStore` на
+    общий `@slave-vpn/core.SettingsStore` через `JsonFileStorageAdapter`.
+    Существующий плоский `userData/settings.json` читается и записывается без
+    envelope/переименования, поэтому обновление не теряет пользовательские
+    настройки и остаётся совместимым с предыдущей версией файла.
+  - Store загружается до регистрации IPC, создания окна, updater и runtime;
+    все mutations ожидают завершения записи адаптера. Очередь глубоких снимков
+    сохраняет порядок конкурентных `patch()`/`reset()` на Windows и Android.
+  - Проверки и границы первого среза описаны в
+    [WINDOWS_UNIFIED_SETTINGS_VERIFICATION.md](WINDOWS_UNIFIED_SETTINGS_VERIFICATION.md).
 - **P4 — Профили / geo-UI / балансер / диагностика** на Android через core.
 - **P5 — Финальная чистка.** Удалить остаточные IS_MOBILE-ветки, единый E2E
   (`mihomo -t` обоих конфигов) в CI, обновить ANDROID.md/ARCHITECTURE.md.

@@ -49,7 +49,7 @@ test('ruDirectDns on (bypass/custom) → RU TLDs resolve via Russian resolvers',
   const ru = p.rules?.find(r => r.value === 'ru' && r.matchType === 'domain_suffix')
   assert.ok(ru, 'RU tld rule present')
   const tags = Array.isArray(ru!.resolverTag) ? ru!.resolverTag : [ru!.resolverTag]
-  assert.ok(tags.every(t => /^77\.88\.8\./.test(t)), 'RU resolves via Yandex (77.88.8.x) only')
+  assert.ok(tags.every(t => t.startsWith('77.88.8.')), 'RU resolves via Yandex (77.88.8.x) only')
 })
 
 test('ruDirectDns off (full/split) → NO RU-direct DNS rule (RU tunnels via DoH)', () => {

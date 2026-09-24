@@ -150,6 +150,7 @@ export interface AppSettings {
   // above scenario rules. See CustomRoutingRule.
   customRoutingRules: CustomRoutingRule[]
   utlsFingerprint: UtlsFingerprintName
+  realityCompatibilityNode?: string | null
 }
 
 export type SplitTunnelMode = 'off' | 'include' | 'exclude'
