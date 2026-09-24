@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, accessSync, writeFileSync, unlinkSync, constants } from 'fs'
 import { join, dirname } from 'path'
 import net from 'net'
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 
 export interface ValidationIssue {
   code: string
@@ -27,7 +27,7 @@ async function isPortFree(port: number): Promise<boolean> {
 // Returns true if at least one orphan was found and killed.
 function killOrphanOnPort(port: number): boolean {
   try {
-    const output = execSync('netstat -ano', { encoding: 'utf8', timeout: 4000 })
+    const output = execFileSync('netstat', ['-ano'], { encoding: 'utf8', timeout: 4000 })
     const pids = new Set<string>()
     const portRe = new RegExp(`:${port}\\s`)
     for (const line of output.split('\n')) {
@@ -39,7 +39,7 @@ function killOrphanOnPort(port: number): boolean {
       if (pid && /^\d+$/.test(pid) && pid !== '0') pids.add(pid)
     }
     for (const pid of pids) {
-      try { execSync(`taskkill /PID ${pid} /F`, { timeout: 3000 }) } catch { /* ignore */ }
+      try { execFileSync('taskkill', ['/PID', pid, '/F'], { timeout: 3000 }) } catch { /* ignore */ }
     }
     return pids.size > 0
   } catch {

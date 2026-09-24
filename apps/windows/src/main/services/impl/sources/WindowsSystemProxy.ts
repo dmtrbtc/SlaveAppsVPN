@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { getLogger } from '../../../logger'
 
 const REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
@@ -10,9 +10,11 @@ export function enableSystemProxy(host: string, port: number): void {
   const log = getLogger()
   try {
     const proxyStr = `${host}:${port}`
-    execSync(`reg add "${REG_KEY}" /v ProxyEnable /t REG_DWORD /d 1 /f`, { stdio: 'ignore', timeout: 3000 })
-    execSync(`reg add "${REG_KEY}" /v ProxyServer /t REG_SZ /d "${proxyStr}" /f`, { stdio: 'ignore', timeout: 3000 })
-    execSync(`reg add "${REG_KEY}" /v ProxyOverride /t REG_SZ /d "${PROXY_OVERRIDE}" /f`, { stdio: 'ignore', timeout: 3000 })
+    const reg = (value: string, data: string, type: string) =>
+      execFileSync('reg', ['add', REG_KEY, '/v', value, '/t', type, '/d', data, '/f'], { stdio: 'ignore', timeout: 3000 })
+    reg('ProxyEnable', '1', 'REG_DWORD')
+    reg('ProxyServer', proxyStr, 'REG_SZ')
+    reg('ProxyOverride', PROXY_OVERRIDE, 'REG_SZ')
     log.info({ proxy: proxyStr }, 'Windows system proxy enabled')
   } catch (err) {
     log.warn({ err }, 'Failed to enable Windows system proxy')
@@ -22,7 +24,7 @@ export function enableSystemProxy(host: string, port: number): void {
 export function disableSystemProxy(): void {
   const log = getLogger()
   try {
-    execSync(`reg add "${REG_KEY}" /v ProxyEnable /t REG_DWORD /d 0 /f`, { stdio: 'ignore', timeout: 3000 })
+    execFileSync('reg', ['add', REG_KEY, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f'], { stdio: 'ignore', timeout: 3000 })
     log.info('Windows system proxy disabled')
   } catch (err) {
     log.warn({ err }, 'Failed to disable Windows system proxy')

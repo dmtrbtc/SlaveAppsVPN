@@ -21,6 +21,7 @@ import { useSubscriptionsStore } from '../../stores/subscriptions.store'
 import { openExternalUrl } from '../../lib/external'
 import { cn } from '../../lib/utils'
 import type { CabinetSubscriptionInfo } from '@shared/ipc/types'
+import { PASSWORD_HINT, NEW_PASSWORD_HINT, PASSWORD_AUTOCOMPLETE } from './cabinetFormHints'
 
 /**
  * Personal-cabinet panel embedded at the top of the Подписки tab: sign in
@@ -252,9 +253,9 @@ function EmailLoginForm({ onSuccess }: { onSuccess: () => Promise<void> }) {
       )}
       {mode !== 'forgot' && (
         <Input
-          type="password" placeholder={mode === 'register' ? 'Пароль (от 8 символов)' : 'Пароль'}
+          type="password" placeholder={mode === 'register' ? NEW_PASSWORD_HINT : PASSWORD_HINT}
           value={password} onChange={(e) => setPassword(e.target.value)}
-          autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+          autoComplete={mode === 'register' ? PASSWORD_AUTOCOMPLETE.register : PASSWORD_AUTOCOMPLETE.login}
           {...(err ? { error: err } : {})}
         />
       )}

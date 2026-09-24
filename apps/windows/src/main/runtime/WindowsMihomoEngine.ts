@@ -40,7 +40,14 @@ export function createWindowsEngineConfig(
 ): EngineInitConfig {
   const layout = ENGINE_LAYOUT[engineType] ?? ENGINE_LAYOUT.mihomo
   const resourcesPath = process.resourcesPath ?? path.dirname(process.execPath)
-  const binaryPath = path.join(resourcesPath, 'bin', layout.binary)
+  // layout.binary comes from the hardcoded ENGINE_LAYOUT table; resolve the
+  // final path inside the resources 'bin' root and enforce the boundary so no
+  // future table entry can ever escape that directory.
+  const binRoot = path.resolve(resourcesPath, 'bin')
+  const binaryPath = path.resolve(binRoot, layout.binary)
+  if (!binaryPath.startsWith(binRoot + path.sep)) {
+    throw new Error(`Engine binary escapes the bin directory: ${layout.binary}`)
+  }
   const binaryExists = existsSync(binaryPath)
   const bundledRulesDir = path.join(resourcesPath, 'rules')
   // Prefer overlay (user-data) directory when it has fresher auto-updated geo
