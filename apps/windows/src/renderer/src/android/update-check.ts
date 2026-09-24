@@ -3,6 +3,9 @@ import {
   parseGitHubReleasesAtom,
   type GitHubRelease,
 } from '@shared/update/parseGitHubReleasesAtom'
+import { effectiveUpdateChannel, isPrereleaseVersion } from '../lib/update-channel'
+
+export { effectiveUpdateChannel, isPrereleaseVersion }
 
 /**
  * Lightweight in-app update check for the Android build — "notify + by button".
@@ -144,9 +147,14 @@ async function fetchReleases(): Promise<GitHubRelease[]> {
  * Channel filtering: 'stable' considers only final releases (`prerelease:false`);
  * 'beta' (the "Dev" channel) also considers prereleases. A stable user therefore
  * never sees a -dev/-rc build; a Dev user gets whichever is newest.
+ *
+ * A prerelease BUILD always resolves to 'beta' regardless of the stored
+ * preference — otherwise a dev install left on the default 'stable' channel
+ * would never see any update (every newer release is itself a prerelease).
  */
 export async function checkForUpdate(channel: UpdateChannel = 'stable'): Promise<UpdateInfo | null> {
   try {
+    channel = effectiveUpdateChannel(channel, getCurrentVersion())
     const releases = (await fetchReleases())
       .filter(r => !r.draft)
       .filter(r => channel === 'beta' || !r.prerelease)

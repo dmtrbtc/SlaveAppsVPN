@@ -15,7 +15,7 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts test/nodeLatencyDisplay.test.ts test/androidSelectedProxy.test.ts test/connectionTarget.test.ts test/windowsSettingsStorage.test.ts test/isolatedSettingsSmoke.test.cjs",
+    "test:renderer": "node --test test/serverQueries.test.ts test/androidStorageHydration.test.ts test/androidSettingsMigration.test.ts test/emptyHydrationRetry.test.ts test/updateAtomParser.test.ts test/androidNodeLatency.test.ts test/nodeLatencyDisplay.test.ts test/androidSelectedProxy.test.ts test/connectionTarget.test.ts test/windowsSettingsStorage.test.ts test/isolatedSettingsSmoke.test.cjs test/updateChannel.test.ts",
     "test:queries": "pnpm test:renderer",
     "test:lifecycle": "node --test test/windowsLifecycle.test.cjs",
     "pack": "pnpm build && electron-builder --dir",

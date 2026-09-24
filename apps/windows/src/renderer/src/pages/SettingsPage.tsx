@@ -20,7 +20,7 @@ import { useVpnStore, selectConnectionState } from '../stores/vpn.store'
 import { useUIStore, type ThemeMode } from '../stores/ui.store'
 import { useSettings, useSettingsMutation } from '../hooks/useSettings'
 import { useSubscription } from '../hooks/useSubscription'
-import { checkForUpdate, openUpdate, type UpdateInfo } from '../android/update-check'
+import { checkForUpdate, openUpdate, isPrereleaseVersion, type UpdateInfo } from '../android/update-check'
 import { useInAppUpdate } from '../hooks/useInAppUpdate'
 import { configSourceApi, cacheApi, vpnApi } from '../lib/api'
 import { IS_MOBILE } from '../lib/platform'
@@ -501,6 +501,12 @@ function UpdateSection() {
               ? 'Dev-канал: ранние тестовые сборки (alpha/rc), могут быть нестабильны'
               : 'Только стабильные релизы'}
           </p>
+          {channel === 'stable' && isPrereleaseVersion(String(__APP_VERSION__)) && (
+            <p className="text-[11px] text-text-muted">
+              Установлена Dev-сборка — её обновления публикуются только в Dev-канале,
+              поэтому проверка идёт там.
+            </p>
+          )}
         </div>
 
         {info && (
