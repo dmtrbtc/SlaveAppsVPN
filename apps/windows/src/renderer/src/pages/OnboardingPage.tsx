@@ -189,11 +189,11 @@ function SubscriptionUrlTab({ onSuccess }: { onSuccess: () => void }) {
           <span>{error}</span>
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           variant="secondary"
           size="md"
-          className="flex-1"
+          className="flex-1 min-w-[9rem]"
           onClick={() => void handleValidate()}
           loading={isValidating}
           disabled={busy || !url.trim()}
@@ -203,7 +203,7 @@ function SubscriptionUrlTab({ onSuccess }: { onSuccess: () => void }) {
         <Button
           variant="primary"
           size="md"
-          className="flex-1"
+          className="flex-1 min-w-[9rem]"
           onClick={() => void handleSave()}
           loading={isSaving}
           disabled={busy || !url.trim()}
@@ -263,11 +263,11 @@ function SingleProxyTab({ onSuccess }: { onSuccess: () => void }) {
           <span>{error}</span>
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button
           variant="secondary"
           size="md"
-          className="flex-1"
+          className="flex-1 min-w-[9rem]"
           onClick={() => void handleValidate()}
           loading={isValidating}
           disabled={busy || !link.trim()}
@@ -277,7 +277,7 @@ function SingleProxyTab({ onSuccess }: { onSuccess: () => void }) {
         <Button
           variant="primary"
           size="md"
-          className="flex-1"
+          className="flex-1 min-w-[9rem]"
           onClick={() => void handleSave()}
           loading={isSaving}
           disabled={busy || !link.trim()}
