@@ -51,6 +51,26 @@ jobs:
       - name: Install monorepo dependencies
         run: pnpm install --frozen-lockfile
 
+      # Release APKs must not be built from a tree failing the ordinary CI
+      # suite — this workflow runs on tags/dispatch, ungated by PR CI.
+      # Node 24 runs the TS test suites (type stripping); switched back to 22
+      # for the web bundle build below.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Preflight (typecheck + lint + JS tests)
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm --filter "./packages/**" build
+          pnpm --filter "./packages/**" test --if-present
+          pnpm --filter @slave-vpn/windows test:renderer
+          pnpm --filter @slave-vpn/windows test:lifecycle
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
       - name: Sync application version from release tag
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
         env:

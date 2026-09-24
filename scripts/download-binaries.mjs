@@ -58,6 +58,10 @@ const ENGINES = {
     version: '1.13.12',
     url: 'https://github.com/SagerNet/sing-box/releases/download/v1.13.12/sing-box-1.13.12-windows-amd64.zip',
     archive: 'zip',
+    // Digests pinned from the v1.13.12 release artifacts (2026-05-14 build);
+    // any upstream artifact replacement will now fail the download loudly.
+    archiveSha256: 'e93fc531134eb1beb4efa3c74990a24e48456098a31c03b60d5ddf17f223cf98',
+    binarySha256: '64b1dfaed6fa758295233fd0bec8b32cf2115f29773adbf38e0f026c3c7986f2',
     archiveMember: /sing-box\.exe$/,
     outName: 'sing-box.exe',
   },
@@ -65,6 +69,8 @@ const ENGINES = {
     version: '0.14.1',
     url: 'https://www.wintun.net/builds/wintun-0.14.1.zip',
     archive: 'zip',
+    archiveSha256: '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51',
+    binarySha256: 'e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce',
     archiveMember: /wintun\/bin\/amd64\/wintun\.dll$/,
     outName: 'wintun.dll',
   },

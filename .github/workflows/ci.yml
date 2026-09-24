@@ -151,3 +151,22 @@ jobs:
           test -f apps/windows/out/preload/index.js   || (echo "FAIL: preload missing" && exit 1)
           test -f apps/windows/out/renderer/index.html || (echo "FAIL: renderer missing" && exit 1)
           echo "All build outputs present"
+
+  validate-mihomo-configs:
+    name: Mihomo config validation (mihomo -t)
+    runs-on: windows-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Download engine binaries + geo databases
+        run: pnpm download:binaries
+      - name: Build shared packages (validator imports runtime dist)
+        run: pnpm --filter "./packages/**" build
+      - name: Validate generated Mihomo configurations with the real engine
+        run: node scripts/validate-mihomo-configs.mjs
