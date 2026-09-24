@@ -4,6 +4,41 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.20] — 2026-09-24
+
+### Added
+
+- Privacy setting «Определять страну узлов по IP» (default on): turning it off
+  stops sending subscription node IPs to the external ipwho.is geoip service;
+  the country falls back to name-based detection.
+
+### Changed
+
+- RU-domain DNS lookups in bypass-style modes now use Yandex DoH carried
+  directly (`#DIRECT`) instead of plaintext UDP — encrypted end to end, still
+  RU-localised; plaintext remains only as the DoH bootstrap in
+  default-nameserver.
+- The diagnostics log viewer redacts every string field of each entry in the
+  main process (err/url included), matching the export paths.
+
+### Removed
+
+- The per-node REALITY compatibility toggle: the owner's field test against
+  the affected node showed no effect (consistent with the server-side root
+  cause established in the investigation).
+
+### Fixed
+
+- Onboarding «Проверить/Подключить» buttons wrap to a second row on narrow
+  windows instead of clipping.
+- Update-banner dismissal expires after 7 days instead of hiding a version
+  forever.
+
+### Tests
+
+- URI parser coverage added (ss plain/SIP002, vmess ws+tls/grpc/invalid,
+  trojan, safe wrappers, REALITY spx guard).
+
 ## [0.2.41-dev.19] — 2026-09-24
 
 ### Fixed
