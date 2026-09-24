@@ -274,9 +274,14 @@ export function ServersPage() {
   const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
   const compatibilityNode = settings?.realityCompatibilityNode
   const realityTarget = servers.find(s => s.id === selectedProxy && s.securityType === 'reality' && s.proxyType === 'vless')
-  const canChangeCompatibility = status.state === 'disconnected' && !connectingId && !settingsMutation.isPending
 
   const changeCompatibility = async (node: string | null): Promise<void> => {
+    // The handshake mode only applies at connect time; while a tunnel is up
+    // the button stays clickable but explains itself instead of looking dead.
+    if (status.state !== 'disconnected' || connectingId) {
+      notify({ type: 'error', title: 'Сначала отключите VPN', message: 'Режим совместимости меняется только при отключённом подключении: рукопожатие ноды формируется в момент подключения. Отключите VPN и нажмите кнопку ещё раз.' })
+      return
+    }
     try {
       await settingsMutation.mutateAsync({ realityCompatibilityNode: node })
       notify({ type: 'success', title: node ? 'Тестовый режим включён' : 'Обычная защита восстановлена', message: 'Настройка применится при следующем подключении' })
@@ -364,7 +369,7 @@ export function ServersPage() {
             дробление рукопожатия и дополнительную проверку pqv. Основная проверка REALITY сохраняется.
             Работоспособность не гарантируется. Для изменения отключите VPN.
           </p>
-          <Button className="mt-2" variant="ghost" disabled={!canChangeCompatibility || (!compatibilityNode && autoActive)}
+          <Button className="mt-2" variant="ghost" disabled={settingsMutation.isPending || (!compatibilityNode && autoActive)}
             onClick={() => void changeCompatibility(compatibilityNode ? null : realityTarget?.name ?? null)}>
             {compatibilityNode ? 'Отключить тестовый режим и вернуть pqv' : 'Включить для этой ноды без проверки pqv'}
           </Button>
