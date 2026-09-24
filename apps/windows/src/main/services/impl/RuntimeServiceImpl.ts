@@ -877,6 +877,13 @@ export class RuntimeServiceImpl implements RuntimeService {
       await this.applyDesiredProfile(reason)
     } catch (err) {
       log.warn({ err, reason }, 'Subscription hot-reload failed')
+      // Surface the failure to the UI diagnostics journal — a silent
+      // warn-log meant the user never learned the running tunnel kept the
+      // previous node list after a subscription refresh.
+      sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
+        makeEvent('subscriptions.reload_failed', 'error',
+          `Не удалось применить обновлённые подписки к активному подключению: ${err instanceof Error ? err.message : String(err)}`,
+          { reason }))
       if (reason === 'profile-apply') throw err
     }
   }

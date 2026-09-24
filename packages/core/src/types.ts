@@ -112,6 +112,7 @@ export type RuntimeEventKind =
   | 'connection.opened'
   | 'connection.closed'
   | 'rules.updated'
+  | 'subscriptions.reload_failed'
 
 export interface RuntimeEvent {
   id: string
