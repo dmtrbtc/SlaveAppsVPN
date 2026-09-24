@@ -60,7 +60,35 @@ jobs:
         shell: pwsh
         run: |
           git clone --branch v1.19.30 --depth 1 https://github.com/MetaCubeX/mihomo.git "$env:RUNNER_TEMP/mihomo-v1.19.30"
+          $expected = node -e "console.log(require('./scripts/engine-manifest.mjs').MIHOMO_WINDOWS.releaseCommit)"
+          $actual = git -C "$env:RUNNER_TEMP/mihomo-v1.19.30" rev-parse --short HEAD
+          if ($actual -ne $expected) {
+            Write-Host "::error::Mihomo tag v1.19.30 moved: expected commit $expected, got $actual. Re-pin engine-manifest.mjs after reviewing upstream changes."
+            exit 1
+          }
+          Write-Host "mihomo commit verified: $actual"
           ./scripts/build-mihomo-windows.ps1 -MihomoSource "$env:RUNNER_TEMP/mihomo-v1.19.30"
+
+      # Installers must never be attached to a release from a tree that fails
+      # the ordinary CI checks — this workflow runs on tags/dispatch where the
+      # PR/push CI pipeline does not gate it, so run the suite inline.
+      # Node 24 runs the TS test suites (type stripping); switched back to 22
+      # for the Electron build below.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Preflight (typecheck + lint + tests)
+        run: |
+          pnpm typecheck
+          pnpm lint
+          pnpm --filter "./packages/**" build
+          pnpm --filter "./packages/**" test --if-present
+          pnpm --filter @slave-vpn/windows test:renderer
+          pnpm --filter @slave-vpn/windows test:lifecycle
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
 
       - name: Build shared packages first
         run: pnpm --filter "./packages/**" build
