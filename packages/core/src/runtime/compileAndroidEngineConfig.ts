@@ -35,7 +35,6 @@ export interface CompileAndroidEngineConfigInput {
   vpnMode: VPNMode
   selectedProxy?: string
   utlsFingerprint?: string
-  realityCompatibilityNode?: string | null
   dohProvider: DohProviderSetting
   dnsPreset?: DnsPresetName
   dnsStrategy?: DnsStrategyName
@@ -143,7 +142,6 @@ export async function compileAndroidEngineConfig(
     ...(input.selectedProxy ? { selectedProxy: input.selectedProxy } : {}),
     settings: generatorSettings,
     utlsFingerprint: input.utlsFingerprint ?? 'randomized',
-    realityCompatibilityNode: input.realityCompatibilityNode ?? null,
     apiPort: 9090,
     apiSecret: input.apiSecret,
     dnsProfile: applyAndroidDnsPolicy(sharedDnsProfile, {

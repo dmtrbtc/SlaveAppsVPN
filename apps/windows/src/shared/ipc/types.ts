@@ -248,7 +248,6 @@ export interface AppSettings {
   // remote servers. "randomized" rotates the Client Hello on every
   // handshake — anti-DPI baseline since ТСПУ behavioural filtering (2026).
   utlsFingerprint: UtlsFingerprintName
-  realityCompatibilityNode?: string | null
 }
 
 export type UtlsFingerprintName =
