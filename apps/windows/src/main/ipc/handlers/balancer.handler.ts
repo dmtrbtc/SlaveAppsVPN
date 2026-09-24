@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { okResult, errResult } from '../../../shared/ipc/types'
 import { handleIpc } from '../registry'
 import { getNodeBalancerService } from '../../services/NodeBalancerService'
+import { getRuntimeApiSecret } from '../../services/runtimeApiSecret'
 import { getSettingsStore } from '../../services/SettingsStore'
 import { EmptySchema } from '../../../shared/ipc/schemas'
 import { VPN } from '@slave-vpn/shared'
@@ -14,7 +15,7 @@ const BalancerSetModeSchema = z.object({ mode: z.enum(['latency', 'stability', '
 export function registerBalancerHandlers(): void {
   const settings = getSettingsStore()
   const apiPort = VPN.MIHOMO_API_PORT
-  const apiSecret = ''  // fetched from settings or generated at runtime
+  const apiSecret = getRuntimeApiSecret()
 
   handleIpc(IpcChannel.VPN_GET_BALANCER_STATE, EmptySchema, async () => {
     const svc = getNodeBalancerService(apiPort, apiSecret)

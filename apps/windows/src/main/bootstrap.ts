@@ -1,4 +1,3 @@
-import crypto from 'crypto'
 import { app } from 'electron'
 import { openDatabase, CacheManager, SubscriptionRepository, UserRepository } from '@slave-vpn/state-sync'
 import { RuntimeManager } from '@slave-vpn/runtime'
@@ -13,6 +12,7 @@ import { getSettingsStore } from './services/SettingsStore'
 import { RecoveryCoordinator } from './services/RecoveryCoordinator'
 import { getSafeModeManager } from './services/SafeModeManager'
 import { getNodeHealthManager } from './services/NodeHealthManager'
+import { getRuntimeApiSecret } from './services/runtimeApiSecret'
 import { getSubscriptionStore } from './services/SubscriptionStore'
 import { getSubscriptionScheduler } from './services/SubscriptionScheduler'
 import { getSubscriptionAggregator } from './services/SubscriptionAggregatorService'
@@ -84,7 +84,7 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
   const tokenStorage = new ElectronTokenStorage()
 
   // ─── Runtime (VPN Engine) ─────────────────────────────────────────────────
-  const apiSecret = crypto.randomBytes(16).toString('hex')
+  const apiSecret = getRuntimeApiSecret()
   const requestedEngine = settings.get('selectedEngine') ?? 'mihomo'
   // Older builds exposed the unfinished Xray placeholder in Settings. It has no
   // compiler/runtime and selecting it makes every connection fail immediately.
@@ -200,7 +200,7 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
 // Wires tray menu actions and live updates to the runtime / balancer.
 function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSettingsStore>): void {
   const log = getLogger()
-  const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, settings.get('apiBaseUrl') ?? '')
+  const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, getRuntimeApiSecret())
 
   const profileStore = getProfileStore()
 
