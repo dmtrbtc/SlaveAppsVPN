@@ -57,6 +57,10 @@ getSafeModeManager().init()
 const log = getLogger()
 
 const isSafeModeFlag = isolatedSettingsSmoke || process.argv.includes('--safe-mode')
+// Crash-loop autodetection (3 launches within 45s) from the pre-ready
+// SafeModeManager must gate the bootstrap exactly like the manual flag,
+// otherwise a crash-looping install keeps booting the full runtime.
+const isSafeModeActive = isSafeModeFlag || getSafeModeManager().isSafeMode()
 
 log.info({
   version: app.getVersion(),
@@ -67,7 +71,7 @@ log.info({
   electron: process.versions.electron,
   node: process.versions.node,
   env: app.isPackaged ? 'packaged' : 'dev',
-  safeMode: isSafeModeFlag || getSafeModeManager().isSafeMode(),
+  safeMode: isSafeModeActive,
   pid: process.pid,
 }, 'SLAVE VPN starting')
 
@@ -80,7 +84,7 @@ app.whenReady().then(async () => {
   setCrashLogPath(userDataPath)
 
   startupTracker.begin('app_ready', 'App ready')
-  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeFlag }, 'App ready')
+  logger.info({ phase: 'app_ready', version: app.getVersion(), pid: process.pid, safeMode: isSafeModeActive }, 'App ready')
   startupTracker.complete('app_ready')
 
   // Hydrate the shared core SettingsStore before any IPC handler, window,
@@ -112,8 +116,8 @@ app.whenReady().then(async () => {
 
   // PHASE 4: Provider/runtime bootstrap (fire-and-forget, degraded mode on failure)
   startupTracker.begin('bootstrap', 'Provider & runtime bootstrap')
-  logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeFlag }, 'Starting provider bootstrap')
-  bootstrap(isSafeModeFlag)
+  logger.info({ phase: 'bootstrap_start', safeMode: isSafeModeActive }, 'Starting provider bootstrap')
+  bootstrap(isSafeModeActive)
     .then(() => {
       startupTracker.complete('bootstrap')
       startupTracker.markComplete()
