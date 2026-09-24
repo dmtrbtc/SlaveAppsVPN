@@ -21,6 +21,7 @@ import { getProfileStore } from './services/ProfileStore'
 import { getGeoUpdaterService } from './services/GeoUpdaterService'
 import { setTrayActions, updateTrayStatus, updateTrayMode, updateTraySelectedProxy, updateTrayProxyList, updateTrayBalancer, updateTrayProfiles } from './tray'
 import { VPN } from '@slave-vpn/shared'
+import { getProxyNamesFromYaml } from '@slave-vpn/config'
 import { services } from './ipc/registry'
 import { sendToRenderer } from './window'
 import { IpcChannel } from '../shared/ipc/channels'
@@ -201,6 +202,12 @@ async function _bootstrap(safeModeFlag: boolean): Promise<void> {
 function wireTray(runtime: RuntimeServiceImpl, settings: ReturnType<typeof getSettingsStore>): void {
   const log = getLogger()
   const balancer = getNodeBalancerService(VPN.MIHOMO_API_PORT, getRuntimeApiSecret())
+  // The balancer needs the aggregated proxy names; resolve them lazily from
+  // the subscription snapshot so a fresh node list is picked up on every enable.
+  balancer.setProxyNamesProvider(async () => {
+    const snapshot = await getSubscriptionAggregator().getSnapshotOrFetch()
+    return getProxyNamesFromYaml(snapshot.yaml)
+  })
 
   const profileStore = getProfileStore()
 

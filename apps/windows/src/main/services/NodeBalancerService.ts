@@ -28,6 +28,7 @@ class ApiProber {
 export class NodeBalancerService {
   private balancer: NodeBalancer | null = null
   private proxyNames: string[] = []
+  private proxyNamesProvider: (() => Promise<string[]>) | null = null
 
   constructor(
     private readonly apiPort: number,
@@ -38,10 +39,30 @@ export class NodeBalancerService {
     this.proxyNames = proxyNames
   }
 
+  /**
+   * Lazy source of proxy names (aggregated subscription YAML → names). Without
+   * it (or an explicit configure()) the balancer starts with an empty list and
+   * immediately no-ops — which is exactly how it shipped dead until now.
+   */
+  setProxyNamesProvider(provider: () => Promise<string[]>): void {
+    this.proxyNamesProvider = provider
+  }
+
+  private async ensureProxyNames(): Promise<void> {
+    if (this.proxyNames.length > 0 || !this.proxyNamesProvider) return
+    try {
+      const names = await this.proxyNamesProvider()
+      if (Array.isArray(names) && names.length > 0) this.proxyNames = names
+    } catch (err) {
+      getLogger().warn({ err }, 'Balancer proxy-names provider failed')
+    }
+  }
+
   async setEnabled(enabled: boolean): Promise<void> {
     if (!this.balancer) this.initBalancer()
     this.balancer!.configure({ enabled })
     if (enabled) {
+      await this.ensureProxyNames()
       this.balancer!.start(this.proxyNames)
     } else {
       this.balancer!.stop()
@@ -57,6 +78,7 @@ export class NodeBalancerService {
 
   async probeAll(): Promise<void> {
     if (!this.balancer) this.initBalancer()
+    await this.ensureProxyNames()
     await this.balancer!.probeAll(this.proxyNames)
     this.emitState()
   }
