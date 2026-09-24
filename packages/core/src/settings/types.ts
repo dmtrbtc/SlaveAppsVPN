@@ -126,6 +126,8 @@ export interface AppSettings {
   apiBaseUrl: string
   telegramBotUsername: string
   devMode: boolean
+  /** Resolve node countries via an external geoip service (ipwho.is). Default on. */
+  nodeGeoLookupEnabled: boolean
   updateChannel: 'stable' | 'beta'
   selectedEngine: SelectedEngine
   dnsPreset: DnsPresetName

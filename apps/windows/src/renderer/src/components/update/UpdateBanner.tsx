@@ -5,13 +5,29 @@ import { useInAppUpdate } from '../../hooks/useInAppUpdate'
 import { useSettings } from '../../hooks/useSettings'
 
 const DISMISS_LS_KEY = 'slave.update.dismissed.v1'
+// Dismissing a version hides the banner for a week, not forever — users who
+// clicked past an update once still get reminded when it actually matters.
+const DISMISS_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+function isDismissed(version: string): boolean {
+  try {
+    const raw = window.localStorage.getItem(DISMISS_LS_KEY)
+    if (!raw) return false
+    const parsed = JSON.parse(raw) as { version?: string; at?: number }
+    if (parsed.version !== version) return false
+    return typeof parsed.at === 'number' && Date.now() - parsed.at < DISMISS_TTL_MS
+  } catch {
+    return false
+  }
+}
 
 /**
  * Cross-platform in-app update banner. Detects a newer build via GitHub Releases,
  * then downloads + installs IN-APP (no browser): Windows via electron-updater
  * (progress → «Перезапустить и установить»), Android via the native PackageInstaller
  * (progress → the system install sheet). Falls back to opening the download in the
- * browser only if the in-app path is unavailable. Dismissal is remembered per version.
+ * browser only if the in-app path is unavailable. Dismissal is remembered per
+ * version for a week.
  */
 export function UpdateBanner() {
   const [info, setInfo] = useState<UpdateInfo | null>(null)
@@ -24,9 +40,7 @@ export function UpdateBanner() {
     void (async () => {
       const u = await checkForUpdate(channel)
       if (cancelled || !u) return
-      try {
-        if (window.localStorage.getItem(DISMISS_LS_KEY) === u.version) return // dismissed this version
-      } catch { /* ignore */ }
+      if (isDismissed(u.version)) return
       setInfo(u)
     })()
     return () => { cancelled = true }
@@ -35,7 +49,7 @@ export function UpdateBanner() {
   if (!info) return null
 
   const dismiss = () => {
-    try { window.localStorage.setItem(DISMISS_LS_KEY, info.version) } catch { /* ignore */ }
+    try { window.localStorage.setItem(DISMISS_LS_KEY, JSON.stringify({ version: info.version, at: Date.now() })) } catch { /* ignore */ }
     setInfo(null)
   }
 

@@ -663,6 +663,13 @@ export function SettingsPage() {
                   onChange={v => handleToggle('autoConnect', v)}
                   loading={isKeyPending('autoConnect')}
                 />
+                <ToggleRow
+                  label="Определять страну узлов по IP"
+                  sub="Отправляет IP-адрес каждого сервера подписки внешнему сервису геолокации (ipwho.is). Выключите, чтобы не отправлять ничего; страна останется определённой по имени узла"
+                  value={settings.nodeGeoLookupEnabled}
+                  onChange={v => handleToggle('nodeGeoLookupEnabled', v)}
+                  loading={isKeyPending('nodeGeoLookupEnabled')}
+                />
                 {/* Android-only: OS auto-starts our BootReceiver after a restart. */}
                 {IS_MOBILE && (
                   <ToggleRow
