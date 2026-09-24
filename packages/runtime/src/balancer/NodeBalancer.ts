@@ -136,9 +136,11 @@ export class NodeBalancer {
   private computeScores(): NodeScore[] {
     const out: NodeScore[] = []
     for (const [name, hist] of this.history.entries()) {
+      // The LATEST sample decides latency: filtering nulls first would let an
+      // old success outlive a fresh failure (stale-ping resurrection).
+      const lastSample = hist.latencies[hist.latencies.length - 1]
+      const latencyMs = typeof lastSample === 'number' ? lastSample : null
       const latencies = hist.latencies.filter((l): l is number => l !== null)
-      const lastLatency = latencies[latencies.length - 1]
-      const latencyMs: number | null = lastLatency !== undefined ? lastLatency : null
 
       // Jitter = stddev of latency samples
       const avg = latencies.length > 0
