@@ -223,6 +223,7 @@ export interface AppSettings {
   apiBaseUrl: string
   telegramBotUsername: string
   devMode: boolean
+  nodeGeoLookupEnabled: boolean
   updateChannel: 'stable' | 'beta'
   selectedEngine: SelectedEngine
   // New settings fields

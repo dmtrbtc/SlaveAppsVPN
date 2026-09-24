@@ -6,6 +6,7 @@ import { EmptySchema } from '../../../shared/ipc/schemas'
 import { okResult } from '../../../shared/ipc/types'
 import type { ServerLatencyPayload } from '../../../shared/ipc/types'
 import type { RuntimeService } from '../../services/RuntimeService'
+import { getSettingsStore } from '../../services/SettingsStore'
 import { handleIpc, services } from '../registry'
 import { getConfigSourceService, extractProxiesFromYaml } from '../../services/impl/ConfigSourceService'
 import type { ServerListEntry } from '../../services/impl/ConfigSourceService'
@@ -238,7 +239,11 @@ export function registerServersHandlers(): void {
     try {
       const entries = await resolveServerListEntries()
       const servers = entries.map(toServer)
-      await enrichCountriesByIp(servers, entries)
+      // External geoip enrichment sends every node's IP to ipwho.is — an
+      // opt-out privacy setting keeps the request from ever leaving the host.
+      if (getSettingsStore().get('nodeGeoLookupEnabled')) {
+        await enrichCountriesByIp(servers, entries)
+      }
       return okResult(servers)
     } catch (err: unknown) {
       log.warn({ err }, 'Failed to fetch server list')

@@ -21,6 +21,7 @@ export function createDefaultSettings(overrides: Partial<AppSettings> = {}): App
     apiBaseUrl: 'https://change-me.example.com/api',
     telegramBotUsername: '',
     devMode: false,
+    nodeGeoLookupEnabled: true,
     updateChannel: 'stable',
     selectedEngine: 'mihomo',
     dnsPreset: 'secure',

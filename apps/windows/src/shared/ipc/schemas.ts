@@ -72,6 +72,7 @@ export const SettingsSetSchema = z
     apiBaseUrl: z.string().url().max(512).optional(),
     telegramBotUsername: z.string().max(64).optional(),
     devMode: z.boolean().optional(),
+    nodeGeoLookupEnabled: z.boolean().optional(),
     selectedEngine: z.enum(['mihomo', 'singbox', 'xray']).optional(),
     dnsPreset: z.enum(['secure', 'balanced', 'performance', 'minimal', 'custom']).optional(),
     dnsStrategy: z.enum(['prefer_ipv4', 'ipv4_only', 'prefer_ipv6', 'ipv6_only']).optional(),
