@@ -1,45 +1,42 @@
-# Internal Release Checklist — v0.2.0-internal-preview
+# Release Checklist — v0.3.0 (stable)
 
-## Pre-Build
+Процесс релиза: push тега → release.yml (валидатор + draft) → ручной
+workflow_dispatch windows.yml/android.yml с release_tag → ручной QA →
+`gh release edit <tag> --draft=false` (для stable — БЕЗ --prerelease).
 
-- [x] `pnpm typecheck` — 21/21 tasks pass, zero errors
-- [ ] `pnpm lint` — no ESLint violations
-- [ ] Secrets audit — no `.env`, tokens, or credentials committed
-- [ ] Binary audit — no pre-built `.exe`/`.dll` in source tree (only in `resources/bin/`)
-- [ ] Provider isolation — `provider-remnawave` referenced only from `bootstrap.ts`
+## Автоматические гейты (до attach артефактов)
 
-## Build Artifacts
+- [x] Preflight в windows.yml/android.yml: typecheck + lint + все тесты
+- [x] `mihomo -t` на сгенерированных конфигурациях
+- [x] Пины SHA256: mihomo / sing-box / wintun; сверка commit тега mihomo
+- [x] validate-release-readiness (версии, notes, CHANGELOG)
+- [x] Android: подпись upload-ключом, пин сертификата SHA-256
 
-- [ ] `pnpm dist` completes without error (from `apps/windows/`)
-- [ ] `SlaveAppsVPN-Setup-v0.2.0.exe` produced in `release/0.2.0/`
-- [ ] `SlaveAppsVPN-Portable-v0.2.0.exe` produced in `release/0.2.0/`
-- [ ] SHA-256 checksums generated for both artifacts
+## Ручной QA перед publish (Windows, чистая машина/ВМ)
 
-### Native Module Note
-> `better-sqlite3` requires native compilation (MSVC build tools).
-> Build environment must have Visual Studio 2019+ with "Desktop Development with C++" workload,
-> or use `@electron/rebuild` after `npm install`.
+- [ ] Первый запуск: окно ≤ 5 с, bootstrap ≤ 15 с, нет ошибок в логе
+- [ ] Upgrade path: установка поверх v0.2.40 — настройки, подписки и токены
+      переживают апгрейд; нет дубля в «Установке программ»
+- [ ] Откат: переустановка v0.2.40 поверх v0.3.0 не ломает запуск
+- [ ] SmartScreen: предупреждение на неподписанном Setup (ожидаемо;
+      «Подробнее → Выполнить в любом случае») — задокументировано
+- [ ] Обновление баннером со stable v0.2.40 → предложение v0.3.0
+- [ ] Обновление с dev-сборки (0.2.41-dev.21) → предложение v0.3.0
+- [ ] Portable-вариант запускается и завершается чисто
 
-## Smoke Tests (manual, on clean Windows 10 x64)
+## Ручной QA (Android)
 
-- [ ] Installer launches without UAC elevation (`asInvoker`)
-- [ ] App starts, TitleBar minimize/maximize/close work
-- [ ] Login screen renders, email form is interactive
-- [ ] Dashboard connection orb renders (disconnected state)
-- [ ] Settings page opens and saves a setting
-- [ ] Diagnostics page shows runtime event timeline
-- [ ] App exits cleanly from tray
+- [ ] APK устанавливается поверх dev.21, данные сохраняются
+- [ ] Подключение/отключение, смена узла, ребут устройства
 
-## GitHub Release
+## Публикация
 
-- [ ] Tag `v0.2.0-internal-preview` pushed to `git@github.com:dmtrbtc/SlaveAppsVPN.git`
-- [ ] GitHub release created as **pre-release** (private repo)
-- [ ] Both `.exe` artifacts attached
-- [ ] Checksums included in release body
-- [ ] Release marked **Do not distribute** in description
+- [ ] `gh release edit v0.3.0 -R dmtrbtc/SlaveAppsVPN --draft=false`
+      (без --prerelease — релиз займёт releases/latest)
+- [ ] После публикации НЕ выпускать теги v0.3.0-* (semver: релиз старше
+      собственных пре-релизов); следующая dev-линия — v0.3.1-dev.N
 
 ## Post-Release
 
-- [ ] Release notes reviewed for any accidental internal info disclosure
-- [ ] Shared with intended internal reviewers only
-- [ ] Feedback tracked in project issues
+- [ ] Отметить выполненное в docs/ReleaseAudit.md
+- [ ] Мониторинг: issues, обновления каналов, краш-репорты из логов

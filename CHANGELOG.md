@@ -4,6 +4,52 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-25
+
+Stable release consolidating the 0.2.41-dev line (dev.1–dev.21) and the
+pre-release stabilization phase.
+
+### Added
+
+- Node instability indicators: probe telemetry (health score, failure
+  streaks, quarantine) drives availability badges («Офлайн»/«Нестабильный»)
+  in Servers and warns in the connection target picker.
+- Privacy setting to disable external node-geoip lookups (ipwho.is).
+- Modern REALITY support: X25519/ML-KEM hybrid key share, ML-DSA-65 (pqv)
+  verification, ClientHello fragmentation, client version 26.9.9 — shared
+  mihomo v1.19.30 patch set on Windows and Android.
+- Subscription hot-reload failures surface in the diagnostics journal.
+
+### Changed
+
+- RU-domain DNS lookups in bypass modes are encrypted (Yandex DoH #DIRECT)
+  instead of plaintext UDP; private/corporate names avoid the TUN system
+  resolver loop; node domains resolve via the DoH pool.
+- Dev builds always resolve updates from the Dev channel; update-banner
+  dismissal expires after 7 days.
+- Release artifacts build only after the full test suite passes; `mihomo -t`
+  runs on every PR; all engine binaries (mihomo/sing-box/wintun) are
+  SHA256-pinned.
+
+### Fixed
+
+- Windows updater never stranded dev builds on the default stable channel.
+- Node balancer functional again (real API secret, live node list from the
+  subscription aggregate; the latest probe decides latency).
+- Crash-loop autodetection actually gates the bootstrap into safe mode.
+- Android updater no longer offers APKs from Windows-only releases.
+- Stale latency values no longer reappear after failed probes (Servers,
+  target picker, balancer).
+- SoundCloud tunnels in «Заблокировано» mode (the service refuses RU IPs).
+- Onboarding buttons wrap on narrow windows; base Button truncates long
+  labels.
+- Diagnostics log viewer redacts every string field in the main process.
+
+### Known limitations
+
+- Windows installer is unsigned (SmartScreen warning on first install) —
+  accepted owner decision; free signing exists only for open source.
+
 ## [0.2.41-dev.21] — 2026-09-25
 
 ### Fixed
