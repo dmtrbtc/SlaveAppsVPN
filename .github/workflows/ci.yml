@@ -61,7 +61,7 @@ jobs:
       # (better-sqlite3 is compiled for Electron's ABI); on a bare ubuntu
       # runner the embedded Node needs these shared libraries.
       - name: Install Electron runtime libraries (state-sync tests)
-        run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0 libasound2
+        run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0t64 libasound2t64
       - name: Build shared packages (test deps — routing/dns/core resolved from dist)
         run: pnpm --filter "./packages/**" build
         env:
