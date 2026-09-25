@@ -97,6 +97,8 @@ test('android profile compiles end-to-end with the DoH#DIRECT RU policy', () => 
   assert.equal(c['prefer-h3'], false)
   const policy = c['nameserver-policy'] as Record<string, unknown>
   assert.equal(policy['+.ru'], 'https://common.dot.dns.yandex.net/dns-query#DIRECT')
+  // private names must NOT use `system` on Android (TUN DNS loop) — encrypted DoH#DIRECT
+  assert.equal(policy['geosite:private'], 'https://dns.google/dns-query#DIRECT')
   // node domain → DoH pool entries (https), never `system`
   const nodePolicy = policy['+.node.example.online']
   const nodeList = Array.isArray(nodePolicy) ? nodePolicy : [nodePolicy]

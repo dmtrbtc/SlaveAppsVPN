@@ -487,6 +487,8 @@ export interface ServerLatencyPayload {
   latencyMs: number | null     // null = failed
   success: boolean
   score: number                // 0-100 health score
+  consecutiveFailures: number  // failing probes in a row (0 on success)
+  quarantinedUntil: number | null // epoch ms; non-null while the node is quarantined
 }
 
 // ─── Connectivity snapshot ───────────────────────────────────────────────────

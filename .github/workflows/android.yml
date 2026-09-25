@@ -54,7 +54,11 @@ jobs:
       # Release APKs must not be built from a tree failing the ordinary CI
       # suite — this workflow runs on tags/dispatch, ungated by PR CI.
       # Node 24 runs the TS test suites (type stripping); switched back to 22
-      # for the web bundle build below.
+      # for the web bundle build below. The state-sync suite spawns the
+      # workspace Electron in node mode, which needs these shared libraries
+      # on a bare ubuntu runner.
+      - name: Install Electron runtime libraries (state-sync tests)
+        run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0 libasound2
       - uses: actions/setup-node@v7
         with:
           node-version: 24

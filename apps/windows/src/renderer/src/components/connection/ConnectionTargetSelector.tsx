@@ -14,11 +14,22 @@ import {
   selectBalancerState,
   selectConnectionState,
   selectServerLatency,
+  selectServerHealth,
   AUTO_GROUP,
 } from '../../stores/vpn.store'
 import { useUIStore } from '../../stores/ui.store'
 
-function LatencyBadge({ ms }: { ms: number | null | undefined }) {
+function LatencyBadge({ ms, unstable }: { ms: number | null | undefined; unstable?: boolean }) {
+  if (unstable) {
+    return (
+      <span
+        className="text-[10px] font-mono shrink-0 text-yellow-400"
+        title="Узел нестабилен: повторные провалы замера"
+      >
+        ⚠ {ms !== null && ms !== undefined ? `${ms}ms` : '—'}
+      </span>
+    )
+  }
   if (ms === undefined || ms === null) {
     return <span className="text-[10px] font-mono text-text-muted shrink-0">—</span>
   }
@@ -37,6 +48,12 @@ export function ConnectionTargetSelector() {
   const balancerState = useVpnStore(selectBalancerState)
   const state = useVpnStore(selectConnectionState)
   const serverLatency = useVpnStore(selectServerLatency)
+  const serverHealth = useVpnStore(selectServerHealth)
+
+  const isUnstable = (name: string): boolean => {
+    const h = serverHealth[name]
+    return h !== undefined && (h.quarantined || h.consecutiveFailures >= 2)
+  }
   const fetchProxyList = useVpnStore(s => s.fetchProxyList)
   const setProxy = useVpnStore(s => s.setProxy)
   const selectAuto = useVpnStore(s => s.selectAuto)
@@ -156,7 +173,7 @@ export function ConnectionTargetSelector() {
             <>
               <span className="text-sm leading-none">{autoLeafFlag || '🌐'}</span>
               <span className="text-[11px] font-medium text-accent truncate">{autoLeaf}</span>
-              <span className="ml-auto"><LatencyBadge ms={autoLeafLatency} /></span>
+              <span className="ml-auto"><LatencyBadge ms={autoLeafLatency} unstable={autoLeaf ? isUnstable(autoLeaf) : false} /></span>
             </>
           ) : (
             <span className="text-[11px] text-text-muted italic">{isConnected ? 'определяется…' : 'подключитесь'}</span>
@@ -220,7 +237,7 @@ export function ConnectionTargetSelector() {
                   </span>
                 )}
                 {switchingTarget === proxy.name && <LoaderCircle className="h-3 w-3 animate-spin text-accent shrink-0" />}
-                <LatencyBadge ms={latency} />
+                <LatencyBadge ms={latency} unstable={isUnstable(proxy.name)} />
               </motion.button>
             )
           })
