@@ -71,3 +71,11 @@ test('registry has base + addon scenarios; ai-services is default-enabled', () =
   assert.ok(meta.some(m => !m.isBase), 'has add-on scenarios')
   assert.ok(meta.find(m => m.id === 'ai-services')?.defaultEnabled, 'ai-services enabled by default')
 })
+
+test('roscomvpn-default: SoundCloud is PROXY (self-blocked for RU IPs, field feedback)', () => {
+  const { policy } = composeScenarios(['roscomvpn-default'])
+  const sc = policy.providerRules.filter(r => r.target.type === 'domain_suffix' &&
+    (r.target.value === 'soundcloud.com' || r.target.value === 'sndcdn.com'))
+  assert.equal(sc.length, 2, 'both the app domain and the media CDN host are covered')
+  assert.ok(sc.every(r => r.action === 'proxy'), 'SoundCloud must tunnel in «Заблокировано» mode')
+})

@@ -65,6 +65,19 @@ function buildRules(): readonly RoutingRule[] {
       source: { provider: 'scenario:roscomvpn-default', category: 'proxy' },
     })
   }
+  // SoundCloud is not RKN-blocked — the service itself refuses Russian IPs,
+  // so in «Заблокировано» it must be tunnelled or playback dies. Explicit
+  // suffix rules (not geosite) keep this independent of geodata versions:
+  // soundcloud.com covers api-v2/auth, sndcdn.com is the media/CDN host.
+  for (const d of ['soundcloud.com', 'sndcdn.com']) {
+    rules.push({
+      id: nextId(`domain:${d}:proxy`),
+      target: { type: 'domain_suffix', value: d },
+      action: 'proxy',
+      priority: p++,
+      source: { provider: 'scenario:roscomvpn-default', category: 'proxy' },
+    })
+  }
 
   // ─── Messengers → PROXY (chat + CALLS) ──────────────────────────────────
   // Priority 1300-1399 (shared module). defaultAction here is already proxy, but

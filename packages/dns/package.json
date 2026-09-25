@@ -15,12 +15,14 @@
   "main": "./dist/cjs/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.cjs",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node --test test/androidDnsProfile.test.ts",
+    "test": "pnpm build && node --test test/androidDnsProfile.test.ts test/mihomoDnsCompiler.test.ts",
     "clean": "rimraf dist *.tsbuildinfo"
   },
   "dependencies": {
