@@ -95,11 +95,11 @@ jobs:
         working-directory: apps/android
         run: pnpm exec cap sync android
 
-      - name: Android lint
+      - name: Android unit tests + lint
         working-directory: apps/android/android
         run: |
           chmod +x gradlew
-          ./gradlew lintDebug --no-daemon
+          ./gradlew testDebugUnitTest lintDebug --no-daemon
 
       - name: Configure release signing
         id: signing

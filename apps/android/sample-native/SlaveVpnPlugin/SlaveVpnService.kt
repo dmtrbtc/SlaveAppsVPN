@@ -43,7 +43,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.util.Locale
 
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -694,27 +693,17 @@ class SlaveVpnService : VpnService() {
         trafficJob?.cancel()
         trafficJob = scope.launch {
             while (isActive && currentState == "connected") {
-                val text = try {
-                    val t = JSONObject(ClashBridge.getTraffic())
-                    val down = t.optLong("down", 0L)
-                    val up = t.optLong("up", 0L)
-                    "↓ ${formatSpeed(down)}   ↑ ${formatSpeed(up)}"
-                } catch (_: Exception) { "" }
+                    val text = try {
+                        val t = JSONObject(ClashBridge.getTraffic())
+                        val down = t.optLong("down", 0L)
+                        val up = t.optLong("up", 0L)
+                        TrafficFormat.notificationLine(down, up)
+                    } catch (_: Exception) { "" }
                 if (text.isNotEmpty()) {
                     notify(text)
                 }
                 delay(2000)
             }
-        }
-    }
-
-    /** Human-readable bytes-per-second (Б/с, КБ/с, МБ/с). */
-    private fun formatSpeed(bytesPerSec: Long): String {
-        val b = if (bytesPerSec < 0) 0L else bytesPerSec
-        return when {
-            b < 1024L -> "$b Б/с"
-            b < 1024L * 1024L -> String.format(Locale.ROOT, "%.0f КБ/с", b / 1024.0)
-            else -> String.format(Locale.ROOT, "%.1f МБ/с", b / (1024.0 * 1024.0))
         }
     }
 
