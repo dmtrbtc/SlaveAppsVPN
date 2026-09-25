@@ -123,3 +123,4 @@ playwright-report/
 # AI assistant memory (not project code)
 .claude/
 .gradle-test/
+.mimosa/
