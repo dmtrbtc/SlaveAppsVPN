@@ -292,6 +292,8 @@ async function probeViaEngine(entries: ServerListEntry[], runtime: RuntimeServic
           latencyMs,
           success: result.success,
           score: snapshot.score,
+          consecutiveFailures: snapshot.consecutiveFailures,
+          quarantinedUntil: snapshot.quarantinedUntil,
         }
         sendToRenderer(IpcChannel.EVENT_SERVER_LATENCY, payload)
       })
@@ -316,6 +318,8 @@ async function probeViaTcp(entries: ServerListEntry[]): Promise<void> {
           latencyMs: result.latencyMs,
           success: result.success,
           score: snapshot.score,
+          consecutiveFailures: snapshot.consecutiveFailures,
+          quarantinedUntil: snapshot.quarantinedUntil,
         }
         sendToRenderer(IpcChannel.EVENT_SERVER_LATENCY, payload)
       })

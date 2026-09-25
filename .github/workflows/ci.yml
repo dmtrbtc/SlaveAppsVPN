@@ -57,22 +57,21 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The state-sync suite spawns the workspace Electron in node mode
+      # (better-sqlite3 is compiled for Electron's ABI); on a bare ubuntu
+      # runner the embedded Node needs these shared libraries.
+      - name: Install Electron runtime libraries (state-sync tests)
+        run: sudo apt-get update && sudo apt-get install -y libnss3 libatk1.0-0t64 libasound2t64
       - name: Build shared packages (test deps — routing/dns/core resolved from dist)
         run: pnpm --filter "./packages/**" build
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-      - name: "Run config tests (parsers, uTLS, routing rules, DNS, RU-direct)"
-        run: pnpm --filter @slave-vpn/config test
-      - name: "Run routing tests (scenario compose, dedup, defaults)"
-        run: pnpm --filter @slave-vpn/routing test
-      - name: "Run DNS tests (Android profile, IP-literal, fallback pool)"
-        run: pnpm --filter @slave-vpn/dns test
-      - name: "Run core tests (mode matrix, user routing rules)"
-        run: pnpm --filter @slave-vpn/core test
+      - name: "Run all package tests (single list, same as release preflights)"
+        run: pnpm --filter "./packages/**" test --if-present
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
       - name: "Run renderer regression tests (offline refresh, Android storage hydration)"
         run: pnpm --filter @slave-vpn/windows test:renderer
-      - name: "Run runtime tests (geosite parsing and merge safety)"
-        run: pnpm --filter @slave-vpn/runtime test
       - name: "Run Windows lifecycle service regressions"
         run: pnpm --filter @slave-vpn/windows test:lifecycle
 

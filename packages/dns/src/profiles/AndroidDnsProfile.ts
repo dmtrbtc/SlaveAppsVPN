@@ -32,6 +32,12 @@ const RU_DIRECT_RESOLVERS = [
   'https://common.dot.dns.yandex.net/dns-query#DIRECT',
 ] as const
 
+// Private/corporate names resolve via encrypted direct DoH (Google) — never
+// `system`, which under the VpnService TUN loops back into the hijacked DNS.
+const PRIVATE_DIRECT_RESOLVERS = [
+  'https://dns.google/dns-query#DIRECT',
+] as const
+
 // Local/captive-portal entries that must never get a fake-ip. The RU entries
 // (+.ru/+.рф/category-ru) are appended only when ruDirectDns is on (bypass/custom)
 // — in full/split EVERYTHING (incl. RU) tunnels, so RU domains should fake-ip and
@@ -159,7 +165,16 @@ export function applyAndroidDnsPolicy(
     },
     rules: [
       ...ruRules,
-      { id: 'android-private-geosite', matchType: 'geosite', value: 'private', resolverTag: 'system' },
+      // Private/corporate names must NOT use `system` here: under the
+      // VpnService TUN the system resolver loops back through the hijacked
+      // DNS and always fails (the same loop the node-domain rules below
+      // avoid). Resolve them via the direct encrypted bootstrap pool instead.
+      {
+        id: 'android-private-geosite',
+        matchType: 'geosite',
+        value: 'private',
+        resolverTag: [...PRIVATE_DIRECT_RESOLVERS],
+      },
       ...(profile.rules ?? []),
       // Node anti-loop rules are deliberately last so user rules cannot make a
       // proxy endpoint depend on the tunnel that is still being established.
@@ -214,7 +229,7 @@ export function buildAndroidDnsProfile(opts: AndroidDnsProfileOptions): DnsProfi
 
   const rules: DnsRule[] = [
     ...ruRules,
-    { id: 'private-geosite', matchType: 'geosite', value: 'private', resolverTag: 'system' },
+    { id: 'private-geosite', matchType: 'geosite', value: 'private', resolverTag: [...PRIVATE_DIRECT_RESOLVERS] },
     ...opts.nodeDomainSuffixes.map((s, i) => ({
       id: `node-${i}`,
       matchType: 'domain_suffix' as const,

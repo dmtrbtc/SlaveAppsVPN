@@ -8,6 +8,7 @@ import { Segmented } from '../components/ui/segmented'
 import { LoadingState, ErrorState, EmptyState } from '../components/ui/states'
 import { cn, countryFlagEmoji } from '../lib/utils'
 import { resolveNodeLatency } from '../lib/node-latency'
+import { effectiveAvailability, type NodeHealth } from '../lib/server-health'
 import { useServers } from '../hooks/useServers'
 import {
   useVpnStore,
@@ -16,6 +17,7 @@ import {
   selectActiveProxy,
   selectAutoMode,
   selectBalancerState,
+  selectServerHealth,
 } from '../stores/vpn.store'
 import { useUIStore } from '../stores/ui.store'
 import { IS_MOBILE } from '../lib/platform'
@@ -103,6 +105,7 @@ function LatencyDisplay({ ms, probing }: { ms: number | null; probing?: boolean 
 interface ServerRowProps {
   server: Server
   liveLatency: number | null | undefined
+  health?: NodeHealth | undefined
   isProbing: boolean
   isSelected: boolean
   isActive: boolean
@@ -112,10 +115,11 @@ interface ServerRowProps {
   onFav: (e: React.MouseEvent) => void
 }
 
-function ServerRow({ server, liveLatency, isProbing, isSelected, isActive, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
+function ServerRow({ server, liveLatency, health, isProbing, isSelected, isActive, isFav, isConnecting, onSelect, onFav }: ServerRowProps) {
   const flag = countryFlagEmoji(server.countryCode)
-  const avail = AVAILABILITY_BADGE[server.availability]
-  const isOffline = server.availability === 'offline'
+  const availability = effectiveAvailability(server, health)
+  const avail = AVAILABILITY_BADGE[availability]
+  const isOffline = availability === 'offline'
   const badges = protocolBadges(server)
   const displayLatency = resolveNodeLatency(liveLatency, server.latencyMs)
 
@@ -268,6 +272,7 @@ export function ServersPage() {
   const activeProxy = useVpnStore(selectActiveProxy)
   const autoMode = useVpnStore(selectAutoMode)
   const balancerState = useVpnStore(selectBalancerState)
+  const serverHealth = useVpnStore(selectServerHealth)
   const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
 
   const { latencyMap, probing, startProbe } = useServerProbing(servers.length)
@@ -435,6 +440,7 @@ export function ServersPage() {
                 <ServerRow
                   server={server}
                   liveLatency={latencyMap.get(server.name)}
+                  health={serverHealth[server.name]}
                   isProbing={probing && !latencyMap.has(server.name)}
                   isSelected={!autoActive && selectedProxy === server.id}
                   isActive={status.state === 'connected' && (activeProxy === server.id || status.serverName === server.name)}

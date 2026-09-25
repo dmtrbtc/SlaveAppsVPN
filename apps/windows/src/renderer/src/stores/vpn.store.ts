@@ -30,6 +30,8 @@ interface VpnStore {
   // Live latency map populated from EVENT_SERVER_LATENCY — shared by
   // ServersPage, ConnectionTargetSelector, and any future UI that needs it.
   serverLatency: Record<string, number | null>
+  /** Per-node health from probe telemetry: score, failure streak, quarantine. */
+  serverHealth: Record<string, { score: number; consecutiveFailures: number; quarantined: boolean }>
   serverLatencyUpdatedAt: number
 
   connect: () => Promise<void>
@@ -85,6 +87,7 @@ export const useVpnStore = create<VpnStore>()(
     selectedProxy: null,
     activeProxy: null,
     serverLatency: {},
+    serverHealth: {},
     serverLatencyUpdatedAt: 0,
 
     connect: async () => {
@@ -245,6 +248,14 @@ export const useVpnStore = create<VpnStore>()(
             ...s.serverLatency,
             [payload.proxyName]: payload.success ? payload.latencyMs : null,
           },
+          serverHealth: {
+            ...s.serverHealth,
+            [payload.proxyName]: {
+              score: payload.score,
+              consecutiveFailures: payload.consecutiveFailures,
+              quarantined: payload.quarantinedUntil !== null && payload.quarantinedUntil > Date.now(),
+            },
+          },
           serverLatencyUpdatedAt: Date.now(),
         }))
       })
@@ -273,5 +284,6 @@ export const selectBalancerState = (s: VpnStore) => s.balancerState
 export const selectSelectedProxy = (s: VpnStore) => s.selectedProxy
 export const selectActiveProxy = (s: VpnStore) => s.activeProxy
 export const selectServerLatency = (s: VpnStore) => s.serverLatency
+export const selectServerHealth = (s: VpnStore) => s.serverHealth
 // True when the user picked the autobalancer (SLAVE-AUTO) rather than a fixed node.
 export const selectAutoMode = (s: VpnStore) => s.selectedProxy === AUTO_GROUP
