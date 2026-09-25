@@ -113,8 +113,8 @@ Pre-release verification for SLAVE VPN Windows client.
 
 | Risk | Severity | Status |
 |------|----------|--------|
-| WinTUN requires admin for first install | Medium | workaround: asInvoker, docs needed |
-| Stable Windows artifact signing | High | CI now rejects stable artifacts unless every EXE has one valid Authenticode certificate; final tagged run still requires verification |
+| Windows artifacts are unsigned (SmartScreen warning on first install) | Accepted | Owner decision 2026-09-24: no paid certificate (free Authenticode exists only for open source). The strict CI signature gate re-engages automatically if WIN_CSC_LINK is ever configured. |
+| Installer requires administrator (requireAdministrator; portable wrapper elevates) | Accepted | Needed for the WinTUN adapter; UAC prompt is expected behavior. |
 | Custom NSH WinTUN installer not implemented | Medium | manual driver install required |
-| Binary SHA256 not verified on startup | Low | supply chain risk, future work |
+| Binary SHA256 not verified on startup | Low | supply chain risk; download-time SHA256 pinning is in place |
 | Staged rollout not tested | Low | GitHub Releases channels available |

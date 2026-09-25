@@ -1,47 +1,41 @@
 # SLAVE VPN — Roadmap
 
-## v0.3.0-rc1 (current)
+## v0.3.0 (current, stable)
 
-- [x] VLESS-FIRST subscription pipeline
-- [x] Reality / WS / gRPC / H2 protocol parsing
-- [x] Proper Mihomo YAML generation
-- [x] Multi-UA subscription fetching with ETag cache
-- [x] ConfigSource abstraction (subscription-url, single-proxy, remnawave-key)
-- [x] Onboarding wizard with node preview
-- [x] Pre-flight runtime validation (binary, TUN, port, workdir)
-- [x] Mihomo log error classifier (VLESS/Reality error taxonomy)
-- [x] Connectivity IPC with health score + active proxy
-- [x] Auto-update system with channel selection (stable/beta)
-- [x] RecoveryCoordinator with exponential backoff
-- [x] SafeModeManager with crash loop detection
-- [x] NodeHealthManager with per-node quarantine
-- [x] Captive portal detection + actionable suggestions
-- [x] Log rotation + ZIP export
-- [x] Session ID tracking in logs
-- [x] Reduced-motion accessibility
-- [x] Aurora design system (7 screens)
+Все пункты исторических v0.3.0-rc1/v0.4.0-beta выполнены и включены:
 
-## v0.4.0 — Beta
+- [x] VLESS-FIRST subscription pipeline (Reality / WS / gRPC / H2)
+- [x] Modern REALITY: X25519/ML-KEM hybrid, ML-DSA-65 (pqv), ClientHello
+      fragmentation, client version 26.9.9 (shared core patches)
+- [x] Unified Windows/Android core: routing (P1), DNS (P2), settings (P3)
+- [x] Node stability UX: quarantine/failure badges, dashboard warning
+- [x] Per-node latency measurements through the proxy + node pinning +
+      automatic fallback (SLAVE-AUTO, balancer)
+- [x] Telegram login (Remnawave cabinet)
+- [x] Split tunnel process picker
+- [x] Auto-update with channel selection; dev builds auto-follow the Dev
+      channel; stable feed via releases/latest
+- [x] SafeModeManager crash-loop gate, RecoveryCoordinator backoff,
+      NodeHealthManager quarantine
+- [x] Release engineering: full-test preflight gates, mihomo -t on PRs,
+      SHA256-pinned engine binaries (mihomo/sing-box/wintun), mihomo tag
+      commit verification
+- [x] ~110 new tests across parsers, DNS compiler, balancer/probing,
+      API client, state-sync, Kotlin
 
-- [ ] Code signing (EV certificate)
-- [ ] Split tunnel process picker UI
-- [ ] Telegram login integration
-- [ ] Per-node latency measurements (through proxy)
-- [ ] Node selection UI (preferred node pinning)
-- [ ] Automatic node fallback on repeated quarantine
+Known limitation: Windows installer is unsigned (owner decision — no paid
+certificate; free signing exists only for open source). SmartScreen warns
+on first install until reputation builds.
 
-## v0.5.0 — Stable
+## v0.3.x (patch line)
 
-- [ ] Auto-update in production builds (signed releases)
+- [ ] v0.3.1-dev.N: post-stable fixes land here first (never v0.3.0-* tags:
+      semver ranks a release above its own prereleases)
+
+## v0.4.0 — Next feature line (candidates)
+
+- [ ] IS_MOBILE cleanup in the shared renderer (43 gates → platform shells)
+- [ ] Android bridge gaps: native geo updates, log export, self-test
 - [ ] NSIS installer with WinTUN driver install hook
-- [ ] Windows Defender exclusion guidance
-- [ ] Multiple provider profiles
 - [ ] Import/export configuration
 - [ ] Advanced routing rule editor
-
-## Future
-
-- Outbound IP display (opt-in, privacy-first)
-- Kill switch enforcement via Windows Firewall API
-- IPv6 support
-- macOS/Linux ports (engine-neutral architecture ready)

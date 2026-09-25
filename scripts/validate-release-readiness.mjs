@@ -89,16 +89,10 @@ if (/^\s*releaseType:\s*prerelease\s*$/m.test(builder)) {
   fail('electron-builder forces all publications to prerelease')
 }
 
-if (!expected.includes('-')) {
-  const readme = read('README.md')
-  for (const expectedText of [
-    `релиз-v${expected}`,
-    `SlaveAppsVPN-Setup-v${expected}.exe`,
-    `SlaveAppsVPN-Portable-v${expected}.exe`,
-  ]) {
-    if (!readme.includes(expectedText)) fail(`README.md is missing ${expectedText}`)
-  }
-}
+// NOTE: the stable-release README gate was removed (2026-09-25). README.md is
+// intentionally dynamic (releases/latest badge and links) per the owner's
+// positioning rewrite; requiring hardcoded per-version artifact names fought
+// that design and made every stable tag need a README edit.
 
 if (!process.exitCode) {
   console.log(`[release-readiness] PASS: ${tag} source, notes, versions, and signing guards are consistent`)
