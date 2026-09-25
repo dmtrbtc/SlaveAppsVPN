@@ -4,6 +4,22 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.2.41-dev.21] — 2026-09-25
+
+### Fixed
+
+- SoundCloud now tunnels in «Заблокировано» mode: the service itself refuses
+  Russian IPs, so its direct path never played; soundcloud.com and the media
+  CDN sndcdn.com carry explicit proxy rules in the base scenario.
+- Node balancer: a freshly failed probe no longer falls back to the node's
+  previous successful ping when scoring — the latest sample decides, so a
+  dead node loses priority immediately (mirrors the renderer latency fix).
+
+### Tests
+
+- +40 tests across balancer/probing (runtime 43 → 60), DNS compiler
+  (dns 6 → 14), safe-mode manager (+6), routing (+1) and URI parser.
+
 ## [0.2.41-dev.20] — 2026-09-24
 
 ### Added

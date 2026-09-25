@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-24T18:57:12.642Z",
+  "sessionId": "sess_c2f3e136-002f-48b0-83a3-7dd2f02bf3db",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "test/androidRouting.test.ts",
+  "outcome": "clear",
+  "coverage": "complete",
+  "findingCount": 0,
+  "durationMs": 15,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}
