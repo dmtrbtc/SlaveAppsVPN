@@ -1,117 +1,31 @@
-# Contributing to SLAVE VPN
+# Участие в разработке Slave VPN
 
-## Архитектурные принципы (обязательны к соблюдению)
+Slave VPN — проприетарный проект. До изменения, сборки или распространения кода ознакомьтесь с [LICENSE](LICENSE) и получите необходимое разрешение правообладателя. Открытый Issue или PR не изменяет лицензионные условия.
 
-Перед тем как писать код, убедитесь что понимаете [ARCHITECTURE.md](./ARCHITECTURE.md).
+## Обсуждение изменений
 
-### Правила зависимостей
+Для ошибки или предложения используйте [формы GitHub Issues](https://github.com/dmtrbtc/SlaveAppsVPN/issues/new/choose). Крупные изменения архитектуры сначала опишите в Issue. Discussions в репозитории не используются. Об уязвимостях сообщайте [приватно](SECURITY.md).
 
-```
-packages/routing     ← НЕ зависит от: electron, provider, api, UI
-packages/dns         ← НЕ зависит от: electron, provider, api, UI
-packages/runtime     ← НЕ зависит от: renderer, provider implementation
-packages/provider    ← только interfaces, никаких impl deps
-apps/windows/renderer ← только через IPC bridge, никаких прямых imports
-```
+## Рабочий процесс для уполномоченных участников
 
-### Запрещено
+1. Обновите сведения об актуальной `main` и создайте отдельную ветку; не включайте посторонние локальные изменения.
+2. Воспроизведите проблему на синтетических данных и определите ожидаемое поведение.
+3. Внесите минимальное согласованное изменение. Для исправления логики добавьте проверку воспроизведённой регрессии.
+4. Запустите проверки соответствующих пакетов и приложите результаты в PR к `main`.
+5. Разделяйте локальные тесты, проверки реального ядра и испытания на устройстве. Непроверенные сценарии укажите явно.
 
-- Хардкодить `remnawave` где-либо кроме `packages/provider-remnawave/`
-- Импортировать `@slave-vpn/provider-remnawave` вне `bootstrap.ts`
-- Передавать токены, subscription URL или secrets в renderer
-- Добавлять Electron imports в `packages/routing/`, `packages/dns/`, `packages/config/`
-- Создавать circular dependencies между пакетами
+Окружение и команды описаны в [руководстве разработчика](DEVELOPMENT.md). Общие проверки: `pnpm typecheck`, `pnpm lint`, `pnpm validate:boundaries`. Для изменений приложения нужны профильные тесты; для документации — ссылки, Markdown, корректность примеров и отсутствие секретов. Публикация дистрибутива выполняется отдельным процессом выпуска.
 
----
+## Архитектурные границы
 
-## Структура веток
+- Общие routing, DNS и config-пакеты не должны зависеть от Electron и UI.
+- Windows-интерфейс обращается к платформенным сервисам через preload/IPC.
+- Интеграции оператора реализуются в соответствующем provider-пакете, а не в общей логике.
+- Подписки, ссылки импорта, внешние правила и ответы API обрабатываются как недоверенные данные.
+- Не добавляйте реальные подписки, ключи, токены и данные аккаунтов в код, тесты и журналы.
 
-```
-main          ← стабильный продакшн (только через PR)
-develop       ← текущая разработка
-feature/*     ← новые фичи (ответвляются от develop)
-fix/*         ← bug fixes
-hotfix/*      ← критические фиксы (ответвляются от main)
-release/*     ← подготовка релиза
-```
+Сверяйтесь с [архитектурой](ARCHITECTURE.md) и действующими тестами. Документ не заменяет проверку реальной реализации.
 
-## Workflow
+## Оформление PR
 
-```bash
-# 1. Создать ветку от develop
-git checkout develop
-git pull
-git checkout -b feature/your-feature
-
-# 2. Разработка
-pnpm install
-pnpm dev
-
-# 3. Проверка перед PR
-pnpm typecheck
-pnpm build
-pnpm audit
-
-# 4. Commit
-git commit -m "feat(scope): описание изменений"
-
-# 5. PR → develop
-```
-
-## Commit Convention
-
-Формат: `<type>(<scope>): <description>`
-
-| Type | Когда |
-|---|---|
-| `feat` | Новая функциональность |
-| `fix` | Исправление бага |
-| `refactor` | Рефакторинг без новой функциональности |
-| `docs` | Только документация |
-| `chore` | Build, deps, tooling |
-| `test` | Тесты |
-| `perf` | Производительность |
-
-**Scopes:** `routing`, `dns`, `runtime`, `provider`, `api`, `config`, `ui`, `ipc`, `electron`, `monorepo`
-
-Примеры:
-```
-feat(routing): add remote rule provider with SHA256 checksum
-fix(runtime): handle crashed→error state transition correctly
-refactor(provider): extract ConfigSource from SubscriptionProvider
-docs(architecture): update dependency graph
-chore(monorepo): upgrade electron to 34.x
-```
-
-## Добавление нового провайдера
-
-1. Создать `packages/provider-<name>/`
-2. Реализовать все интерфейсы из `@slave-vpn/provider`
-3. Создать `ProviderManifest` с `id`, `displayName`, `capabilities`
-4. Зарегистрировать в `ProviderRegistry`
-5. Добавить в `bootstrap.ts` через `registry.register()`
-6. Обновить `PROVIDER_SYSTEM.md`
-
-**Не** менять логику bootstrap за пределами provider selection.
-
-## Добавление нового VPN-движка
-
-1. Реализовать `VPNEngine` в `packages/runtime/`
-2. Создать `RuleCompiler<TOptions>` в `packages/routing/`
-3. Создать `DnsCompiler` в `packages/dns/`
-4. Windows-специфичный слой — в `apps/windows/src/main/runtime/`
-5. Обновить `EngineType` в shared
-
-## Typecheck
-
-```bash
-# Весь monorepo
-pnpm typecheck
-
-# Конкретный пакет
-pnpm --filter @slave-vpn/routing typecheck
-```
-
-## Вопросы
-
-Открывайте issue с шаблоном. Архитектурные решения обсуждаются в Discussions.
+Опишите проблему, новое поведение, проверки и ограничения. Используйте короткий заголовок, например `docs: уточнить установку Android` или `fix(runtime): восстановить выбор узла`. В PR включайте только относящиеся к задаче изменения. Обсуждайте решения уважительно, не размещайте персональные данные других участников.

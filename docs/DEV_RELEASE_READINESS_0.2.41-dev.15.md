@@ -1,5 +1,7 @@
 # SLAVE VPN v0.2.41-dev.15 — Dev release readiness
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Status date: 2026-09-19  
 Branch: `codex/windows-regression`  
 Base: published `v0.2.41-dev.14` (`66650db`)  

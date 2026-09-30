@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Руководство и поддержка
+    url: https://github.com/dmtrbtc/SlaveAppsVPN/blob/main/SUPPORT.md
+    about: Установка, диагностика и вопросы оператору подписки.
+  - name: Приватное сообщение об уязвимости
+    url: https://github.com/dmtrbtc/SlaveAppsVPN/security/advisories/new
+    about: Не раскрывайте уязвимости в публичных Issues.

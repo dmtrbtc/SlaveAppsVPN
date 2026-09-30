@@ -85,7 +85,7 @@ interface ConfigSource {
 }
 ```
 
-Subscription URL **никогда** не передаётся в renderer — только `ConfigSource.fetchYaml()` результат используется для генерации конфига.
+В описанном provider-пути Windows подписка загружается через `ConfigSource.fetchYaml()` в main-процессе. Android использует иной платформенный адаптер; свойства хранения приведены в [справке о данных](docs/DATA_HANDLING.md).
 
 ---
 
@@ -254,7 +254,7 @@ const manifest: ProviderManifest = {
 
 ## Security Rules
 
-1. `getConnectionLink()` — только внутри `ConfigSource.fetchYaml()`, никогда в renderer
+1. В provider-пути Windows `getConnectionLink()` используется внутри `ConfigSource.fetchYaml()`; не переносите это утверждение на Android
 2. Auth токены — только в main process memory + OS keychain
 3. Provider implementation details — не видны renderer
 4. Renderer видит только: `ProviderCapabilities` (для адаптации UI) и публичные data types

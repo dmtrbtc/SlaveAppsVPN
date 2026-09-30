@@ -1,5 +1,7 @@
 # Windows lifecycle dev.11 verification
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Date: 2026-09-07. Worktree: `E:\SlaveApps\.worktrees\windows-lifecycle`.
 Base HEAD: `f3277ffcebe462702f744d4585e02413488cda95`, branch `codex/windows-lifecycle-fix`, including the uncommitted lifecycle changes documented in CODEX_STATE.md. Separate P3.1 changes are excluded.
 

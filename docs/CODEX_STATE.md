@@ -1,5 +1,7 @@
 # Codex state
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 ## CURRENT HANDOFF — 2026-09-23 late evening, field root cause: server-side intermittency
 
 Read [REALITY_REGRESSION_DEV10_DEV18.md](REALITY_REGRESSION_DEV10_DEV18.md)

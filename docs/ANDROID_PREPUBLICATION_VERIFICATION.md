@@ -1,5 +1,7 @@
 # Android pre-publication verification — v0.2.41-dev.13
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Date: 2026-09-13. Base commit: `ada0aba`. Worktree:
 `E:\SlaveApps\.worktrees\windows-regression`.
 

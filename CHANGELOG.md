@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to SLAVE VPN are documented here.
+Техническая история изменений Slave VPN. Записи описывают соответствующие версии, включая исторические ограничения и результаты проверок. Пользовательская документация: [руководство](docs/USER_GUIDE.md).
 
 ## [Unreleased]
 
@@ -22,7 +22,7 @@ pre-release stabilization phase.
 
 ### Changed
 
-- RU-domain DNS lookups in bypass modes are encrypted (Yandex DoH #DIRECT)
+- RU-domain DNS lookups in profiles with direct regional routes are encrypted (Yandex DoH #DIRECT)
   instead of plaintext UDP; private/corporate names avoid the TUN system
   resolver loop; node domains resolve via the DoH pool.
 - Dev builds always resolve updates from the Dev channel; update-banner
@@ -40,7 +40,7 @@ pre-release stabilization phase.
 - Android updater no longer offers APKs from Windows-only releases.
 - Stale latency values no longer reappear after failed probes (Servers,
   target picker, balancer).
-- SoundCloud tunnels in «Заблокировано» mode (the service refuses RU IPs).
+- SoundCloud and its media CDN use explicit domain rules in the selective routing profile.
 - Onboarding buttons wrap on narrow windows; base Button truncates long
   labels.
 - Diagnostics log viewer redacts every string field in the main process.
@@ -48,15 +48,14 @@ pre-release stabilization phase.
 ### Known limitations
 
 - Windows installer is unsigned (SmartScreen warning on first install) —
-  accepted owner decision; free signing exists only for open source.
+  publisher signing is not configured for this release.
 
 ## [0.2.41-dev.21] — 2026-09-25
 
 ### Fixed
 
-- SoundCloud now tunnels in «Заблокировано» mode: the service itself refuses
-  Russian IPs, so its direct path never played; soundcloud.com and the media
-  CDN sndcdn.com carry explicit proxy rules in the base scenario.
+- soundcloud.com and the media CDN sndcdn.com now carry explicit proxy rules
+  in the selective base scenario, replacing the prior direct route.
 - Node balancer: a freshly failed probe no longer falls back to the node's
   previous successful ping when scoring — the latest sample decides, so a
   dead node loses priority immediately (mirrors the renderer latency fix).
@@ -76,7 +75,7 @@ pre-release stabilization phase.
 
 ### Changed
 
-- RU-domain DNS lookups in bypass-style modes now use Yandex DoH carried
+- RU-domain DNS lookups in profiles with direct regional routes now use Yandex DoH carried
   directly (`#DIRECT`) instead of plaintext UDP — encrypted end to end, still
   RU-localised; plaintext remains only as the DoH bootstrap in
   default-nameserver.

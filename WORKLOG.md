@@ -1,5 +1,7 @@
 # WORKLOG — VLESS Encryption (ML-KEM-768 / X25519)
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Branch: `feat/vless-encryption`. Goal: support VLESS Encryption ("vlessenc",
 post-quantum ML-KEM-768 / X25519) on Windows + Android, connecting to a server
 with such an inbound via subscription, for ANY key set.

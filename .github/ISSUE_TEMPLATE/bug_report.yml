@@ -1,0 +1,58 @@
+name: Ошибка приложения
+description: Сообщить о воспроизводимой проблеме в Slave VPN
+title: "[Ошибка] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не публикуйте пароли, ключи, URL подписок, данные аккаунта и адреса частной инфраструктуры.
+        Уязвимости: https://github.com/dmtrbtc/SlaveAppsVPN/security/advisories/new
+        По вопросам оплаты и доступности серверов обращайтесь к оператору подписки.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Платформа
+      options: [Windows, Android, Обе платформы]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия приложения и тип установки
+      description: Номер версии, стабильный или Dev-канал, Setup / Portable / APK.
+      placeholder: v0.3.0, стабильный, APK
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Версия ОС и модель устройства
+      description: Без серийного номера и других уникальных идентификаторов.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      description: Как повторить проблему на тестовых данных?
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Ожидаемый и фактический результат
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Дополнительные сведения
+      description: Текст ошибки, проверенный фрагмент журнала или скриншот без секретов. Не прикладывайте полный каталог данных приложения.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Проверка перед отправкой
+      options:
+        - label: Я проверил текст и вложения и удалил секреты и персональные данные.
+          required: true

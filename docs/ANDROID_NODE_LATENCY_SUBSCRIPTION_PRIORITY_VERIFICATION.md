@@ -1,5 +1,7 @@
 # Android node latency and subscription priority verification
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Date: 2026-08-31. Branch: `codex/android-native-node-latency`.
 
 ## Scope

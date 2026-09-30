@@ -1,5 +1,7 @@
 # Windows regression investigation — 2026-09-12
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Status: local fixes with automated evidence; NOT release approved. The root cause
 of the original reconnect loop is not confirmed by the supplied flattened logs.
 The later duplicated-node report now has a live, privacy-safe confirmation on the

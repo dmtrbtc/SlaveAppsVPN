@@ -4,9 +4,9 @@
 
 1. **Provider-agnostic** — платформа не зависит от конкретного VPN-бэкенда
 2. **Engine-neutral** — routing/dns DSL компилируется под любой движок
-3. **Platform-neutral** — split tunneling работает на Windows/Android/iOS через единый интерфейс
+3. **Platform-neutral** — общие интерфейсы дополняются адаптерами Windows и Android; выпуск iOS не заявляется
 4. **Dependency direction** — зависимости строго однонаправленные, no circular deps
-5. **IPC boundary** — renderer никогда не получает секреты (токены, subscription URL)
+5. **IPC boundary** — Windows отделяет интерфейс от платформенных сервисов через IPC. На Android адаптеры выполняются в WebView; ограничения хранения описаны в [справке о данных](docs/DATA_HANDLING.md)
 
 ---
 
@@ -113,7 +113,7 @@ interface ProviderCapabilities {
 ### ConfigSource
 
 Ключевая абстракция: подписочный YAML получается через `ConfigSource`, не напрямую через API.
-Subscription URL **никогда не передаётся в renderer**.
+В provider-пути Windows ссылка подписки обрабатывается в main-процессе. Это не общее утверждение обо всех путях ввода и хранения: Android использует адаптеры WebView.
 
 ```typescript
 interface ConfigSource {
@@ -163,7 +163,7 @@ type RuleAction = 'proxy' | 'direct' | 'reject'
 |---|---|---|
 | processRules | 0 – 999 | Маршрутизация по приложениям |
 | userRules | 1000 – 1999 | Пользовательские правила (private CIDRs) |
-| providerRules | 2000 – 2999 | Правила провайдера (bundled bypass) |
+| providerRules | 2000 – 2999 | Встроенные правила провайдера |
 | geoRules | 3000 – 3999 | GeoIP/GeoSite правила |
 
 ### Pipeline
@@ -187,18 +187,15 @@ RoutingPolicy
 
 ### Режимы маршрутизации
 
-**full** — `defaultAction: 'proxy'`, весь трафик через VPN  
-**bypass** — `defaultAction: 'direct'`, только blocked → proxy (Russian bypass model)  
-**split** — `defaultAction: 'direct'`, выбранные процессы → proxy  
-**custom** — произвольная конфигурация  
+**full** — основной маршрут `proxy`.
+**bypass** — сценарий с прямыми российскими маршрутами и основным маршрутом `proxy`.
+**blocked** — выборочные списки и основной маршрут `direct`.
+**split** — на Windows правила процессов с основным маршрутом `direct`; Android применяет системный фильтр приложений и профиль с основным маршрутом `proxy`.
+**custom** — композиция выбранных сценариев и пользовательских правил.
 
-### Russia Bypass Model
+### Композиция маршрутов
 
-В отличие от China bypass (CN → direct, rest → proxy), Россия работает наоборот:
-- `defaultAction: 'direct'` — большинство трафика идёт напрямую
-- Заблокированные ресурсы (YouTube, Discord, Twitter, Instagram, AI-сервисы) → proxy
-
-60+ доменных правил из `packages/routing/src/data/bypass-rules.ts`.
+Актуальный выбор профиля выполняет `packages/core/src/routing/composeRoutingPolicy.ts`. Названия выше — технические идентификаторы. Низкоуровневая фабрика `createBypassPolicy()` имеет собственный `defaultAction: 'direct'`; её нельзя отождествлять с режимом интерфейса `bypass`. Встроенные правила находятся в `packages/routing/src/data/bypass-rules.ts` и сценариях routing-пакета. Итоговый маршрут определяется приоритетами правил и платформенными исключениями.
 
 ### Rule Providers
 
@@ -246,7 +243,7 @@ interface DnsProfile {
 
 | Пресет | Mode | DNS | Leak prevention |
 |---|---|---|---|
-| `secure` | fake-ip | DoH (Google + Cloudflare H3) | Полная |
+| `secure` | fake-ip | DoH, с учётом выбранного провайдера | Зависит от настроек и служебных резолверов |
 | `balanced` | fake-ip | DoH + UDP mix | Средняя |
 | `minimal` | redir-host | UDP | Нет |
 
@@ -348,9 +345,9 @@ Renderer               Main Process
 
 **Правила:**
 - Subscription URL никогда не пересекает IPC
-- Access token никогда не пересекает IPC
+- Windows provider-путь сохраняет токены в main-процессе; это не описывает Android WebView
 - Renderer получает только sanitized данные (PublicUser, SubscriptionInfo без URL)
-- Все входные данные от renderer проходят Zod-валидацию
+- IPC использует схемы валидации; покрытие конкретного обработчика следует проверять по реализации
 
 ---
 

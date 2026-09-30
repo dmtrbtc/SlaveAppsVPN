@@ -4,8 +4,8 @@
 
 | Инструмент | Версия |
 |---|---|
-| Node.js | ≥ 22.x |
-| pnpm | ≥ 9.x |
+| Node.js | 24.x для тестов с встроенным выполнением TypeScript; CI сборки также использует 22.x |
+| pnpm | 9.15.4 (поле packageManager) |
 | TypeScript | 5.7 (устанавливается локально) |
 | Python | ≥ 3.x (для node-gyp / нативных модулей) |
 | Visual Studio Build Tools | Windows (для electron rebuild) |
@@ -16,11 +16,11 @@
 
 ```bash
 # Клонировать репозиторий
-git clone https://github.com/your-org/slave-vpn-core.git
-cd slave-vpn-core
+git clone https://github.com/dmtrbtc/SlaveAppsVPN.git
+cd SlaveAppsVPN
 
 # Установить все зависимости (все пакеты monorepo)
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ---
@@ -41,7 +41,7 @@ pnpm dev
 
 ```bash
 # Сначала собрать зависимые packages
-pnpm build --filter=!@slave-vpn/windows
+pnpm --filter "./packages/**" build
 
 # Затем запустить windows app
 cd apps/windows
@@ -52,10 +52,10 @@ pnpm dev
 
 ```bash
 # Пример: собрать routing
-pnpm build --filter=@slave-vpn/routing
+pnpm --filter @slave-vpn/routing build
 
 # Собрать всё дерево зависимостей routing (включая deps)
-pnpm build --filter=@slave-vpn/routing...
+pnpm --filter @slave-vpn/routing... build
 
 # Собрать всё
 pnpm build
@@ -291,7 +291,7 @@ Mihomo binary должен быть помещён в:
 apps/windows/resources/bin/mihomo.exe
 ```
 
-Перед сборкой (не включён в репозиторий, скачивается отдельно).
+Компоненты загружаются через `pnpm download:binaries` с проверкой закреплённых контрольных сумм. Корневой `pnpm build` также запускает загрузку через prebuild. Не подменяйте бинарные файлы случайными сборками.
 
 ---
 

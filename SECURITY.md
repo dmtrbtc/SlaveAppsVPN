@@ -1,49 +1,36 @@
-# Security Policy
+# Безопасность Slave VPN
 
-## Supported Versions
+## Сообщить об уязвимости
 
-| Version | Supported |
-|---------|-----------|
-| 0.3.x   | ✅ Current |
-| < 0.3   | ❌ No longer supported |
+Отправьте сообщение через [GitHub Private Vulnerability Reporting](https://github.com/dmtrbtc/SlaveAppsVPN/security/advisories/new). Не открывайте публичный Issue с деталями уязвимости.
 
-## Reporting a Vulnerability
+Укажите версию и платформу, затронутый компонент, условия воспроизведения, ожидаемую границу защиты и наблюдаемый эффект. Используйте тестовые данные; не прикладывайте чужие ключи, действующие подписки и персональные данные. Сроки ответа и исправления зависят от воспроизводимости и влияния проблемы и заранее не гарантируются.
 
-Please **do not** open a public GitHub issue for security vulnerabilities.
+Если приватная форма недоступна, публично запросите только способ приватной связи, не раскрывая деталей.
 
-Report security issues via GitHub's private vulnerability reporting:
-https://github.com/dmtrbtc/SlaveAppsVPN/security/advisories/new
+## Версии
 
-We will acknowledge within 48 hours and aim to patch within 7 days for critical issues.
+Основная поддерживаемая линия — **0.3.x**. Для проверки текущего поведения используйте [последний стабильный выпуск](https://github.com/dmtrbtc/SlaveAppsVPN/releases/latest). Dev и старые версии могут отличаться; сообщение о проблеме в старой версии допустимо с указанием точной сборки. Обратный перенос исправлений в старые версии не гарантируется.
 
-## Security Design
+## Границы системы
 
-### IPC Architecture
-- All IPC channels use `contextIsolation: true` and `contextBridge`
-- No direct Electron API access from renderer
-- All invoke channels are Zod-validated in `handleIpc()`
-- No secrets (API tokens, keys) ever cross the IPC boundary in plaintext
+Репозиторий содержит Windows-клиент на Electron, Android-клиент на Capacitor/Kotlin, общие пакеты и интеграцию с mihomo. Личный кабинет, серверы подписки, DNS-резолверы и удалённые источники правил — отдельные системы.
 
-### Credential Storage
-- API tokens stored via `safeStorage` (OS-level encryption)
-- Subscription URLs / proxy keys stored via `safeStorage`
-- Nothing sensitive in `localStorage` or renderer state
+Подписки, ссылки импорта, названия узлов, ответы API и удалённые правила следует считать недоверенными входными данными. Учётные данные, конфигурации подключения, файлы приложения и управление сетевым ядром требуют защиты при пересечении границ между интерфейсом, платформенным слоем и ядром.
 
-### Network
-- Mihomo engine runs as a child process, not as a service
-- API secret (`--secret`) is generated randomly per session (crypto.randomBytes)
-- No hardcoded API endpoints in renderer code
+## Реализация и ограничения
 
-### Runtime Isolation
-- mihomo.exe runs with the app's user permissions (not elevated)
-- WinTUN driver loaded by mihomo automatically when present
-- Pre-flight checks prevent connecting with missing binaries
+- **Windows:** интерфейс отделён от main-процесса через preload/IPC с `contextIsolation`. Учётные данные кабинета и входные данные подписок сохраняются через Electron `safeStorage`. Это не означает шифрование всех настроек, журналов и рабочих файлов ядра.
+- **Права Windows:** дистрибутив запрашивает права администратора для TUN. Сетевое ядро запускается дочерним процессом; отдельная изолирующая песочница для него не заявляется.
+- **Android:** настройки, подписки и данные кабинета используют `localStorage` с зеркалом в Capacitor Preferences. Эти механизмы не эквивалентны шифрованию секретов в аппаратном хранилище ключей. Нативный VPN-сервис хранит данные, необходимые для восстановления подключения.
+- **Журналы:** перед отображением и экспортом применяется редактирование чувствительных полей. Оно не гарантирует удаления любых секретов; локальные рабочие данные и журналы ОС также требуют осторожного обращения.
+- **Бинарные файлы:** процесс сборки проверяет закреплённые SHA-256 загружаемых компонентов. Контрольная сумма дистрибутива и подпись издателя — разные проверки. Установщик Windows v0.3.0 не подписан; наличие файла на диске само по себе не подтверждает его целостность при запуске.
+- **Сеть:** маршрутизация, DNS и восстановление соединения зависят от конфигурации, ОС и оператора. Клиент не обещает абсолютную анонимность или отсутствие любых прямых соединений.
 
-### Binary Integrity
-- `resources/bin/` bundled by electron-builder, path verified at startup
-- Pre-flight validates `existsSync(binaryPath)` before every connect
+[Подробнее об обработке данных](docs/DATA_HANDLING.md).
 
-### Known Limitations
-- Code signing not yet implemented (EV cert pending)
-- No automatic binary hash verification (planned for v0.4.0)
-- Mihomo engine output not sandboxed (same trust level as main process)
+## Оценка сообщений и изменения кода
+
+Существенны воспроизводимые нарушения границ доверия: раскрытие секретов, несанкционированный доступ к файлам или управлению ядром, выполнение кода через внешние данные, ошибки проверки обновлений и изменения маршрутов без предусмотренного действия пользователя.
+
+Описанные ограничения не являются автоматическим основанием отклонять сообщение. Влияние оценивается по достижимости и последствиям в конкретной версии. Этот документ не устанавливает новых исключений для проверок и не заменяет аудит безопасности.

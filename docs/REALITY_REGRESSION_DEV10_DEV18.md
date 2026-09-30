@@ -1,5 +1,7 @@
 # REALITY regression investigation: dev.10 to dev.18
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Date: 2026-09-23. Worktree: `codex/windows-regression`, base `a0016b8`.
 Status: owner connection failure remains unresolved; Stable gate is closed.
 

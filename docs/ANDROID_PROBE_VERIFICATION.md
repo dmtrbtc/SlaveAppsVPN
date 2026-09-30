@@ -1,5 +1,7 @@
 # Android CoreFacade probe verification
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Date: 2026-08-26. Branch: `codex/core-facade-probe-all`.
 
 ## Tested artifact

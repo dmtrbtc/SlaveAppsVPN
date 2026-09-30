@@ -1,5 +1,7 @@
 # Runtime Packaging Postmortem — v0.3.0-rc1
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 **Date:** 2026-05-18  
 **Severity:** P0 — packaged app launched but VPN connect always failed  
 **Symptom:** "Mihomo binary not found. Please reinstall application" on every connect()

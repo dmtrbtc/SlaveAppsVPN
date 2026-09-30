@@ -1,5 +1,7 @@
 # Android Core config boundary — config-срез P0.5
 
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
+
 Дата: 2026-08-30. База: `main` после merge PR #26 (`64eeef6`).
 Ветка: `codex/android-core-config-boundary`.
 
@@ -51,7 +53,7 @@ APK: `apps/android/android/app/build/outputs/apk/debug/app-debug.apk`.
 - установка через `adb install -r` успешна, данные dev-приложения и подписки
   сохранены;
 - dev-приложение запустилось без crash/fatal и показало состояние «Защищено»;
-- режим: «Обход блокировок», выбранный узел: `Slave-EE`;
+- технический режим: `bypass`, выбранный узел: `Slave-EE`;
 - native service сообщил `connected · mihomo v1.19.30`;
 - runtime-логи подтвердили DNS-resolve, успешную REALITY-аутентификацию,
   активные соединения через `SLAVE-SELECT[Slave-EE]` и живые health-checks;

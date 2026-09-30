@@ -23,9 +23,7 @@
 - [x] ~110 new tests across parsers, DNS compiler, balancer/probing,
       API client, state-sync, Kotlin
 
-Known limitation: Windows installer is unsigned (owner decision — no paid
-certificate; free signing exists only for open source). SmartScreen warns
-on first install until reputation builds.
+Ограничение v0.3.0: установщик Windows не имеет подписи издателя. SmartScreen может показать предупреждение. Срок появления подписи не установлен.
 
 ## v0.3.x (patch line)
 

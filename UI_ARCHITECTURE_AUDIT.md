@@ -1,4 +1,6 @@
 # UI Architecture Audit — SLAVE VPN Renderer
+
+> Исторический инженерный материал. Версии, проверки и ограничения относятся к описанному этапу; это не руководство для текущего выпуска.
 **Date:** 2026-05-15  
 **Scope:** `apps/windows/src/renderer/src/**`  
 **Status:** Pre-stabilization. 7 screens implemented. Real IPC partially wired.
