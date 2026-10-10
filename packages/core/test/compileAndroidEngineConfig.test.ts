@@ -41,16 +41,32 @@ test('Android passes explicit node compatibility to the shared compiler and rest
   const input = { ...base, proxies: [{ ...proxy, securityType: 'reality', extra: {
     ...proxy.extra, servername: 'cover.invalid', flow: 'xtls-rprx-vision',
     'reality-opts': { 'public-key': 'synthetic', 'short-id': 'a19c',
-      'mldsa65-verify': 'synthetic-pqv', 'support-x25519mlkem768': true,
+      'mldsa65-verify': 'A'.repeat(2603), 'support-x25519mlkem768': true,
       'fragment-client-hello': true },
   } }] }
   const normal = await compileAndroidEngineConfig(input)
   const compatible = await compileAndroidEngineConfig({ ...input, realityCompatibilityNode: 'node-a' })
-  assert.match(normal.config, /mldsa65-verify: synthetic-pqv/)
+  assert.match(normal.config, new RegExp(`mldsa65-verify: ${'A'.repeat(2603)}`))
   assert.doesNotMatch(compatible.config, /mldsa65-verify/)
   assert.match(compatible.config, /support-x25519mlkem768: false/)
   assert.match(compatible.config, /public-key: synthetic/)
   assert.equal((await compileAndroidEngineConfig({ ...input, realityCompatibilityNode: null })).config, normal.config)
+})
+
+test('Android strips a damaged pqv, keeps the node connectable and reports a warning', async () => {
+  const damaged = { ...base, proxies: [{ ...proxy, name: 'orel', securityType: 'reality', extra: {
+    ...proxy.extra, servername: 'cover.invalid', flow: 'xtls-rprx-vision',
+    'reality-opts': { 'public-key': 'synthetic', 'short-id': 'a19c',
+      'mldsa65-verify': 'B'.repeat(2601), 'support-x25519mlkem768': true,
+      'fragment-client-hello': true },
+  } }] }
+  const result = await compileAndroidEngineConfig(damaged)
+  assert.doesNotMatch(result.config, /mldsa65-verify/)
+  assert.match(result.config, /public-key: synthetic/)
+  assert.match(result.config, /short-id: a19c/)
+  assert.match(result.config, /support-x25519mlkem768: true/)
+  assert.ok(result.warnings.some((warning) => warning.includes('orel') && warning.includes('2601')),
+    `expected a damaged-pqv warning, got: ${JSON.stringify(result.warnings)}`)
 })
 
 test('Android compiler falls back to secure DNS for invalid persisted presets', async () => {

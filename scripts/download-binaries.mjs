@@ -289,6 +289,20 @@ async function processEngine(name, spec) {
       log(`✓ ${name} — already present (${bytesHuman(size)}, ${integrity})`)
       return { name, status: 'skipped', sha: actualSha256 }
     }
+    // The upstream zip does NOT contain the in-repo patches (patches/mihomo/*.patch).
+    // If the installed binary carries them (it is a local/CI -slave build),
+    // silently replacing it with the stock binary would give dev runs a core
+    // without mldsa65/hybrid support while everything looks fine. Refuse and
+    // point at the build script; --force-stock-mihomo opts in.
+    if (name === 'mihomo' && !args.includes('--force-stock-mihomo')) {
+      const bytes = readFileSync(outPath)
+      if (bytes.includes(Buffer.from('mldsa65')) || bytes.includes(Buffer.from('-slave.'))) {
+        log(`! ${name} — installed binary is the PATCHED local build (does not match upstream ${spec.version}); keeping it`)
+        log(`    to overwrite with the stock upstream binary run with --force-stock-mihomo`)
+        log(`    to rebuild the patched core run scripts/build-mihomo-windows.ps1`)
+        return { name, status: 'skipped-patched', sha: actualSha256 }
+      }
+    }
     log(`! ${name} — installed binary checksum does not match ${spec.version}; re-downloading`)
   }
 

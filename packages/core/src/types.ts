@@ -98,6 +98,7 @@ export type RuntimeEventKind =
   | 'sleep.suspend'
   | 'sleep.resume'
   | 'proxy.reality_error'
+  | 'proxy.mldsa65_sanitized'
   | 'proxy.flow_error'
   | 'proxy.tls_error'
   | 'proxy.dns_error'

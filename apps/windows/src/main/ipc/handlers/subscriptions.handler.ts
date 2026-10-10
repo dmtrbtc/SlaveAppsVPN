@@ -16,7 +16,7 @@ import { getConfigSourceService } from '../../services/impl/ConfigSourceService'
 import { getSubscriptionAggregator } from '../../services/SubscriptionAggregatorService'
 import { getSubscriptionScheduler } from '../../services/SubscriptionScheduler'
 import { parseProxyLink } from '../../services/impl/sources/SingleProxySource'
-import { isProxyUri, normalizeProxyUriInput } from '@slave-vpn/config'
+import { describeDamagedMldsa65Verify, isProxyUri, normalizeProxyUriInput } from '@slave-vpn/config'
 import { getLogger } from '../../logger'
 import { sendToRenderer } from '../../window'
 
@@ -54,6 +54,7 @@ function detectClipboardLink(text: string): ClipboardDetectResult {
 
   try {
     const parsed = parseProxyLink(uri)
+    const pqvWarning = describeDamagedMldsa65Verify(parsed)
     return {
       found: true,
       scheme,
@@ -63,6 +64,7 @@ function detectClipboardLink(text: string): ClipboardDetectResult {
         protocol: parsed.type,
         transport: parsed.transport ?? 'tcp',
         security: parsed.securityType ?? 'none',
+        ...(pqvWarning ? { warnings: [pqvWarning] } : {}),
       },
     }
   } catch {

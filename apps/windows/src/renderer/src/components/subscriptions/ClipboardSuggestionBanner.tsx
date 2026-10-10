@@ -50,6 +50,11 @@ export function ClipboardSuggestionBanner() {
                 {suggestion.preview?.security && suggestion.preview.security !== 'none' &&
                   ` · ${suggestion.preview.security}`}
               </p>
+              {suggestion.preview?.warnings?.map((warning) => (
+                <p key={warning} className="text-[11px] leading-snug text-amber-400 mt-0.5">
+                  ⚠ {warning}
+                </p>
+              ))}
             </div>
             <button
               type="button"

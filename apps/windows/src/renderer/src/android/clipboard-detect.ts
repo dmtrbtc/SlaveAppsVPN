@@ -1,4 +1,4 @@
-import { parseProxyUriSafe } from '@slave-vpn/config'
+import { describeDamagedMldsa65Verify, parseProxyUriSafe } from '@slave-vpn/config'
 
 /**
  * Browser-side clipboard detector. Returns the same shape as Windows IPC's
@@ -19,7 +19,7 @@ interface ClipboardDetectResult {
   found: boolean
   scheme?: string
   input?: string
-  preview?: { name: string; protocol: string; transport: string; security: string }
+  preview?: { name: string; protocol: string; transport: string; security: string; warnings?: string[] }
 }
 
 export async function detectClipboardLink(): Promise<ClipboardDetectResult> {
@@ -49,6 +49,7 @@ export async function detectClipboardLink(): Promise<ClipboardDetectResult> {
         const security = extra['tls'] === true
           ? (typeof extra['security'] === 'string' && extra['security'] === 'reality' ? 'reality' : 'tls')
           : 'none'
+        const pqvWarning = describeDamagedMldsa65Verify(parsed)
         return {
           found: true,
           scheme,
@@ -58,6 +59,7 @@ export async function detectClipboardLink(): Promise<ClipboardDetectResult> {
             protocol: parsed.type,
             transport,
             security,
+            ...(pqvWarning ? { warnings: [pqvWarning] } : {}),
           },
         }
       }

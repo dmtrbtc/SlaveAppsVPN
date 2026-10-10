@@ -9,7 +9,7 @@ const { applyRealityCompatibility } = require('../dist/cjs/generator/realityComp
 const proxy = (name: string) => ({ name, type: 'vless', server: 'example.invalid', port: 443,
   uuid: '00000000-0000-4000-8000-000000000000', tls: true, servername: 'cover.invalid',
   flow: 'xtls-rprx-vision', 'client-fingerprint': 'chrome',
-  'reality-opts': { 'public-key': 'synthetic', 'short-id': 'a19c', 'mldsa65-verify': 'synthetic-pqv',
+  'reality-opts': { 'public-key': 'synthetic', 'short-id': 'a19c', 'mldsa65-verify': 'A'.repeat(2603),
     'support-x25519mlkem768': true, 'fragment-client-hello': true } })
 const context = { subscriptionYaml: yaml.dump({ proxies: [proxy('chosen'), proxy('other')] }),
   vpnMode: 'full', apiPort: 9090, apiSecret: 'test', utlsFingerprint: 'randomized',

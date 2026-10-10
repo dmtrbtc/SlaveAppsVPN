@@ -137,6 +137,10 @@ export async function compileAndroidEngineConfig(
     mixedPort: 7890,
   }
 
+  // Damaged pqv values are stripped by the shared generator so one bad link
+  // can't kill the whole config; surface the affected nodes as warnings.
+  const mldsa65Warnings: string[] = []
+
   const generated = buildEngineConfig({
     subscriptionYaml,
     vpnMode: input.vpnMode,
@@ -144,6 +148,14 @@ export async function compileAndroidEngineConfig(
     settings: generatorSettings,
     utlsFingerprint: input.utlsFingerprint ?? 'randomized',
     realityCompatibilityNode: input.realityCompatibilityNode ?? null,
+    onMldsa65Sanitized: (nodes) => {
+      for (const node of nodes) {
+        mldsa65Warnings.push(
+          `узел ${node.name}: ключ проверки ML-DSA (pqv) повреждён (${node.length} символов вместо 2603) — ` +
+            'верификация отключена, классическая REALITY-аутентификация сохранена; запросите новую ссылку',
+        )
+      }
+    },
     apiPort: 9090,
     apiSecret: input.apiSecret,
     dnsProfile: applyAndroidDnsPolicy(sharedDnsProfile, {
@@ -197,6 +209,7 @@ export async function compileAndroidEngineConfig(
     warnings: [
       ...(input.aggregationWarnings ?? []),
       ...generated.warnings,
+      ...mldsa65Warnings,
       ...composed.warnings,
       ...geositeWarnings,
       ...(composed.valid ? [] : composed.errors.map((error) => `routing: ${error}`)),

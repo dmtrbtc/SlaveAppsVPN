@@ -1,5 +1,6 @@
 import yaml from 'js-yaml'
 import { applyRealityCompatibility } from './realityCompatibility'
+import { sanitizeInvalidMldsa65Verify, type Mldsa65SanitizedNode } from './sanitizeRealityMldsa65'
 import type { VPNMode } from '@slave-vpn/shared'
 import type { NormalizedPolicy } from '@slave-vpn/routing'
 import { MihomoRuleCompiler } from '@slave-vpn/routing'
@@ -72,6 +73,10 @@ export interface ConfigGenerationContext {
   // explicitly, the value is forced onto every proxy.
   utlsFingerprint?: string
   realityCompatibilityNode?: string | null
+  // Called when one or more REALITY nodes carried a damaged ML-DSA-65 verify
+  // key (pqv) that the generator had to strip to keep the config loadable.
+  // Platform runtimes use it to surface a user-facing warning.
+  onMldsa65Sanitized?: (nodes: ReadonlyArray<Mldsa65SanitizedNode>) => void
 }
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
@@ -115,6 +120,14 @@ const ruleCompiler = new MihomoRuleCompiler()
 export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const parser = new SubscriptionParser()
   const profile = parser.parse(ctx.subscriptionYaml)
+
+  // A single damaged pqv must not abort the whole engine load (see
+  // sanitizeInvalidMldsa65Verify) — strip it before anything else looks at the
+  // proxies, so rotation/compatibility and the emitted YAML see a clean set.
+  const { proxies: sanitizedProxies, sanitized: mldsa65Sanitized } =
+    sanitizeInvalidMldsa65Verify(profile.proxies)
+  profile.proxies = sanitizedProxies
+  if (mldsa65Sanitized.length > 0) ctx.onMldsa65Sanitized?.(mldsa65Sanitized)
 
   // uTLS rotation — same logic as the sing-box compiler. Mihomo passes the
   // proxies through to its YAML output untouched, so we rewrite the

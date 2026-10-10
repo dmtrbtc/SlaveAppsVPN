@@ -9,6 +9,9 @@ export type EngineEventMap = {
   stopped: { reason: StopReason; exitCode: number | null }
   logLine: { level: 'debug' | 'info' | 'warn' | 'error'; message: string }
   reloadCompleted: { type: HotReloadType }
+  /** REALITY nodes whose damaged ML-DSA-65 verify key (pqv) was stripped at
+   *  config generation so the whole config stays loadable for the core. */
+  mldsa65Sanitized: { nodes: ReadonlyArray<{ name: string; length: number }> }
 }
 
 export type EngineEventName = keyof EngineEventMap

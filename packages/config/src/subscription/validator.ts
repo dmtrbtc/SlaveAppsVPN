@@ -25,7 +25,7 @@ const REALITY_SID_RE = /^(?:[0-9a-fA-F]{2}){0,8}$/
 
 // ML-DSA-65 public keys are 1952 bytes. Xray share links carry them as
 // unpadded base64url, which is exactly 2603 characters.
-const REALITY_MLDSA65_VERIFY_RE = /^[A-Za-z0-9_-]{2603}$/
+export const REALITY_MLDSA65_VERIFY_RE = /^[A-Za-z0-9_-]{2603}$/
 
 function validateVlessReality(proxy: ProxyEntry): ValidationIssue[] {
   const issues: ValidationIssue[] = []

@@ -14,7 +14,7 @@ index 70c7bc7..d68d6aa 100644
  
  	SupportX25519MLKEM768 bool `proxy:"support-x25519mlkem768,omitempty"`
  }
-@@ -21,6 +22,13 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
+@@ -21,6 +22,16 @@ func (o RealityOptions) Parse() (*tlsC.RealityConfig, error) {
  	if o.PublicKey != "" {
  		config := new(tlsC.RealityConfig)
  		config.SupportX25519MLKEM768 = o.SupportX25519MLKEM768
@@ -22,7 +22,10 @@ index 70c7bc7..d68d6aa 100644
 +			var decodeErr error
 +			config.Mldsa65Verify, decodeErr = base64.RawURLEncoding.DecodeString(o.Mldsa65Verify)
 +			if decodeErr != nil || len(config.Mldsa65Verify) != 1952 {
-+				return nil, errors.New("invalid REALITY ML-DSA-65 verify key")
++				// A damaged pqv (e.g. a chat-mangled share link) must degrade
++				// only this node's extra verification — never abort the whole
++				// config load and take every other node down with it.
++				config.Mldsa65Verify = nil
 +			}
 +		}
  

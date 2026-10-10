@@ -42,6 +42,9 @@ export type {
   MihomoRuleProvider,
   MihomoRoutingExtras,
 } from './generator/ConfigGenerator'
+export { sanitizeInvalidMldsa65Verify, describeDamagedMldsa65Verify } from './generator/sanitizeRealityMldsa65'
+export type { Mldsa65SanitizedNode } from './generator/sanitizeRealityMldsa65'
+export { REALITY_MLDSA65_VERIFY_RE } from './subscription/validator'
 
 // Subscription ingestion subsystem
 export type {

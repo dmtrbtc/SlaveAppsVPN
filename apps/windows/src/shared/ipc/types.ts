@@ -394,6 +394,7 @@ export type RuntimeEventKind =
   | 'sleep.suspend'
   | 'sleep.resume'
   | 'proxy.reality_error'
+  | 'proxy.mldsa65_sanitized'
   | 'proxy.flow_error'
   | 'proxy.tls_error'
   | 'proxy.dns_error'
@@ -459,6 +460,8 @@ export interface NodePreview {
   protocol: string
   transport: string
   security: string
+  /** Non-blocking import-time notices (e.g. damaged REALITY pqv key). */
+  warnings?: string[]
 }
 
 export interface ConfigSourceValidateResult {

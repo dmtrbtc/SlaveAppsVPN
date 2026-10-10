@@ -4,6 +4,31 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- A VLESS REALITY link with a damaged `pqv` (the ML-DSA-65 verify key, e.g.
+  truncated to 2601 instead of 2603 characters in transit) no longer aborts
+  the whole engine config load — the generator strips the damaged
+  verification key for that node, keeps classical REALITY authentication
+  (public-key/short-id) plus the hybrid ML-KEM share, and reports the node
+  through a `proxy.mldsa65_sanitized` event (Windows) or a compile warning
+  (Android). Verified end-to-end with the field-damaged Orel666 links:
+  official Xray 26.9.30 rejects their `pqv` at config load, and a server with
+  `mldsa65Seed` accepts our client without the verification key.
+- Clipboard import now warns when a pasted key carries a damaged `pqv`
+  (Windows suggestion banner and the Android clipboard detector).
+- Node quarantine events distinguish dial-level silence ("сервер узла не
+  отвечает — со стороны приложения ошибок нет") from REALITY protocol errors.
+
+### Changed
+
+- Mihomo patch 0001 degrades a malformed `mldsa65-verify` to plain
+  verification for that node instead of rejecting the whole config (takes
+  effect with the next core rebuild; the generator-side sanitize already
+  covers shipped binaries).
+- `download-binaries.mjs` no longer silently overwrites a locally patched
+  `mihomo.exe` with the stock upstream binary; `--force-stock-mihomo` opts in.
+
 ## [0.2.41-dev.18] — 2026-09-20
 
 ### Added

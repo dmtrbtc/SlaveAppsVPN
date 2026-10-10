@@ -314,6 +314,20 @@ export class RuntimeServiceImpl implements RuntimeService {
       }
     })
 
+    // A damaged pqv must never again kill the whole engine: the generator
+    // strips it (keeping classical REALITY auth) and tells us which nodes were
+    // affected so the user learns the link — not the app — is broken.
+    this.manager.on('mldsa65Sanitized', ({ nodes }) => {
+      const names = nodes.map((n) => `${n.name} (${n.length} символов вместо 2603)`).join(', ')
+      const message =
+        `Повреждён ключ проверки ML-DSA (pqv) у узла(ов): ${names}. ` +
+        'Дополнительная верификация отключена, классическая REALITY-аутентификация сохранена. ' +
+        'Запросите у продавца новую ссылку на ключ.'
+      getLogger().warn({ from: 'engine' }, message)
+      sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT,
+        makeEvent('proxy.mldsa65_sanitized', 'warning', message, { nodes: nodes.map((n) => n.name) }))
+    })
+
     // Subscribe to Mihomo log output: forward to pino + classify for IPC events.
     // ProcessManager now parses the actual Mihomo level from the structured log line.
     this.manager.on('logLine', ({ level, message }) => {

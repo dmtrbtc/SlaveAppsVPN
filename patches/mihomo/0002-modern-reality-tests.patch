@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..5dded87
 --- /dev/null
 +++ b/adapter/outbound/reality_test.go
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,34 @@
 +package outbound
 +
 +import (
@@ -26,12 +26,15 @@ index 0000000..5dded87
 +	}
 +}
 +
-+func TestRealityOptionsRejectsMalformedMldsa65Verify(t *testing.T) {
-+	_, err := (RealityOptions{
++func TestRealityOptionsDegradesMalformedMldsa65Verify(t *testing.T) {
++	config, err := (RealityOptions{
 +		PublicKey:     strings.Repeat("A", 43),
 +		Mldsa65Verify: "too-short",
 +	}).Parse()
-+	if err == nil {
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(config.Mldsa65Verify) != 0 {
 +		t.Fatal("malformed ML-DSA-65 key accepted")
 +	}
 +}

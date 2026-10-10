@@ -437,6 +437,7 @@ export class MihomoEngine implements VPNEngine {
       console.log(`[MihomoEngine] geosite categories available: ${availableGeoSites.length}`)
     }
 
+    const mldsa65Sanitized: Array<{ name: string; length: number }> = []
     const yaml = generateMihomoConfig({
       subscriptionYaml: profile.subscriptionYaml,
       ...(profile.selectedProxy !== undefined ? { selectedProxy: profile.selectedProxy } : {}),
@@ -450,8 +451,12 @@ export class MihomoEngine implements VPNEngine {
       ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
       ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
       ...(profile.realityCompatibilityNode !== undefined ? { realityCompatibilityNode: profile.realityCompatibilityNode } : {}),
+      onMldsa65Sanitized: (nodes) => { mldsa65Sanitized.push(...nodes) },
     })
     await fs.writeFile(this.configPath(), yaml, 'utf-8')
+    if (mldsa65Sanitized.length > 0) {
+      this.events.emit('mldsa65Sanitized', { nodes: mldsa65Sanitized })
+    }
 
     // Do not log config contents: subscription credentials and proxy identities
     // can be present even when the API secret itself is obfuscated.

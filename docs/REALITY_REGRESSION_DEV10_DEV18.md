@@ -211,3 +211,56 @@ Conclusions:
 
 No commits, releases, or config changes were made; the /32 probe route and
 packet filters were removed after testing; large temporary binaries deleted.
+
+## Follow-up 2026-10-05: damaged `pqv` in distributed links + app hardening
+
+New evidence (key `Orel666-Lupus`, and the previously working `Orel666-orel`
+link re-issued by the seller):
+
+1. Both share links carry a **byte-identical `pqv` of 2601 characters**.
+   A valid ML-DSA-65 verify key is exactly 2603 chars (1952 bytes, unpadded
+   base64url); 2601 is not even structurally valid base64 (len % 4 == 1).
+   Measured programmatically from both links — not a transcription artifact.
+2. Official Xray-core **26.9.30 rejects the value at config load**
+   (`invalid "mldsa65Verify"`), so the seller's links cannot run with ML-DSA
+   verification in ANY current official client either (Hiddify works because
+   it ignores `pqv` entirely).
+3. The patched mihomo (v1.19.30-slave.1) hard-failed the ENTIRE config on
+   such a value ("proxy 0: invalid REALITY ML-DSA-65 verify key") — one
+   pasted link with a damaged pqv took down every other node. Confirmed via
+   `mihomo -t` with the real string.
+4. Local Xray 26.9.9/26.9.30 harness (loopback, big camouflage cert ≥3500
+   bytes as the docs require): a server **with `mldsa65Seed` accepts a client
+   WITHOUT `mldsa65-verify`** (204 ×3, `REALITY Authentication: true`,
+   X25519MLKEM768 negotiated). ML-DSA is purely an extra certificate-extension
+   signature, so dropping a damaged key keeps classical REALITY auth fully
+   functional. (Earlier all-clients-fail harness results were an artifact of
+   a too-small camouflage target certificate.)
+5. Live monitor (45s interval, 22 min, both UUIDs, official Xray 26.9.30
+   client via the EE exit): the server stonewalled every REALITY handshake
+   attempt the whole window — the previously documented silent-window
+   behavior continues and is independent of the client.
+
+Changes shipped in this repo (fix, not workaround):
+
+- `packages/config` generator now strips a damaged `mldsa65-verify` (keeping
+  public-key/short-id/hybrid/fragment) and reports affected nodes through
+  `onMldsa65Sanitized`; Windows surfaces a `proxy.mldsa65_sanitized` runtime
+  event, Android adds a warning to the compile result; clipboard import
+  preview shows a damaged-pqv notice (Windows banner + Android detector).
+- mihomo patch 0001 softened: a malformed key degrades that node's extra
+  verification instead of aborting the whole config load (defense in depth;
+  requires a core rebuild via `scripts/build-mihomo-windows.ps1` /
+  `build-clashbox.ps1` to take effect — no local Go toolchain, CI picks it
+  up on the next release build).
+- Node quarantine events now distinguish dial-level silence ("сервер узла не
+  отвечает — со стороны приложения ошибок нет") from REALITY protocol errors.
+- `download-binaries.mjs` refuses to silently overwrite a locally patched
+  mihomo.exe with the stock upstream binary (`--force-stock-mihomo` opts in).
+
+Seller-side recommendations (Orel666): the panel distributes links with a
+truncated `pqv` (2601 instead of 2603 chars) — regenerate/fix link output;
+the auth-path SNI continues to have minutes-scale silent windows while the
+fallback path answers (cf. 3x-ui issues #5922/#5943 on Xray 26.7+ — check
+the panel's core version, `minClientVer`, and server logs during silent
+windows).

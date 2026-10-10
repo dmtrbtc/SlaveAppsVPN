@@ -51,12 +51,19 @@ export class NodeHealthManager {
         { node: nodeName, failures: record.failures, quarantineMs, errorKinds: record.errorKinds },
         'NodeHealth: quarantining node'
       )
+      // Dial-level silence (timeouts/resets with no protocol error) points at
+      // the server itself not answering — say so explicitly instead of a
+      // generic REALITY error that reads like an app/key problem. Field-proven
+      // pattern: the node comes back by itself minutes later.
+      const serverSilent = errorKind === 'proxy.timeout' || errorKind === 'proxy.connection_reset'
       sendToRenderer(IpcChannel.EVENT_RUNTIME_EVENT, {
         id: crypto.randomUUID(),
-        kind: 'proxy.reality_error',
+        kind: serverSilent ? 'proxy.timeout' : 'proxy.reality_error',
         severity: 'warning',
         timestamp: now,
-        message: `Узел ${nodeName} помещён в карантин на ${Math.round(quarantineMs / 1000)}с (${record.failures} ошибок)`,
+        message: serverSilent
+          ? `Сервер узла ${nodeName} не отвечает (${record.failures} таймаутов подряд) — со стороны приложения ошибок нет. Узел в карантине ${Math.round(quarantineMs / 1000)}с; попробуйте другой узел или повторите позже`
+          : `Узел ${nodeName} помещён в карантин на ${Math.round(quarantineMs / 1000)}с (${record.failures} ошибок)`,
         metadata: { node: nodeName, failures: record.failures, errorKind },
       })
     }
