@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useVpnStore, selectVpnTraffic } from '../stores/vpn.store'
+import { isAppVisible } from '../android/app-visibility'
 
 export interface TrafficSample {
   ts: number
@@ -53,10 +54,13 @@ export function useTrafficHistory(opts: UseTrafficHistoryOptions = {}): {
     )
 
     // Fallback ticker — paint a sample even when the engine is silent,
-    // so the chart decays back to zero instead of freezing.
+    // so the chart decays back to zero instead of freezing. Skipped while the
+    // app is hidden: real traffic updates are gated too, and a backgrounded
+    // 1s setState loop would keep re-rendering the WebView for nothing.
     let timer: ReturnType<typeof setInterval> | null = null
     if (fallback > 0) {
       timer = setInterval(() => {
+        if (!isAppVisible()) return
         const now = Date.now()
         const last = buffer.current[buffer.current.length - 1]
         // Only synthesise if no real sample arrived in the last fallback window

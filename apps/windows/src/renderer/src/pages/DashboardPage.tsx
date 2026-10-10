@@ -15,6 +15,7 @@ import { SubscriptionExpiryBanner } from '../components/subscriptions/Subscripti
 import { Badge } from '../components/ui/badge'
 import { Button } from '../components/ui/button'
 import { StatTile } from '../components/ui/stat-tile'
+import { isAppVisible } from '../android/app-visibility'
 import {
   useVpnStore,
   selectVpnStatus,
@@ -49,7 +50,9 @@ function UptimeClock({ connectedAt }: { connectedAt: number | null }) {
   const [, tick] = useState(0)
   useEffect(() => {
     if (!connectedAt) return
-    const t = setInterval(() => tick(n => n + 1), 1000)
+    // Re-render only while the app is on screen — a backgrounded 1s render
+    // loop keeps the WebView out of deep idle for no visible benefit.
+    const t = setInterval(() => { if (isAppVisible()) tick(n => n + 1) }, 1000)
     return () => clearInterval(t)
   }, [connectedAt])
   return <>{connectedAt ? formatUptime(connectedAt) : '—'}</>

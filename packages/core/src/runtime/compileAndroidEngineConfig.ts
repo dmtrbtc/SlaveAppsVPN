@@ -135,6 +135,13 @@ export async function compileAndroidEngineConfig(
     dnsOverHttps: dohUrl,
     fallbackDns: ['8.8.8.8', '1.1.1.1'],
     mixedPort: 7890,
+    // Battery: a 15s TCP keep-alive on every proxied socket keeps the cellular
+    // modem from ever idling — 30s halves the wakeups at a minor reconnect-latency
+    // cost (network hand-offs still trigger an instant full reconnect natively).
+    keepAliveIntervalSeconds: 30,
+    // Battery: 'info' logs every connection open/close across the JNI boundary;
+    // 'warning' keeps the diagnostics ring buffer for real problems only.
+    logLevel: 'warning',
   }
 
   // Damaged pqv values are stripped by the shared generator so one bad link

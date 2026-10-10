@@ -103,6 +103,18 @@ test('Android split stays proxy-default after removing legacy androidRouting', a
   assert.doesNotMatch(result.config, /MATCH,DIRECT/)
 })
 
+test('Android config is battery-tuned: keep-alive 30s + warning log-level', async () => {
+  const result = await compileAndroidEngineConfig(base)
+
+  // A 15s TCP keep-alive on every proxied socket keeps the cellular modem from
+  // idling; 30s halves the wakeups while native network monitoring still
+  // reconnects instantly on hand-offs.
+  assert.match(result.config, /^keep-alive-interval: 30$/m)
+  // 'info' logs every connection open/close across JNI — continuous CPU churn
+  // proportional to traffic; Android keeps the ring buffer for real problems.
+  assert.match(result.config, /^log-level: warning$/m)
+})
+
 test('full mode does not read geosite categories when no policy needs them', async () => {
   let reads = 0
   await compileAndroidEngineConfig({

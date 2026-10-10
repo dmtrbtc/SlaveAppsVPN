@@ -44,6 +44,7 @@ import {
 import { createAndroidDataAdapters, type AndroidDataAdapters } from './adapters'
 import { getCachedGeoSiteCategories, prefetchAndroidGeoSiteCategories } from './geosite-categories'
 import { getSlaveVpnPlugin } from './slave-vpn-plugin'
+import { isAppVisible } from './app-visibility'
 
 // Build the RoutingScenarioInfo[] the renderer expects from core scenario
 // metadata + the currently enabled set (persisted in AppSettings.enabledScenarios).
@@ -511,6 +512,11 @@ function startRuntimePolling(): void {
     message: 'Поток runtime-событий: опрос ядра каждые 2с (mihomo Alpha без шины событий — fallback)',
   })
   const tick = async (): Promise<void> => {
+    // Skip while the app is backgrounded/screen-off: the WebView keeps running
+    // under the VPN foreground service, and this 2s poll (status + logs + a
+    // full connections snapshot) would otherwise hammer the core around the
+    // clock (battery drain).
+    if (!isAppVisible()) return
     // Status diff → state / error / active-node events.
     try {
       const status = await readNativeStatus()
@@ -935,7 +941,7 @@ export function installAndroidBridge(): void {
         let lastError: string | null = null
         let stopped = false
         const tick = async (): Promise<void> => {
-          if (stopped) return
+          if (stopped || !isAppVisible()) return
           const status = await core.vpn.getStatus()
           if (status.state !== lastState || status.lastError !== lastError) {
             lastState = status.state
@@ -955,7 +961,7 @@ export function installAndroidBridge(): void {
         // touch the core (this is what forced an early gojni load in rc6/rc7).
         let stopped = false
         const tick = async (): Promise<void> => {
-          if (stopped) return
+          if (stopped || !isAppVisible()) return
           try { cb(await core.vpn.getTraffic()) } catch { /* ignore */ }
         }
         void tick()
@@ -986,7 +992,7 @@ export function installAndroidBridge(): void {
         }
         if (currentSelectedProxy) emit(currentSelectedProxy)
         const tick = async (): Promise<void> => {
-          if (stopped) return
+          if (stopped || !isAppVisible()) return
           try {
             const { status } = await SlaveVpn.getStatus()
             emit(status?.activeProxy ?? null)

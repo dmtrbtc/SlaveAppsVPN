@@ -18,6 +18,18 @@ export interface GeneratorSettings {
   fallbackDns: string[]
   mixedPort: number
   splitTunnelProcesses?: string[]
+  /**
+   * TCP keep-alive probe interval for mihomo's connections (seconds). Default 15
+   * keeps desktop reconnects snappy; mobile platforms raise it (e.g. 30) — a 15s
+   * probe on every socket prevents the cellular modem from ever idling.
+   */
+  keepAliveIntervalSeconds?: number
+  /**
+   * Core log verbosity. Default 'info' logs every connection open/close; mobile
+   * platforms use 'warning' — info-level lines are forwarded across JNI and are
+   * continuous CPU churn proportional to traffic.
+   */
+  logLevel?: 'debug' | 'info' | 'warning' | 'error' | 'silent'
 }
 
 export interface MihomoRuleProvider {
@@ -207,7 +219,7 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     // setting would be ineffective.
     ipv6: ctx.dnsProfile ? resolveDnsIpv6Enabled(ctx.dnsProfile) : false,
     mode: 'rule',
-    'log-level': 'info',
+    'log-level': ctx.settings.logLevel ?? 'info',
     'unified-delay': true,
     'tcp-concurrent': true,
     // TCP keep-alive on mihomo's connections (seconds). Without it, sockets that
@@ -215,7 +227,9 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
     // long OS/app timeout, so the first request after resume hangs. A 15s probe
     // (was 30s) detects and recycles dead connections faster → snappier reconnect,
     // the main fix for «Telegram doesn't reconnect immediately after minimize/restore».
-    'keep-alive-interval': 15,
+    // Mobile raises the interval via settings (see GeneratorSettings): a 15s probe
+    // on every proxied socket keeps the cellular modem from idling (battery).
+    'keep-alive-interval': ctx.settings.keepAliveIntervalSeconds ?? 15,
     'external-controller': `127.0.0.1:${ctx.apiPort}`,
     secret: ctx.apiSecret,
     // Geo databases: Android auto-downloads from MetaCubeX (no rulesDir, files

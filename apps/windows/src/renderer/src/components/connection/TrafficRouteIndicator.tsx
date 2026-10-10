@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Globe, Shield, SplitSquareVertical, Settings2, ChevronRight, Filter, ArrowUpRight, ArrowRight, type LucideIcon } from 'lucide-react'
 import { useVpnStore, selectVpnStatus, selectConnectionState } from '../../stores/vpn.store'
 import { vpnApi } from '../../lib/api'
+import { isAppVisible } from '../../android/app-visibility'
 import { cn } from '../../lib/utils'
 
 // «Куда идёт трафик» — a glanceable indicator of the active VPN mode and what it
@@ -63,6 +64,12 @@ export function TrafficRouteIndicator() {
     let alive = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const tick = async (): Promise<void> => {
+      // Hidden app: skip the snapshot (a full JNI crossing), keep the chain
+      // alive so it resumes on the next tick after foregrounding.
+      if (!isAppVisible()) {
+        if (alive) timer = setTimeout(() => void tick(), 3000)
+        return
+      }
       try {
         const snap = await vpnApi.getConnections()
         if (alive && snap) {

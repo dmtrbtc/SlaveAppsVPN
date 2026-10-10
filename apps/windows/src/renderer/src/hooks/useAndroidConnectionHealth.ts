@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import type { VpnHealthPayload } from '@shared/ipc/types'
 import { vpnApi } from '../lib/api'
 import { IS_MOBILE } from '../lib/platform'
+import { isAppVisible } from '../android/app-visibility'
 import {
   useVpnStore,
   selectConnectionState,
@@ -54,6 +55,10 @@ export function useAndroidConnectionHealth(): void {
     const target = activeProxy || selectedProxy || AUTO_GROUP
 
     const probe = async (): Promise<void> => {
+      // The probe is a real HTTPS round-trip through the tunnel — it wakes the
+      // modem. Only run it while the app is on screen; the badge is invisible
+      // anyway when backgrounded (battery drain).
+      if (!isAppVisible()) return
       const t = useVpnStore.getState().traffic
       const trafficActive = t.downloadSpeedBps + t.uploadSpeedBps > 0
       try {

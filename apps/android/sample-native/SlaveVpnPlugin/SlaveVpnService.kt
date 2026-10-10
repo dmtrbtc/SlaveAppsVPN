@@ -20,14 +20,18 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.service.quicksettings.TileService
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -56,6 +60,16 @@ class SlaveVpnService : VpnService() {
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var networkInitialized = false
     private var lastNetworkReconnectAt = 0L
+    // Battery: the ↓/↑ speed loop only refreshes the notification while the
+    // screen is interactive — nobody sees the speed with the display off, and a
+    // 2s JNI query + NotificationManager.notify() cadence keeps the CPU and
+    // SystemUI from ever idling (the main Android battery-drain complaint).
+    // Written on the main thread (broadcast), read from the IO traffic loop.
+    @Volatile private var screenInteractive = true
+    private var screenReceiver: BroadcastReceiver? = null
+    // The launcher icon is decoded into a Bitmap on every notification rebuild;
+    // with 2s refreshes that's ~1800 rasterizations/hour for a constant image.
+    private var cachedLargeIcon: Bitmap? = null
 
     companion object {
         const val ACTION_START = "com.slavevpn.START"
@@ -450,6 +464,8 @@ class SlaveVpnService : VpnService() {
                     startTrafficUpdates()
                     // Follow Wi-Fi↔mobile switches so the tunnel reconnects fast.
                     registerNetworkMonitor()
+                    // Pause the speed updates while the screen is off (battery).
+                    registerScreenMonitor()
                 } catch (e: Exception) {
                     if (!coreOwnsTunFd) {
                         // Parse failures happen before mihomo opens the injected
@@ -569,6 +585,7 @@ class SlaveVpnService : VpnService() {
     private fun stopVpn() {
         setShouldRun(applicationContext, false)
         unregisterNetworkMonitor()
+        unregisterScreenMonitor()
         trafficJob?.cancel()
         trafficJob = null
         scope.launch {
@@ -686,22 +703,81 @@ class SlaveVpnService : VpnService() {
     }
 
     /**
+     * Track screen on/off so the traffic/notification loop can go fully idle
+     * while the display is off (battery). SCREEN_ON/SCREEN_OFF/USER_PRESENT are
+     * protected system broadcasts, so no receiver-export flag is required.
+     */
+    private fun registerScreenMonitor() {
+        if (screenReceiver != null) return
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        screenInteractive = pm?.isInteractive ?: true
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                        screenInteractive = true
+                        // The user is about to see the notification — make the
+                        // speed live right away instead of waiting ≤2s for the loop.
+                        if (currentState == "connected") refreshTrafficNotification()
+                    }
+                    Intent.ACTION_SCREEN_OFF -> screenInteractive = false
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        try {
+            registerReceiver(receiver, filter)
+            screenReceiver = receiver
+        } catch (_: Exception) { }
+    }
+
+    private fun unregisterScreenMonitor() {
+        val r = screenReceiver ?: return
+        screenReceiver = null
+        try { unregisterReceiver(r) } catch (_: Exception) { }
+    }
+
+    /** One-shot traffic snapshot → notification refresh (fires on screen-on). */
+    private fun refreshTrafficNotification() {
+        scope.launch {
+            try {
+                val t = JSONObject(ClashBridge.getTraffic())
+                val down = t.optLong("down", 0L)
+                val up = t.optLong("up", 0L)
+                notify("↓ ${formatSpeed(down)}   ↑ ${formatSpeed(up)}")
+            } catch (_: Exception) { }
+        }
+    }
+
+    /**
      * Poll the mihomo traffic API every 2s and refresh the notification with the
      * live ↓/↑ speed. getTraffic() returns {up,down,...} in bytes-per-second.
      * setOnlyAlertOnce on the notification keeps these updates silent.
+     * Skipped entirely while the screen is off (battery): with the display off
+     * nobody sees the speed, and the recurring JNI query + notification repost
+     * keeps the device from deep idle.
      */
     private fun startTrafficUpdates() {
         trafficJob?.cancel()
         trafficJob = scope.launch {
+            var lastText: String? = null
             while (isActive && currentState == "connected") {
-                val text = try {
-                    val t = JSONObject(ClashBridge.getTraffic())
-                    val down = t.optLong("down", 0L)
-                    val up = t.optLong("up", 0L)
-                    "↓ ${formatSpeed(down)}   ↑ ${formatSpeed(up)}"
-                } catch (_: Exception) { "" }
-                if (text.isNotEmpty()) {
-                    notify(text)
+                if (screenInteractive) {
+                    val text = try {
+                        val t = JSONObject(ClashBridge.getTraffic())
+                        val down = t.optLong("down", 0L)
+                        val up = t.optLong("up", 0L)
+                        "↓ ${formatSpeed(down)}   ↑ ${formatSpeed(up)}"
+                    } catch (_: Exception) { "" }
+                    // Idle traffic produces the same "0 Б/с" line — skip the repost.
+                    if (text.isNotEmpty() && text != lastText) {
+                        lastText = text
+                        notify(text)
+                    }
                 }
                 delay(2000)
             }
@@ -735,6 +811,7 @@ class SlaveVpnService : VpnService() {
     override fun onDestroy() {
         super.onDestroy()
         unregisterNetworkMonitor()
+        unregisterScreenMonitor()
         trafficJob?.cancel()
         trafficJob = null
         scope.cancel()
@@ -782,10 +859,13 @@ class SlaveVpnService : VpnService() {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отключить", stopPi)
 
         // Full-colour app logo as the large icon (right side of the notification).
+        // Decoded once and cached: the notification is rebuilt every 2s while
+        // connected and re-rasterizing the launcher icon each time is wasted CPU.
         try {
-            ContextCompat.getDrawable(this, R.mipmap.ic_launcher)
+            val icon = cachedLargeIcon ?: ContextCompat.getDrawable(this, R.mipmap.ic_launcher)
                 ?.toBitmap(width = 128, height = 128)
-                ?.let { builder.setLargeIcon(it) }
+                ?.also { cachedLargeIcon = it }
+            icon?.let { builder.setLargeIcon(it) }
         } catch (_: Exception) { /* fall back to no large icon */ }
 
         return builder.build()

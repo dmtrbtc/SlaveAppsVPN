@@ -28,7 +28,7 @@ function gen(mode: 'bypass' | 'full'): string {
   return generateMihomoConfig({
     subscriptionYaml: SUB,
     vpnMode: mode,
-    settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://1.1.1.1/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890 },
+    settings: { tunEnabled: false, tunStack: 'gvisor', fakeIpEnabled: true, dnsOverHttps: 'https://1.1.1.1/dns-query', fallbackDns: ['8.8.8.8'], mixedPort: 7890, keepAliveIntervalSeconds: 30, logLevel: 'warning' },
     apiPort: 9090, apiSecret: 'x', utlsFingerprint: 'randomized',
     dnsProfile: buildAndroidDnsProfile({
       dohUrl: 'https://1.1.1.1/dns-query',
@@ -116,6 +116,7 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + inter
   const doc = require('js-yaml').load(gen('bypass')) as {
     'proxy-groups': Array<Record<string, unknown>>
     'keep-alive-interval'?: number
+    'log-level'?: string
   }
   const auto = doc['proxy-groups'].find(g => g['name'] === 'SLAVE-AUTO')
   assert.ok(auto, 'SLAVE-AUTO group present')
@@ -124,8 +125,11 @@ test('autobalancer: SLAVE-AUTO is url-test with tolerance:50 + lazy:true + inter
   assert.equal(auto!['lazy'], true)
   // 60s so a live node is re-picked quickly after the device wakes
   assert.equal(auto!['interval'], 60)
-  // TCP keep-alive recycles connections that die during Doze → fast reconnect
-  assert.equal(doc['keep-alive-interval'], 15)
+  // Battery (Android values, mirroring compileAndroidEngineConfig): TCP keep-alive
+  // at 15s woke the modem constantly; 30s halves the wakeups. log-level warning —
+  // info-level connection logs crossed JNI on every open/close.
+  assert.equal(doc['keep-alive-interval'], 30)
+  assert.equal(doc['log-level'], 'warning')
 })
 
 test('perf: global ipv6 OFF + HTTP sniff narrowed to :80 (no wasted v6 dials / 8080 sniff-wait)', () => {

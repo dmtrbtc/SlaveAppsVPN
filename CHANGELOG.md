@@ -6,6 +6,20 @@ All notable changes to SLAVE VPN are documented here.
 
 ### Fixed
 
+- Android: drastically reduced battery drain while connected. All renderer
+  polling loops (status/traffic/logs/connections, the dashboard intervals and
+  the 15s tunnel health probe) now stop while the app is backgrounded or the
+  screen is off, and resume instantly on foreground. The status-bar
+  notification no longer rebuilds itself every 2 seconds around the clock —
+  live ↓/↑ speed updates run only while the screen is on, and the launcher
+  icon is rasterized once instead of on every refresh.
+- Android: the mihomo core config now uses a 30s TCP keep-alive (was 15s —
+  probed every socket constantly, keeping the cellular modem awake) and a
+  `warning` log level (was `info` — every connection open/close was forwarded
+  across the native bridge). Desktop keeps the previous values. Auto
+  url-test / balance health-check intervals are unchanged (Telegram reconnect
+  speed preserved).
+
 - A VLESS REALITY link with a damaged `pqv` (the ML-DSA-65 verify key, e.g.
   truncated to 2601 instead of 2603 characters in transit) no longer aborts
   the whole engine config load — the generator strips the damaged

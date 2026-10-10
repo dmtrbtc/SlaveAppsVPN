@@ -6,6 +6,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { cn } from '../../lib/utils'
 import { vpnApi } from '../../lib/api'
+import { isAppVisible } from '../../android/app-visibility'
 import { useVpnStore, selectConnectionState } from '../../stores/vpn.store'
 import { useUIStore } from '../../stores/ui.store'
 import type { ActiveConnection, ActiveConnectionsSnapshot } from '@shared/ipc/types'
@@ -143,6 +144,12 @@ export function ActiveConnectionsPanel({ className }: { className?: string }) {
     let timer: ReturnType<typeof setTimeout> | null = null
 
     const tick = async (): Promise<void> => {
+      // Hidden app: skip the snapshot (a full JNI crossing), keep the chain
+      // alive so it resumes on the next tick after foregrounding.
+      if (!isAppVisible()) {
+        if (alive) timer = setTimeout(() => void tick(), POLL_INTERVAL_MS)
+        return
+      }
       try {
         const s = await vpnApi.getConnections()
         if (alive) setSnapshot(s)
