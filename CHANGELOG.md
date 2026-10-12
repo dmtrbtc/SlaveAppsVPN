@@ -4,6 +4,8 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.3.1-dev.1] — 2026-10-12
+
 ### Fixed
 
 - Android: drastically reduced battery drain while connected. All renderer
