@@ -28,7 +28,6 @@ import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.DnsResolver
-import android.net.IpPrefix
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -771,12 +770,12 @@ class SlaveVpnService : VpnService() {
                         null
                     } else {
                         bytes.fill(0, 12)
-                        IpPrefix(InetAddress.getByAddress(bytes), 96)
+                        "${InetAddress.getByAddress(bytes).hostAddress}/96"
                     }
                 }
             }.getOrNull()
             if (isActive && physicalNetwork == network) {
-                ClashBridge.setNat64Prefix(prefix?.toString())
+                ClashBridge.setNat64Prefix(prefix)
                 if (prefix != null) appendLog("[net] DNS64 prefix detected")
             }
         }
