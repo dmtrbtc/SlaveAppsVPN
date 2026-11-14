@@ -203,10 +203,6 @@ test('full tunnel uses shared RULE mode with a proxy catch-all', () => {
   assert.equal(full.rules[full.rules.length - 1], 'MATCH,SLAVE-SELECT')
 })
 
-// ─── Telegram load-balance (v0.2.39) ────────────────────────────────────────
-// Telegram media opens many parallel connections; pinned to the single selected
-// node they share one uplink («то быстро, то медленно»). With ≥2 nodes we route
-// ONLY the telegram rules through a round-robin SLAVE-BALANCE group to spread them.
 const SUB2 = `
 proxies:
   - { name: EE, type: vless, server: ee.example.online, port: 443, uuid: 00000000-0000-4000-8000-000000000000, tls: true, servername: ee.example.online, flow: xtls-rprx-vision, reality-opts: { public-key: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, short-id: 0123456789abcdef } }
@@ -241,19 +237,14 @@ function genPolicy(sub: string, policy: unknown): Record<string, unknown> {
   return require('js-yaml').load(out) as Record<string, unknown>
 }
 
-test('≥2 nodes: ONLY telegram rules route through round-robin SLAVE-BALANCE; rest keep SLAVE-SELECT', () => {
+test('Telegram uses the active selector even with multiple nodes', () => {
   const doc = genPolicy(SUB2, TG_POLICY)
-  const groups = doc['proxy-groups'] as Array<{ name: string; type: string; strategy?: string; proxies: string[] }>
-  const balance = groups.find(g => g.name === 'SLAVE-BALANCE')
-  assert.ok(balance, 'SLAVE-BALANCE group present with ≥2 nodes')
-  assert.equal(balance!.type, 'load-balance')
-  assert.equal(balance!.strategy, 'round-robin', 'round-robin spreads parallel media connections')
-  assert.deepEqual(balance!.proxies, ['EE', 'NL'], 'balance spans all nodes (not the SLAVE-AUTO group)')
+  const groups = doc['proxy-groups'] as Array<{ name: string; proxies: string[] }>
+  assert.ok(!groups.some(g => g.name === 'SLAVE-BALANCE'))
+  assert.deepEqual(groups.find(g => g.name === 'SLAVE-SELECT')?.proxies, ['SLAVE-AUTO', 'EE', 'NL'])
   const rules = doc['rules'] as string[]
-  assert.ok(rules.includes('GEOSITE,telegram,SLAVE-BALANCE'), 'geosite:telegram → balance')
-  assert.ok(rules.includes('GEOIP,telegram,SLAVE-BALANCE,no-resolve'), 'geoip:telegram → balance (no-resolve preserved)')
-  // Everything else — incl. WhatsApp/facebook and the MATCH fallback — stays on the
-  // user-selected node so the manual pick still governs general surfing.
+  assert.ok(rules.includes('GEOSITE,telegram,SLAVE-SELECT'))
+  assert.ok(rules.includes('GEOIP,telegram,SLAVE-SELECT,no-resolve'))
   assert.ok(rules.includes('GEOIP,facebook,SLAVE-SELECT,no-resolve'), 'non-telegram messenger stays on SLAVE-SELECT')
   assert.equal(rules[rules.length - 1], 'MATCH,SLAVE-SELECT', 'default still SLAVE-SELECT')
 })

@@ -3,17 +3,18 @@ export interface ProxyEntry {
   type: string
   server: string
   port: number
-  transport?: string     // tcp | ws | grpc | h2 | httpupgrade | udp
+  transport?: string     // tcp | ws | grpc | h2 | httpupgrade | xhttp | udp
   securityType?: string  // reality | tls | none
   extra: Record<string, unknown>
 }
 
-export type SubscriptionFormat = 'clash-yaml' | 'singbox-json' | 'base64-links' | 'raw-links'
+export type SubscriptionFormat = 'clash-yaml' | 'singbox-json' | 'xray-json' | 'base64-links' | 'raw-links'
 
 export interface NormalizedSubscription {
   yaml: string
   format: SubscriptionFormat
   proxyCount: number
+  warnings?: string[]
 }
 
 export type ValidationSeverity = 'error' | 'warning'

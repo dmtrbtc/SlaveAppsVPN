@@ -34,7 +34,9 @@ export interface CompileAndroidEngineConfigInput {
   aggregationWarnings?: readonly string[]
   vpnMode: VPNMode
   selectedProxy?: string
+  embeddedFinalMask?: boolean
   utlsFingerprint?: string
+  nodeFingerprints?: Record<string, string>
   realityCompatibilityNode?: string | null
   dohProvider: DohProviderSetting
   dnsPreset?: DnsPresetName
@@ -150,10 +152,12 @@ export async function compileAndroidEngineConfig(
 
   const generated = buildEngineConfig({
     subscriptionYaml,
+    embeddedFinalMask: input.embeddedFinalMask === true,
     vpnMode: input.vpnMode,
     ...(input.selectedProxy ? { selectedProxy: input.selectedProxy } : {}),
     settings: generatorSettings,
     utlsFingerprint: input.utlsFingerprint ?? 'randomized',
+    ...(input.nodeFingerprints ? { nodeFingerprints: input.nodeFingerprints } : {}),
     realityCompatibilityNode: input.realityCompatibilityNode ?? null,
     onMldsa65Sanitized: (nodes) => {
       for (const node of nodes) {

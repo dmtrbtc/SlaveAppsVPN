@@ -274,6 +274,8 @@ export function ServersPage() {
   const autoActive = IS_MOBILE ? autoMode : (balancerState?.enabled ?? false)
   const compatibilityNode = settings?.realityCompatibilityNode
   const realityTarget = servers.find(s => s.id === selectedProxy && s.securityType === 'reality' && s.proxyType === 'vless')
+  const fingerprintTarget = servers.find(s => s.id === selectedProxy &&
+    (s.securityType === 'reality' || s.securityType === 'tls'))
   const canChangeCompatibility = status.state === 'disconnected' && !connectingId && !settingsMutation.isPending
 
   const changeCompatibility = async (node: string | null): Promise<void> => {
@@ -282,6 +284,20 @@ export function ServersPage() {
       notify({ type: 'success', title: node ? 'Тестовый режим включён' : 'Обычная защита восстановлена', message: 'Настройка применится при следующем подключении' })
     } catch (err) {
       notify({ type: 'error', title: 'Настройка не сохранена', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  const changeNodeFingerprint = async (name: string, value: string): Promise<void> => {
+    const nodeFingerprints = { ...settings?.nodeFingerprints }
+    if (value) {
+      Object.defineProperty(nodeFingerprints, name, { value, enumerable: true, configurable: true, writable: true })
+    } else {
+      delete nodeFingerprints[name]
+    }
+    try {
+      await settingsMutation.mutateAsync({ nodeFingerprints })
+    } catch {
+      notify({ type: 'error', title: 'Не удалось применить отпечаток' })
     }
   }
 
@@ -354,6 +370,29 @@ export function ServersPage() {
 
   return (
     <div className="flex h-full flex-col bg-bg-base">
+
+      {settings && fingerprintTarget && !autoActive && (IS_MOBILE || settings.selectedEngine === 'mihomo') && (
+        <section className="border-b border-border px-6 py-3 text-[12px]">
+          <label htmlFor="node-fingerprint">TLS-отпечаток · {fingerprintTarget.name}</label>
+          <select
+            id="node-fingerprint"
+            className="ml-2 rounded border border-border bg-bg-secondary px-2 py-1"
+            value={settings.nodeFingerprints?.[fingerprintTarget.name] ?? ''}
+            disabled={settingsMutation.isPending || connectingId !== null}
+            onChange={event => void changeNodeFingerprint(fingerprintTarget.name, event.target.value)}
+          >
+            <option value="">Как в настройках</option>
+            {['chrome', 'firefox', 'safari', 'edge', 'ios', 'android', '360', 'qq'].map(value => (
+              <option key={value} value={value} disabled={fingerprintTarget.securityType === 'reality' && value !== 'chrome'}>
+                {value}
+              </option>
+            ))}
+          </select>
+          {fingerprintTarget.securityType === 'reality' && (
+            <p className="mt-1 text-text-muted">Для ручного выбора REALITY в этой сборке проверен Chrome.</p>
+          )}
+        </section>
+      )}
 
       {/* Header */}
       {settings && (IS_MOBILE || settings.selectedEngine === 'mihomo') && (realityTarget || compatibilityNode) && (

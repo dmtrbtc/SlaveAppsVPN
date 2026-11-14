@@ -47,7 +47,7 @@ index ff6a0a3..c30b619 100644
  
  const RealityMaxShortIDLen = 8
  
-+var realityClientVersion = [3]byte{26, 9, 9}
++var realityClientVersion = [3]byte{26, 11, 9}
 +
 +func applyRealityClientVersion(sessionID []byte) {
 +	copy(sessionID, realityClientVersion[:])

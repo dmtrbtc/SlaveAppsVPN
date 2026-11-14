@@ -68,5 +68,11 @@ export {
   ConnectionCompatibilityValidator,
   parseProxiesFromYaml,
   parseXrayConfigArray,
+  parseXrayFinalMaskProfiles,
+  parseXrayFinalMaskEntries,
+  mergeXrayFinalMaskEntries,
+  XRAY_FINALMASK_OUTBOUND,
   isXrayConfigArray,
 } from './subscription'
+export type { XrayFinalMaskProfile } from './subscription'
+export { buildXrayFinalMaskSidecar } from './compiler/xrayFinalMaskSidecar'

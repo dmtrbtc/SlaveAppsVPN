@@ -82,6 +82,8 @@ export const SettingsSetSchema = z
     balancerMode: z.enum(['latency', 'stability', 'balanced', 'manual']).optional(),
     autoSelectProxy: z.boolean().optional(),
     selectedProxy: z.string().nullable().optional(),
+    utlsFingerprint: z.enum(['randomized', 'random', 'chrome', 'firefox', 'safari', 'edge', 'ios', 'android', '360', 'qq']).optional(),
+    nodeFingerprints: z.record(z.string().min(1).max(512), z.enum(['chrome', 'firefox', 'safari', 'edge', 'ios', 'android', '360', 'qq'])).optional(),
     realityCompatibilityNode: z.string().min(1).max(512).nullable().optional(),
     splitProcessList: z.array(z.string()).optional(),
     enabledScenarios: z.array(z.string()).optional(),

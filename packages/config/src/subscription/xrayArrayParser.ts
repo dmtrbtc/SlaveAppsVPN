@@ -11,16 +11,87 @@ import type { ProxyEntry } from './types'
  *
  * Some Remnawave panels serve Hysteria2 / TUIC ONLY in this format (it is absent
  * from the Clash and sing-box profiles). Our other parsers don't understand the
- * array-of-configs shape, so the node was invisible. This parser extracts ONLY
- * the UDP/QUIC protocols (hysteria/hysteria2/tuic) — VLESS/Trojan continue to
- * come from the Clash profile (which preserves REALITY encryption). It maps to
- * mihomo-native ProxyEntry fields so the node both lists and connects.
+ * array-of-configs shape, so the node was invisible. UDP/QUIC entries are
+ * translated to native Mihomo fields. TCP FinalMask entries retain the original
+ * Xray outbound for an authenticated local bridge.
  */
 
 const UTILITY_PROTOCOLS = new Set(['freedom', 'blackhole', 'dns', 'loopback'])
 
 function asRecord(v: unknown): Record<string, unknown> | undefined {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined
+}
+
+export interface XrayFinalMaskProfile {
+  name: string
+  server: string
+  port: number
+  userId: string
+  transport: 'tcp'
+  outbound: Record<string, unknown>
+}
+
+export const XRAY_FINALMASK_OUTBOUND = 'slave-xray-finalmask'
+
+export function parseXrayFinalMaskEntries(text: string): ProxyEntry[] {
+  return parseXrayFinalMaskProfiles(text).map(profile => ({
+    name: profile.name,
+    type: 'vless',
+    server: profile.server,
+    port: profile.port,
+    transport: 'tcp',
+    extra: { uuid: profile.userId, network: 'tcp', [XRAY_FINALMASK_OUTBOUND]: profile.outbound },
+  }))
+}
+
+/** Replace a stripped copy only if name, endpoint and VLESS identity match. */
+export function mergeXrayFinalMaskEntries(primary: ProxyEntry[], masked: ProxyEntry[]): ProxyEntry[] {
+  const nodes = [...primary]
+  for (const entry of masked) {
+    const index = nodes.findIndex(node => node.name === entry.name && node.type === 'vless' &&
+      node.server === entry.server && node.port === entry.port && node.extra.uuid === entry.extra.uuid)
+    if (index === -1) nodes.push(entry)
+    else nodes[index] = entry
+  }
+  return nodes
+}
+
+/** Read standalone RAW VLESS outbounds with a TCP FinalMask from Remnawave.
+ * Keep the complete outbound so the Xray runtime receives the mask as issued. */
+export function parseXrayFinalMaskProfiles(text: string): XrayFinalMaskProfile[] {
+  let parsed: unknown
+  try { parsed = JSON.parse(text.trim()) } catch { return [] }
+  if (!Array.isArray(parsed)) return []
+  const profiles: XrayFinalMaskProfile[] = []
+  for (const entry of parsed) {
+    const config = asRecord(entry)
+    if (!config || !Array.isArray(config.outbounds)) continue
+    const name = typeof config.remarks === 'string' ? config.remarks : ''
+    const outbound = config.outbounds.map(asRecord).find(item =>
+      item && typeof item.protocol === 'string' && !UTILITY_PROTOCOLS.has(item.protocol))
+    if (!name || !outbound || outbound.protocol !== 'vless') continue
+    const stream = asRecord(outbound.streamSettings)
+    const network = stream?.network ?? 'raw'
+    const mask = asRecord(stream?.finalmask)
+    if ((network !== 'raw' && network !== 'tcp') ||
+        !Array.isArray(mask?.tcp) || mask.tcp.length === 0 || outbound.proxySettings != null ||
+        asRecord(stream?.sockopt)?.dialerProxy != null) continue
+    const settings = asRecord(outbound.settings)
+    const vnext = Array.isArray(settings?.vnext) ? settings.vnext : undefined
+    if (vnext && vnext.length !== 1) continue
+    const destination = vnext ? asRecord(vnext[0]) : settings
+    const users = Array.isArray(destination?.users) ? destination.users : undefined
+    if (users && users.length !== 1) continue
+    const user = users ? asRecord(users[0]) : destination
+    const server = destination?.address
+    const port = destination?.port
+    const userId = user?.id
+    if (typeof server !== 'string' || !server || typeof port !== 'number' ||
+        !Number.isInteger(port) || port < 1 || port > 65535 ||
+        typeof userId !== 'string' || !userId) continue
+    profiles.push({ name, server, port, userId, transport: 'tcp', outbound })
+  }
+  return profiles
 }
 
 /** Detect the v2rayN/Xray array-of-configs shape without throwing. */

@@ -18,7 +18,7 @@ $BuildTime = '2026-08-16T10:11:00Z'
 $RepoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $PatchRoot = Join-Path $RepoRoot 'patches\mihomo'
 $InputSourcePath = (Resolve-Path -LiteralPath $MihomoSource).Path
-$OutputPath = [IO.Path]::GetFullPath((Join-Path $RepoRoot $OutputPath))
+$OutputPath = [IO.Path]::GetFullPath($OutputPath, $RepoRoot)
 
 $head = (& git -C $InputSourcePath rev-parse HEAD).Trim()
 $tag = (& git -C $InputSourcePath describe --tags --exact-match).Trim()
@@ -47,7 +47,7 @@ try {
     & $GoExe test './component/tls' './adapter/outbound'
     if ($LASTEXITCODE -ne 0) { throw 'Patched Mihomo tests failed' }
 
-    $ldflags = "-X github.com/metacubex/mihomo/constant.Version=$ExpectedTag-slave.1 -X github.com/metacubex/mihomo/constant.BuildTime=$BuildTime -s -w -buildid="
+    $ldflags = "-X github.com/metacubex/mihomo/constant.Version=$ExpectedTag-slave.3 -X github.com/metacubex/mihomo/constant.BuildTime=$BuildTime -s -w -buildid="
     $env:CGO_ENABLED = '0'
     $outputDir = Split-Path -Parent $OutputPath
     New-Item -ItemType Directory -Path $outputDir -Force | Out-Null

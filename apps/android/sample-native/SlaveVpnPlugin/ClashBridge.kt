@@ -43,6 +43,7 @@ object ClashBridge {
     fun start(
         configYaml: String,
         protect: (Int) -> Boolean,
+        resolveXrayHost: ((String) -> String)? = null,
         onLog: (String, String) -> Unit,
     ) {
         if (running) {
@@ -56,6 +57,9 @@ object ClashBridge {
             override fun log(level: String, message: String) = onLog(level, message)
         })
         try {
+            if (resolveXrayHost != null && configYaml.contains("slave-xray-finalmask:")) {
+                installXrayResolver(resolveXrayHost)
+            }
             Clashbox.start(configYaml) // throws on parse/apply failure
             running = true
         } catch (e: Exception) {
@@ -65,6 +69,21 @@ object ClashBridge {
             throw e
         }
         Log.i(TAG, "mihomo started")
+    }
+
+    private fun installXrayResolver(resolve: (String) -> String) {
+        // The regular AAR does not export the experimental Xray interface.
+        val type = Class.forName("com.slavevpn.clash.clashbox.XrayResolver")
+        val callback = java.lang.reflect.Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { proxy, method, args ->
+            when (method.name) {
+                "resolve" -> resolve(args?.firstOrNull() as String)
+                "hashCode" -> System.identityHashCode(proxy)
+                "equals" -> proxy === args?.firstOrNull()
+                "toString" -> "XrayResolver"
+                else -> error("Unexpected Xray callback")
+            }
+        }
+        Clashbox::class.java.getMethod("setXrayResolver", type).invoke(null, callback)
     }
 
     fun stop() {
@@ -80,6 +99,10 @@ object ClashBridge {
     }
 
     fun isRunning(): Boolean = running
+
+    fun setNat64Prefix(prefix: String?) {
+        Clashbox.setNAT64Prefix(prefix.orEmpty())
+    }
 
     /**
      * Switch the active member of a select group (default SLAVE-SELECT) to a

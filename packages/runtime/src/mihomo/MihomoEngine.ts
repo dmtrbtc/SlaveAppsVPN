@@ -1,7 +1,11 @@
 import fs from 'fs/promises'
 import path from 'path'
 import { sleep, VPN, EMPTY_TRAFFIC_STATS } from '@slave-vpn/shared'
-import { generateMihomoConfig, getSelectGroupName } from '@slave-vpn/config'
+import { buildXrayFinalMaskSidecar, generateMihomoConfig, getSelectGroupName, parseProxiesFromYaml,
+  XRAY_FINALMASK_OUTBOUND, type ParsedProxy } from '@slave-vpn/config'
+import { randomBytes } from 'node:crypto'
+import { createServer } from 'node:net'
+import { FinalMaskSidecarProcess } from '../xray/FinalMaskSidecarProcess'
 import { RuntimeStateMachine } from '../state/RuntimeStateMachine'
 import { EngineEventBus } from '../engine/EngineEvents'
 import type { EngineEventName, EngineEventHandler, Unsubscribe } from '../engine/EngineEvents'
@@ -25,6 +29,8 @@ export class MihomoEngine implements VPNEngine {
   private readonly fsm = new RuntimeStateMachine()
   private readonly events = new EngineEventBus()
   private readonly processManager = new ProcessManager(this.events)
+  private readonly finalMaskSidecars: FinalMaskSidecarProcess[] = []
+  private readonly finalMaskProxies = new Map<string, ParsedProxy>()
 
   private initConfig: EngineInitConfig | null = null
   private currentProfile: ConnectionProfile | null = null
@@ -61,6 +67,7 @@ export class MihomoEngine implements VPNEngine {
     if (this.processManager.getPid() !== null) {
       await this.processManager.kill('intentional')
     }
+    await this.stopFinalMaskSidecars()
 
     // Error is a terminal state — reset to idle before transitioning to starting
     if (state === 'error') {
@@ -73,6 +80,7 @@ export class MihomoEngine implements VPNEngine {
     this.currentProfile = profile
 
     try {
+      await this.startFinalMaskSidecars(profile)
       await this.writeConfig(profile)
 
       this.processManager.configure({
@@ -128,6 +136,7 @@ export class MihomoEngine implements VPNEngine {
       this.healthMonitor?.stop()
       this.trafficMonitor?.stop()
       await this.processManager.kill('intentional').catch(() => undefined)
+      await this.stopFinalMaskSidecars().catch(() => undefined)
       this.fsm.tryTransition('error', String(err))
       this.events.emit('stateChanged', { state: this.fsm.state })
       throw err
@@ -145,6 +154,7 @@ export class MihomoEngine implements VPNEngine {
     this.processManager.setNextStopReason(reason)
     try {
       await this.processManager.kill(reason)
+      await this.stopFinalMaskSidecars()
     } catch (error) {
       this.fsm.tryTransition('error', 'termination_unconfirmed')
       this.events.emit('stateChanged', { state: this.fsm.state, reason: 'termination_unconfirmed' })
@@ -306,6 +316,7 @@ export class MihomoEngine implements VPNEngine {
     this.fsm.tryTransition('stopping', 'rollback_failed')
     try {
       await this.processManager.kill('intentional')
+      await this.stopFinalMaskSidecars()
     } finally {
       this.fsm.tryTransition('error', 'rollback_failed')
       this.events.emit('stateChanged', { state: this.fsm.state })
@@ -328,6 +339,7 @@ export class MihomoEngine implements VPNEngine {
     this.healthMonitor?.stop()
     this.trafficMonitor?.stop()
     await this.processManager.kill('intentional').catch(() => undefined)
+    await this.stopFinalMaskSidecars()
     this.events.removeAll()
     this.fsm.forceReset()
     this._engineVersion = null
@@ -445,11 +457,14 @@ export class MihomoEngine implements VPNEngine {
       settings: profile.generatorSettings,
       apiPort: this.initConfig!.apiPort,
       apiSecret: this.initConfig!.apiSecret,
+      finalMaskProxies: this.finalMaskProxies,
+      ...(this.initConfig!.xraySidecarBinaryPath ? { xraySidecarProcessPath: this.initConfig!.xraySidecarBinaryPath } : {}),
       ...(profile.dnsProfile !== undefined ? { dnsProfile: profile.dnsProfile } : {}),
       ...(profile.routingPolicy !== undefined ? { routingPolicy: profile.routingPolicy } : {}),
       ...(this.initConfig!.rulesDir ? { rulesDir: this.initConfig!.rulesDir } : {}),
       ...(availableGeoSites.length > 0 ? { availableGeoSites } : {}),
       ...(profile.utlsFingerprint !== undefined ? { utlsFingerprint: profile.utlsFingerprint } : {}),
+      ...(profile.nodeFingerprints ? { nodeFingerprints: profile.nodeFingerprints } : {}),
       ...(profile.realityCompatibilityNode !== undefined ? { realityCompatibilityNode: profile.realityCompatibilityNode } : {}),
       onMldsa65Sanitized: (nodes) => { mldsa65Sanitized.push(...nodes) },
     })
@@ -485,6 +500,7 @@ export class MihomoEngine implements VPNEngine {
     // Unexpected exit — clean up monitors and transition to crashed
     this.healthMonitor?.stop()
     this.trafficMonitor?.stop()
+    void this.stopFinalMaskSidecars().catch(() => undefined)
 
     if (this.fsm.tryTransition('crashed', reason)) {
       this.events.emit('stateChanged', { state: 'crashed' })
@@ -507,11 +523,59 @@ export class MihomoEngine implements VPNEngine {
     if (next.selectedProxy && connectionProfilesEqual({ ...prev, selectedProxy: next.selectedProxy }, next)) {
       return 'hot'
     }
+    if (this.finalMaskSidecars.length > 0 || (this.initConfig?.xraySidecarBinaryPath &&
+        parseProxiesFromYaml(next.subscriptionYaml).some(proxy => XRAY_FINALMASK_OUTBOUND in proxy.extra))) {
+      return 'full_restart'
+    }
 
     return 'reconnect'
+  }
+
+  private async startFinalMaskSidecars(profile: ConnectionProfile): Promise<void> {
+    const binaryPath = this.initConfig?.xraySidecarBinaryPath
+    if (!binaryPath) return
+    for (const proxy of parseProxiesFromYaml(profile.subscriptionYaml)) {
+      const outbound = proxy.extra[XRAY_FINALMASK_OUTBOUND]
+      if (!outbound || typeof outbound !== 'object' || Array.isArray(outbound)) continue
+      const listener = { port: await allocateLoopbackPort(), username: 'slave',
+        password: randomBytes(24).toString('base64url') }
+      const { xrayConfig, mihomoProxy } = buildXrayFinalMaskSidecar({
+        name: proxy.name, server: proxy.server, port: proxy.port,
+        userId: String(proxy.extra.uuid ?? ''), transport: 'tcp',
+        outbound: outbound as Record<string, unknown>,
+      }, listener)
+      const child = new FinalMaskSidecarProcess()
+      await child.start(binaryPath, xrayConfig, listener)
+      this.finalMaskSidecars.push(child)
+      this.finalMaskProxies.set(proxy.name, { ...mihomoProxy, name: proxy.name, type: 'socks5' })
+    }
+  }
+
+  private async stopFinalMaskSidecars(): Promise<void> {
+    const children = [...this.finalMaskSidecars]
+    this.finalMaskProxies.clear()
+    await Promise.all(children.map(async child => {
+      await child.stop()
+      const index = this.finalMaskSidecars.indexOf(child)
+      if (index >= 0) this.finalMaskSidecars.splice(index, 1)
+    }))
   }
 
   private requireInitialized(): void {
     if (!this.initConfig || !this.api) throw new Error('MihomoEngine not initialized — call initialize() first')
   }
+}
+
+function allocateLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(error => {
+        if (error || !address || typeof address === 'string') reject(error ?? new Error('No loopback port'))
+        else resolve(address.port)
+      })
+    })
+  })
 }

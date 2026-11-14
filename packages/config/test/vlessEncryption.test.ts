@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import {
   parseVlessEncryption,
   validateVlessEncryption,
@@ -8,11 +9,9 @@ import {
   XRAY_HANDSHAKE,
   SINGBOX_HANDSHAKE,
 } from '../src/encryption/vlessEncryption.ts'
-import {
-  isProxyUri,
-  normalizeProxyUriInput,
-  parseProxyUri,
-} from '../src/subscription/uriParser.ts'
+const require = createRequire(import.meta.url)
+const { isProxyUri, normalizeProxyUriInput, parseProxyUri } =
+  require('../dist/cjs/subscription/uriParser.js') as typeof import('../src/subscription/uriParser')
 
 // Synthetic placeholder keys (base64url charset) — NOT real key material.
 // Long enough to satisfy the "has a key" heuristic; values are fabricated.

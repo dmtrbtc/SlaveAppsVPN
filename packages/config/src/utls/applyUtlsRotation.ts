@@ -24,6 +24,7 @@ export interface ApplyUtlsRotationOptions {
    * @default 'randomized'
    */
   fingerprint?: UtlsFingerprint
+  nodeFingerprints?: Readonly<Record<string, string>>
   /**
    * - `'when-missing-or-chrome'` (default) — replace only when the field
    *   is absent or set to plain `'chrome'` (which uTLS treats as a static,
@@ -99,6 +100,10 @@ export function applyUtlsRotation(
 
   return proxies.map((proxy) => {
     const reality = isRealityProxy(proxy)
+    const nodeFingerprint = options.nodeFingerprints &&
+      Object.prototype.hasOwnProperty.call(options.nodeFingerprints, proxy.name)
+      ? options.nodeFingerprints[proxy.name] : undefined
+    const requested = nodeFingerprint ?? fingerprint
 
     // REALITY can never use a randomized/random fingerprint (see above) — coerce
     // to a deterministic X25519-bearing one regardless of the user's choice.
@@ -107,9 +112,9 @@ export function applyUtlsRotation(
     // A global user override such as edge/firefox must not silently break a
     // node whose share link requested the hybrid key exchange.
     const mlkem = reality && requiresMlkemKeyShare(proxy)
-    const target: UtlsFingerprint = reality && (mlkem || REALITY_UNSAFE.has(fingerprint))
+    const target = reality && (mlkem || REALITY_UNSAFE.has(requested))
       ? REALITY_SAFE_FINGERPRINT
-      : fingerprint
+      : requested
 
     // A REALITY node whose effective fingerprint is currently absent OR a
     // randomized/random value is broken and MUST be rewritten, even under
@@ -118,7 +123,7 @@ export function applyUtlsRotation(
     const current = readField(proxy, 'client-fingerprint') ?? readField(proxy, 'fingerprint')
     const realityNeedsFix = reality && (!current || REALITY_UNSAFE.has(current) || mlkem && current !== REALITY_SAFE_FINGERPRINT)
 
-    if (!shouldRewrite(proxy, override) && !realityNeedsFix) return proxy
+    if (!nodeFingerprint && !shouldRewrite(proxy, override) && !realityNeedsFix) return proxy
 
     const next = { ...proxy, 'client-fingerprint': target } as Record<string, unknown>
     delete next['fingerprint'] // never emit the cert-pinning field

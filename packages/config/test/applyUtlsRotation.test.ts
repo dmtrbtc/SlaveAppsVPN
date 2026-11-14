@@ -33,6 +33,16 @@ function plainTls(name: string, fp?: string): ParsedProxy {
   return p as unknown as ParsedProxy
 }
 
+test('manual fingerprint takes precedence for the chosen node and leaves other nodes on the global setting', () => {
+  const nodes = [plainTls('manual'), plainTls('default'), reality('hybrid', undefined, true)]
+  const out = applyUtlsRotation(nodes, {
+    fingerprint: 'edge',
+    override: 'always',
+    nodeFingerprints: { manual: 'firefox', hybrid: 'safari' },
+  })
+  assert.deepEqual(out.map(proxy => proxy['client-fingerprint']), ['firefox', 'edge', 'chrome'])
+})
+
 test('REALITY never gets a randomized fingerprint — coerced to chrome (override always)', () => {
   // randomized/random randomize the key_share group → mihomo REALITY logs
   // "nil ecdheKey" and every dial fails. Must coerce to a deterministic X25519 fp.

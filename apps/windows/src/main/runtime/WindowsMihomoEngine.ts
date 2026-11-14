@@ -125,6 +125,9 @@ export function createWindowsEngineConfig(
 
   return {
     binaryPath,
+    ...(engineType === 'mihomo' && existsSync(path.join(binRoot, 'xray.exe')) ? {
+      xraySidecarBinaryPath: path.join(binRoot, 'xray.exe'),
+    } : {}),
     workingDir: path.join(userDataPath, layout.workingDir),
     apiPort: VPN.MIHOMO_API_PORT,
     apiSecret,

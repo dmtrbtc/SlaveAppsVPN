@@ -10,6 +10,7 @@
  * Engines covered:
  *   - mihomo     (https://github.com/MetaCubeX/mihomo)
  *   - sing-box   (https://github.com/SagerNet/sing-box)
+ *   - xray       (https://github.com/XTLS/Xray-core)
  *   - wintun     (https://www.wintun.net) — TUN driver shared by both
  *
  * Each engine has a pinned version + asset name pattern. The script:
@@ -54,6 +55,15 @@ const RULES_DIR = join(REPO_ROOT, 'apps', 'windows', 'resources', 'rules')
 
 const ENGINES = {
   mihomo: MIHOMO_WINDOWS,
+  xray: {
+    version: '26.11.9',
+    url: 'https://github.com/XTLS/Xray-core/releases/download/v26.11.9/Xray-windows-64.zip',
+    archive: 'zip',
+    archiveMember: /(?:^|\/)xray\.exe$/,
+    outName: 'xray.exe',
+    archiveSha256: '1262522266337b824f07beb8e1375786b437683b3890105469088f8e17e0a69d',
+    binarySha256: '1ca7a2cf61ba2c5d20b21a80d405b57933939751081cb289f07bd8ddf7cc3185',
+  },
   singbox: {
     version: '1.13.12',
     url: 'https://github.com/SagerNet/sing-box/releases/download/v1.13.12/sing-box-1.13.12-windows-amd64.zip',

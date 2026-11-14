@@ -16,12 +16,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"syscall"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/dialer"
+	"github.com/metacubex/mihomo/config"
 	"github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub/executor"
 	"github.com/metacubex/mihomo/log"
@@ -36,6 +38,8 @@ type Protector interface {
 	Protect(fd int) bool
 }
 
+var socketProtector Protector
+
 // LogHandler is implemented in Kotlin to receive core log lines (level, message).
 type LogHandler interface {
 	Log(level string, message string)
@@ -49,6 +53,7 @@ func Setup(homeDir string) {
 // SetProtector wires the Android socket protector into the core dialer. Pass a
 // non-nil Protector before Start; pass nil to clear.
 func SetProtector(p Protector) {
+	socketProtector = p
 	if p == nil {
 		dialer.DefaultSocketHook = nil
 		return
@@ -58,6 +63,16 @@ func SetProtector(p Protector) {
 			p.Protect(int(fd))
 		})
 	}
+}
+
+// SetNAT64Prefix publishes the current Android network's DNS64 prefix.
+// An empty string clears the previously selected network's prefix.
+func SetNAT64Prefix(value string) {
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || !prefix.Addr().Is6() || prefix.Bits() != 96 {
+		prefix = netip.Prefix{}
+	}
+	dialer.SetNAT64Prefix(prefix.Masked())
 }
 
 var logStop chan struct{}
@@ -101,8 +116,19 @@ func StopLogForward() {
 // Returns the parse error (if any) so the caller can show a SPECIFIC reason —
 // e.g. an unusable VLESS encryption string fails here, not silently.
 func Start(configContent string) error {
-	cfg, err := executor.ParseWithBytes([]byte(configContent))
+	raw, err := config.UnmarshalRawConfig([]byte(configContent))
 	if err != nil {
+		return err
+	}
+	xrayStarted, err := prepareFinalMask(raw.Proxy, socketProtector)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.ParseRawConfig(raw)
+	if err != nil {
+		if xrayStarted {
+			_ = stopXray()
+		}
 		return err
 	}
 	executor.ApplyConfig(cfg, true)
@@ -112,6 +138,7 @@ func Start(configContent string) error {
 // Stop shuts the core down (closes TUN, listeners, connections).
 func Stop() {
 	executor.Shutdown()
+	_ = stopXray()
 }
 
 // Version returns the embedded mihomo core version string.

@@ -26,8 +26,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.DnsResolver
+import android.net.IpPrefix
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
@@ -46,8 +53,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
+import java.net.InetAddress
 import java.util.Locale
+import kotlin.coroutines.resume
 
 class SlaveVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -59,6 +69,9 @@ class SlaveVpnService : VpnService() {
     // Watches the active (non-VPN) network so the tunnel follows Wi-Fi↔mobile switches.
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var networkInitialized = false
+    @Volatile private var physicalNetwork: Network? = null
+    private var nat64Lookup: Job? = null
+    private var nat64LookupNetwork: Network? = null
     private var lastNetworkReconnectAt = 0L
     // Battery: the ↓/↑ speed loop only refreshes the notification while the
     // screen is interactive — nobody sees the speed with the display off, and a
@@ -393,6 +406,19 @@ class SlaveVpnService : VpnService() {
         startForeground(NOTIF_ID, buildNotification("Подключение..."))
 
         try {
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            val activeNetwork = connectivity.activeNetwork
+            if (activeNetwork != null && isPhysicalNetwork(connectivity, activeNetwork)) {
+                physicalNetwork = activeNetwork
+            } else if (physicalNetwork == null) {
+                physicalNetwork = connectivity.allNetworks.firstOrNull { network ->
+                    val capabilities = connectivity.getNetworkCapabilities(network)
+                    capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true &&
+                        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                }
+            }
+            refreshNat64Prefix(connectivity, physicalNetwork)
             val builder = Builder()
                 .setSession("SLAVE VPN")
                 .addAddress("172.19.0.1", 30)
@@ -436,6 +462,11 @@ class SlaveVpnService : VpnService() {
                     ClashBridge.start(
                         configYaml = config,
                         protect = { fd -> protect(fd) },
+                        resolveXrayHost = { host ->
+                            runCatching {
+                                physicalNetwork?.getAllByName(host)?.firstOrNull()?.hostAddress.orEmpty()
+                            }.getOrDefault("")
+                        },
                         onLog = { level, message -> appendLog("[$level] $message") },
                     )
                     // Parse/apply succeeded: ownership of the detached duplicate
@@ -662,6 +693,9 @@ class SlaveVpnService : VpnService() {
         networkInitialized = false
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
+                if (!isPhysicalNetwork(cm, network)) return
+                physicalNetwork = network
+                refreshNat64Prefix(cm, network)
                 try { setUnderlyingNetworks(arrayOf(network)) } catch (_: Exception) { }
                 // First callback = the network we're already on (registration echo) →
                 // just bind the underlying network. A LATER default-network change
@@ -677,7 +711,15 @@ class SlaveVpnService : VpnService() {
                 appendLog("[net] default network changed → auto-reconnect")
                 Handler(Looper.getMainLooper()).post { reconnect() }
             }
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                if (network == physicalNetwork) refreshNat64Prefix(cm, network, properties)
+            }
+
             override fun onLost(network: android.net.Network) {
+                if (network == physicalNetwork) {
+                    physicalNetwork = null
+                    refreshNat64Prefix(cm, null)
+                }
                 appendLog("[net] network lost")
             }
         }
@@ -693,7 +735,71 @@ class SlaveVpnService : VpnService() {
         } catch (_: Exception) { }
     }
 
+    private fun isPhysicalNetwork(connectivity: ConnectivityManager, network: Network): Boolean =
+        connectivity.getNetworkCapabilities(network)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true
+
+    private fun refreshNat64Prefix(
+        connectivity: ConnectivityManager,
+        network: Network?,
+        properties: LinkProperties? = network?.let(connectivity::getLinkProperties),
+    ) {
+        val announced = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) properties?.nat64Prefix else null
+        if (announced != null || network == null ||
+            connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) != true) {
+            nat64Lookup?.cancel()
+            nat64LookupNetwork = null
+            ClashBridge.setNat64Prefix(announced?.toString())
+            return
+        }
+        if (nat64LookupNetwork == network) return
+        nat64Lookup?.cancel()
+        nat64LookupNetwork = network
+        ClashBridge.setNat64Prefix(null)
+        // A cellular network can expose both IPv4 and DNS64 without publishing
+        // its prefix in LinkProperties. RFC 7050 discovers it on this network.
+        nat64Lookup = scope.launch {
+            val prefix = runCatching {
+                val addresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    lookupNat64Addresses(network)
+                } else network.getAllByName("ipv4only.arpa").asList()
+                addresses.firstNotNullOfOrNull { address ->
+                    val bytes = address.address
+                    if (bytes.size != 16 ||
+                        !bytes.copyOfRange(12, 16).contentEquals(byteArrayOf(-64, 0, 0, -86)) &&
+                        !bytes.copyOfRange(12, 16).contentEquals(byteArrayOf(-64, 0, 0, -85))) {
+                        null
+                    } else {
+                        bytes.fill(0, 12)
+                        IpPrefix(InetAddress.getByAddress(bytes), 96)
+                    }
+                }
+            }.getOrNull()
+            if (isActive && physicalNetwork == network) {
+                ClashBridge.setNat64Prefix(prefix?.toString())
+                if (prefix != null) appendLog("[net] DNS64 prefix detected")
+            }
+        }
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
+    private suspend fun lookupNat64Addresses(network: Network): List<InetAddress> =
+        suspendCancellableCoroutine { continuation ->
+            val signal = CancellationSignal()
+            continuation.invokeOnCancellation { signal.cancel() }
+            DnsResolver.getInstance().query(network, "ipv4only.arpa", DnsResolver.TYPE_AAAA,
+                DnsResolver.FLAG_EMPTY, ContextCompat.getMainExecutor(this), signal,
+                object : DnsResolver.Callback<List<InetAddress>> {
+                    override fun onAnswer(answer: List<InetAddress>, rcode: Int) = continuation.resume(answer)
+                    override fun onError(error: DnsResolver.DnsException) = continuation.resume(emptyList())
+                })
+        }
+
     private fun unregisterNetworkMonitor() {
+        physicalNetwork = null
+        nat64Lookup?.cancel()
+        nat64LookupNetwork = null
+        ClashBridge.setNat64Prefix(null)
         val cb = networkCallback ?: return
         networkCallback = null
         try {

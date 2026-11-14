@@ -268,6 +268,7 @@ class SlaveVpnPlugin : Plugin() {
         val active = if (ClashBridge.isRunning()) ClashBridge.currentProxy() else ""
         val status = JSObject()
             .put("state", state)
+            .put("embeddedFinalMask", ClashBridge.version().endsWith("-xray"))
             .put("mode", "bypass")
             .put("protocol", "")
             // Specific failure reason (null when none) so the UI can show WHY

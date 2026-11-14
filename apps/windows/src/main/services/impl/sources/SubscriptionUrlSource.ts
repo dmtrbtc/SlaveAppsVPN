@@ -3,6 +3,8 @@ import {
   normalizeSubscriptionContent,
   parseProxiesFromYaml,
   parseXrayConfigArray,
+  parseXrayFinalMaskEntries,
+  mergeXrayFinalMaskEntries,
   buildClashYaml,
   type ProxyEntry,
 } from '@slave-vpn/config'
@@ -93,30 +95,33 @@ export class SubscriptionUrlSource implements ConfigSource {
    * format (v2rayN/Xray etc.) and append ONLY the missing UDP nodes by
    * server:port:type. Returns the merged YAML + count, or null if nothing added.
    */
-  private async recoverUdpNodes(primaryYaml: string): Promise<{ yaml: string; count: number } | null> {
+  private async recoverAlternativeNodes(primaryYaml: string): Promise<{ yaml: string; count: number } | null> {
     const primary = parseProxiesFromYaml(primaryYaml)
-    if (primary.some(p => UDP_PROTOCOLS.has(p.type))) return null
+    const hasUdp = primary.some(p => UDP_PROTOCOLS.has(p.type))
     const seen = new Set(primary.map(nodeKey))
     const added: ProxyEntry[] = []
+    let masked: ProxyEntry[] = []
     for (const ua of ALT_FORMAT_UAS) {
+      if (hasUdp && ua !== ALT_FORMAT_UAS[0]) break
       let body = ''
       try {
         const { status, text } = await this.fetchRaw(ua)
         if (status < 200 || status >= 300 || !text.trim() || this.isPlaceholderResponse(text)) continue
         body = text
       } catch { continue }
-      for (const p of this.parseAltBody(body)) {
+      if (masked.length === 0) masked = parseXrayFinalMaskEntries(body)
+      for (const p of hasUdp ? [] : this.parseAltBody(body)) {
         if (!UDP_PROTOCOLS.has(p.type)) continue
         const k = nodeKey(p)
         if (seen.has(k)) continue
         seen.add(k)
         added.push(p)
       }
-      if (added.length > 0) break
+      if (hasUdp || added.length > 0) break
     }
-    if (added.length === 0) return null
-    const all = [...primary, ...added]
-    getLogger().info({ recovered: added.length, types: added.map(p => p.type) }, 'recovered UDP-protocol nodes from alt format')
+    if (added.length === 0 && masked.length === 0) return null
+    const all = mergeXrayFinalMaskEntries([...primary, ...added], masked)
+    getLogger().info({ recoveredUdp: added.length, finalMask: masked.length }, 'recovered nodes from alternate subscription format')
     return { yaml: buildClashYaml(all), count: all.length }
   }
 
@@ -188,10 +193,11 @@ export class SubscriptionUrlSource implements ConfigSource {
           continue
         }
 
-        // Additively recover Hysteria2/TUIC nodes the primary (clash) profile
-        // omitted — they live in the v2rayN/Xray format on some panels. Never
-        // replaces the primary nodes; best-effort.
-        const recovered = await this.recoverUdpNodes(normalized.yaml).catch(() => null)
+        if (normalized.warnings?.length) {
+          getLogger().warn({ warnings: normalized.warnings }, 'Unsupported nodes skipped during subscription import')
+        }
+
+        const recovered = await this.recoverAlternativeNodes(normalized.yaml).catch(() => null)
         const finalYaml = recovered?.yaml ?? normalized.yaml
         const finalCount = recovered?.count ?? normalized.proxyCount
 

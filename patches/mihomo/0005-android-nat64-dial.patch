@@ -1,0 +1,27 @@
+diff --git a/component/dialer/dialer.go b/component/dialer/dialer.go
+--- a/component/dialer/dialer.go
++++ b/component/dialer/dialer.go
+@@ -119,9 +119,23 @@ func ListenPacket(ctx context.Context, network, address string, rAddrPort netip.AddrPort, options ...Option) (net.PacketConn, error) {
+ 	return lc.ListenPacket(ctx, network, address)
+ }
+ 
++var nat64Prefix atomic.TypedValue[netip.Prefix]
++
++// SetNAT64Prefix sets the /96 prefix announced by the physical Android network.
++// An invalid prefix disables translation.
++func SetNAT64Prefix(prefix netip.Prefix) {
++	nat64Prefix.Store(prefix)
++}
++
+ func dialContext(ctx context.Context, network string, destination netip.Addr, port string, opt option) (net.Conn, error) {
+ 	var address string
+ 	destination, port = resolver.LookupIP4P(destination, port)
++	if prefix := nat64Prefix.Load(); prefix.IsValid() && prefix.Bits() == 96 && destination.IsGlobalUnicast() &&
++		!destination.IsPrivate() && destination.Is4() && (network == "tcp" || network == "tcp4") {
++		base, ipv4 := prefix.Addr().As16(), destination.As4()
++		copy(base[12:], ipv4[:])
++		destination, network = netip.AddrFrom16(base), "tcp6"
++	}
+ 	address = net.JoinHostPort(destination.String(), port)
+ 
+ 	netDialer := opt.netDialer

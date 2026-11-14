@@ -4,6 +4,12 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.3.1-dev.2] — 2026-11-14
+
+- Android and Windows: support current Xray VLESS REALITY configurations and per-node TLS fingerprints.
+- Android: discover carrier NAT64 prefixes for IPv4 proxy destinations.
+- Android and Windows: route TCP FinalMask profiles through Xray and preserve XHTTP options during import.
+
 ## [0.3.1-dev.1] — 2026-10-12
 
 ### Fixed

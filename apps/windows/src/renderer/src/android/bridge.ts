@@ -73,7 +73,7 @@ interface NativeSlaveVpn {
   reconnectCached(): Promise<{ restored: boolean }>
   listApps(): Promise<{ apps: { packageName: string; label: string; system: boolean; icon?: string }[] }>
   disconnect(): Promise<void>
-  getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null } }>
+  getStatus(): Promise<{ status: { state?: string; mode?: string; protocol?: string; lastError?: string | null; activeProxy?: string | null; embeddedFinalMask?: boolean } }>
   getTraffic(): Promise<{ traffic: TrafficStats }>
   getConnections(): Promise<{ snapshot: string }>
   closeConnection(options: { id: string }): Promise<void>
@@ -377,7 +377,14 @@ async function selectNativeProxy(name: string): Promise<void> {
   // on the next connect and retained by mihomo's store-selected setting.
   // Do not hide a running-core selector error: the UI must not claim that a
   // server is active when Mihomo rejected or failed to apply the selection.
-  await SlaveVpn.selectProxy({ name })
+  try {
+    await SlaveVpn.selectProxy({ name })
+  } catch (error) {
+    if (error instanceof Error && /proxy not (?:exist|exit)\b/i.test(error.message)) {
+      throw new Error('Узел отсутствует в текущей конфигурации VPN. Переподключите VPN после обновления подписки.')
+    }
+    throw error
+  }
   currentSelectedProxy = name
   try { window.localStorage.setItem(SELECTED_PROXY_LS_KEY, name) } catch { /* swallow */ }
 }
@@ -730,11 +737,14 @@ export function installAndroidBridge(): void {
         loadState: async () => {
           await settingsReady
           const settings = androidSettings()
+          const capability = await SlaveVpn.getStatus().catch(() => null)
           return {
             vpnMode: currentMode,
             ...(currentSelectedProxy ? { selectedProxy: currentSelectedProxy } : {}),
             utlsFingerprint: currentUtlsFingerprint,
+            ...(settings.nodeFingerprints ? { nodeFingerprints: settings.nodeFingerprints } : {}),
             realityCompatibilityNode: settings.realityCompatibilityNode ?? null,
+            embeddedFinalMask: capability?.status.embeddedFinalMask === true,
             dohProvider: settings.dohProvider ?? { id: 'cloudflare' },
             dnsPreset: settings.dnsPreset,
             dnsStrategy: settings.dnsStrategy,
@@ -1116,7 +1126,9 @@ export function installAndroidBridge(): void {
         // The fingerprint is baked into the compiled config — re-apply it to the
         // running tunnel so the change takes effect immediately (like setMode),
         // not only on the next manual reconnect.
-        if (fingerprintChanged) await reconnectIfConnected(() => core.vpn.connect())
+        if (fingerprintChanged || payload['nodeFingerprints'] !== undefined) {
+          await reconnectIfConnected(() => core.vpn.connect())
+        }
       }),
     },
     provider: {

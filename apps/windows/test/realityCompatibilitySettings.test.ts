@@ -2,6 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { SettingsSetSchema } from '../src/shared/ipc/schemas.ts'
+
+test('settings IPC accepts global and per-node fingerprints and rejects unknown values', () => {
+  const patch = { utlsFingerprint: 'firefox', nodeFingerprints: { 'test-node': 'chrome' } }
+  assert.deepEqual(SettingsSetSchema.parse(patch), patch)
+  assert.equal(SettingsSetSchema.safeParse({ nodeFingerprints: { 'test-node': 'unknown' } }).success, false)
+})
 const require = createRequire(import.meta.url)
 const { SettingsStore } = require('../../../packages/core/dist/cjs/index.js')
 

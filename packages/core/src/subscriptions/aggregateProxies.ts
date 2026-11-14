@@ -34,16 +34,28 @@ function dedupKey(entry: ParsedProxy): string {
   const sni = pickStringField(e, 'sni', 'servername')
   const realityOpts = isObject(e['reality-opts']) ? (e['reality-opts'] as Record<string, unknown>) : null
   const pbk = realityOpts ? pickStringField(realityOpts, 'public-key') : ''
-  return [entry.type, entry.server, entry.port, identity, flow, sni, pbk].join('|')
+  const finalMask = 'slave-xray-finalmask' in e ? 'xray-finalmask' : ''
+  return [entry.type, entry.server, entry.port, identity, flow, sni, pbk, finalMask].join('|')
 }
 
 function dedupEntries(entries: ParsedProxy[]): ParsedProxy[] {
-  const seen = new Map<string, ParsedProxy>()
+  const seen = new Map<string, { source: unknown; names: Set<string> }>()
+  const result: ParsedProxy[] = []
   for (const e of entries) {
     const key = dedupKey(e)
-    if (!seen.has(key)) seen.set(key, e)
+    const source = e.extra['slave-source']
+    const previous = seen.get(key)
+    if (!previous) {
+      seen.set(key, { source, names: new Set([e.name]) })
+    } else {
+      // One provider can intentionally publish separate named profiles for
+      // the same endpoint. Only the highest-priority source supplies them.
+      if (previous.source !== source || previous.names.has(e.name)) continue
+      previous.names.add(e.name)
+    }
+    result.push(e)
   }
-  return [...seen.values()]
+  return result
 }
 
 // Ensure all proxy names are unique — mihomo silently drops duplicate names.

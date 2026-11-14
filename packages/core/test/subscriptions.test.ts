@@ -201,18 +201,36 @@ test('malformed/empty alt formats fall through to sing-box; only UDP nodes are a
   assert.deepEqual(uas, ['v2rayNG/1.8.5', 'SFA/1.0', 'sing-box/1.11.0'])
 })
 
-test('primary UDP nodes suppress recovery; failed optional recovery never loses primary nodes', async () => {
+test('primary UDP nodes only query the Xray format; failed optional recovery preserves primary nodes', async () => {
   const hasUdp = fixture({ fetchText: async () => buildClashYaml([
     { ...node(), type: 'hysteria2', extra: { password: 'fixture-password' } },
   ]) })
   assert.equal((await hasUdp.fetcher.fetchEntry(entry('a'))).proxies.length, 1)
-  assert.deepEqual(hasUdp.uas, [])
+  assert.deepEqual(hasUdp.uas, ['v2rayNG/1.8.5'])
 
   const failedAlt = fixture({ fetchTextWithUserAgent: async () => { throw new Error('alt failed') } })
   const result = await failedAlt.fetcher.fetchEntry(entry('a'))
   assert.equal(result.error, null)
   assert.equal(result.proxies[0]?.type, 'vless')
   assert.equal(failedAlt.meta[0]?.patch.lastError, null)
+})
+
+test('recovers FinalMask from Xray even when the primary subscription already has UDP', async () => {
+  const primary = { ...node(), name: 'Masked', server: 'masked.example' }
+  const outbound = {
+    protocol: 'vless',
+    settings: { address: primary.server, port: primary.port, id: primary.extra.uuid },
+    streamSettings: { network: 'raw', finalmask: { tcp: [{ type: 'fragment' }] } },
+  }
+  const f = fixture({
+    fetchText: async () => buildClashYaml([
+      primary, { ...node(), name: 'UDP', type: 'hysteria2', extra: { password: 'fixture-password' } },
+    ]),
+    fetchTextWithUserAgent: async () => JSON.stringify([{ remarks: primary.name, outbounds: [outbound] }]),
+  })
+  const result = await f.fetcher.fetchEntry(entry('a'))
+  assert.deepEqual(result.proxies.map(proxy => proxy.name), ['Masked', 'UDP'])
+  assert.deepEqual(result.proxies[0]?.extra['slave-xray-finalmask'], outbound)
 })
 
 test('disabled-only source lists reject without fetching', async () => {
@@ -268,6 +286,17 @@ test('aggregation uses explicit subscription priority for duplicate-node winner'
   ], fetcher, { concurrency: 1 })
   assert.equal(result.proxies[0]?.extra['slave-source'], 'high')
   assert.deepEqual(result.perSubscription, { high: 1, low: 0 })
+})
+
+test('aggregation keeps differently named profiles of one subscription on a shared endpoint', async () => {
+  const fetcher: SubscriptionFetcher = {
+    fetchEntry: async () => ({ proxies: [node('NL'), node('NL-Backup'), node('NL')], error: null }),
+  }
+  const result = await aggregateSubscriptionProxies([
+    entry('primary', { priority: 10 }), entry('secondary', { priority: 20 }),
+  ], fetcher)
+  assert.deepEqual(result.proxies.map(proxy => proxy.name), ['NL', 'NL-Backup'])
+  assert.deepEqual(result.perSubscription, { primary: 2, secondary: 0 })
 })
 
 test('Android sequential aggregation awaits metadata, skips disabled entries and retains partial success', async () => {

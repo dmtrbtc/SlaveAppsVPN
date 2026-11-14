@@ -1,6 +1,7 @@
 import { isProxyUri, parseProxyUri, parseProxyUriList } from './uriParser'
 import { isSingBoxJson, parseSingBoxJson } from './singboxParser'
 import { buildClashYaml } from './clashYamlBuilder'
+import { isXrayConfigArray, parseXrayConfigArray, parseXrayFinalMaskEntries } from './xrayArrayParser'
 import type { NormalizedSubscription, SubscriptionFormat } from './types'
 
 // ─── Format detection ─────────────────────────────────────────────────────────
@@ -48,6 +49,21 @@ function extractProxyLinks(text: string): string[] {
     .filter(l => isProxyUri(l))
 }
 
+function normalizeProxyLinks(links: string[], format: SubscriptionFormat): NormalizedSubscription {
+  const skipped = new Set<string>()
+  const proxies = parseProxyUriList(links, message => skipped.add(message))
+  const warnings = [...skipped]
+  if (proxies.length === 0) {
+    throw new Error(warnings.join(', ') || 'Found proxy URIs but all failed to parse')
+  }
+  return {
+    yaml: buildClashYaml(proxies),
+    format,
+    proxyCount: proxies.length,
+    ...(warnings.length ? { warnings } : {}),
+  }
+}
+
 // ─── Count proxies strictly within the proxies: block ────────────────────────
 
 function countProxiesInYaml(yaml: string): number {
@@ -88,12 +104,16 @@ function normalizeText(content: string): NormalizedSubscription {
     return { yaml: buildClashYaml(proxies), format: 'singbox-json', proxyCount: proxies.length }
   }
 
+  if (isXrayConfigArray(trimmed)) {
+    const proxies = [...parseXrayConfigArray(trimmed), ...parseXrayFinalMaskEntries(trimmed)]
+    if (proxies.length === 0) throw new Error('Xray JSON contains no supported outbounds')
+    return { yaml: buildClashYaml(proxies), format: 'xray-json', proxyCount: proxies.length }
+  }
+
   // 3. Raw proxy URI list (must check before base64 — URIs contain :// which fails base64)
   const rawLinks = extractProxyLinks(trimmed)
   if (rawLinks.length > 0) {
-    const proxies = parseProxyUriList(rawLinks)
-    if (proxies.length === 0) throw new Error('Found proxy URIs but all failed to parse')
-    return { yaml: buildClashYaml(proxies), format: 'raw-links', proxyCount: proxies.length }
+    return normalizeProxyLinks(rawLinks, 'raw-links')
   }
 
   // 4. Base64-encoded content
@@ -129,6 +149,8 @@ function normalizeDecoded(decoded: string): NormalizedSubscription {
   const trimmed = decoded.trim()
   let format: SubscriptionFormat = 'base64-links'
 
+  if (isXrayConfigArray(trimmed)) return normalizeText(trimmed)
+
   if (isClashYaml(trimmed)) {
     const proxyCount = countProxiesInYaml(trimmed)
     if (proxyCount === 0) throw new Error('Base64-decoded YAML contains no proxies')
@@ -143,9 +165,7 @@ function normalizeDecoded(decoded: string): NormalizedSubscription {
 
   const decodedLinks = extractProxyLinks(trimmed)
   if (decodedLinks.length > 0) {
-    const proxies = parseProxyUriList(decodedLinks)
-    if (proxies.length === 0) throw new Error('Base64 content had proxy URIs but all failed to parse')
-    return { yaml: buildClashYaml(proxies), format, proxyCount: proxies.length }
+    return normalizeProxyLinks(decodedLinks, format)
   }
 
   throw new Error('Base64-decoded content is not a recognized subscription format')

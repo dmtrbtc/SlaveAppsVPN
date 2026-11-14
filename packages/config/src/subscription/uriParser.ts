@@ -1,4 +1,5 @@
 import type { ProxyEntry } from './types'
+import { parseXhttpOptions, UnsupportedProxyUriError } from './xhttpOptions'
 
 // ─── VLESS ────────────────────────────────────────────────────────────────────
 
@@ -11,7 +12,11 @@ function parseVless(url: URL): ProxyEntry {
   const security = p.get('security') ?? 'none'
   // "raw" is the new name for "tcp"; mihomo's clash schema still uses "tcp".
   const networkRaw = p.get('type') ?? 'tcp'
-  const network = networkRaw === 'raw' ? 'tcp' : networkRaw
+  const network = networkRaw === 'raw' ? 'tcp' : networkRaw === 'splithttp' ? 'xhttp' : networkRaw
+
+  if (p.get('fm') || p.get('finalmask')) {
+    throw new UnsupportedProxyUriError('Xray FinalMask: этот профиль требует Xray-совместимого ядра')
+  }
 
   const extra: Record<string, unknown> = { uuid, udp: true }
 
@@ -103,6 +108,9 @@ function parseVless(url: URL): ProxyEntry {
     if (httpPath) httpOpts.path = httpPath
     if (httpHost) httpOpts.host = httpHost
     extra['httpupgrade-opts'] = httpOpts
+  } else if (network === 'xhttp') {
+    extra.network = 'xhttp'
+    extra['xhttp-opts'] = parseXhttpOptions(p)
   }
 
   return { name, type: 'vless', server, port, transport: network, securityType: security, extra }
@@ -410,13 +418,18 @@ export function parseProxyUriSafe(link: string): ProxyEntry | null {
   }
 }
 
-export function parseProxyUriList(links: string[]): ProxyEntry[] {
+export function parseProxyUriList(links: string[], onUnsupported?: (message: string) => void): ProxyEntry[] {
   const seen = new Set<string>()
   const result: ProxyEntry[] = []
 
   for (const link of links) {
-    const entry = parseProxyUriSafe(link)
-    if (!entry) continue
+    let entry: ProxyEntry
+    try {
+      entry = parseProxyUri(link)
+    } catch (error) {
+      if (error instanceof UnsupportedProxyUriError) onUnsupported?.(error.message)
+      continue
+    }
 
     // Deduplicate by server+port+type
     const key = `${entry.type}|${entry.server}|${entry.port}|${String(entry.extra.uuid ?? entry.extra.password ?? '')}`

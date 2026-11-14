@@ -1,5 +1,6 @@
 import yaml from 'js-yaml'
 import { applyRealityCompatibility } from './realityCompatibility'
+import { XRAY_FINALMASK_OUTBOUND } from '../subscription/xrayArrayParser'
 import { sanitizeInvalidMldsa65Verify, type Mldsa65SanitizedNode } from './sanitizeRealityMldsa65'
 import type { VPNMode } from '@slave-vpn/shared'
 import type { NormalizedPolicy } from '@slave-vpn/routing'
@@ -60,6 +61,11 @@ export interface MihomoRoutingExtras {
 }
 
 export interface ConfigGenerationContext {
+  /** Authenticated loopback proxies provided by the platform after Xray starts. */
+  finalMaskProxies?: ReadonlyMap<string, ParsedProxy>
+  /** Embedded Android Xray resolves these outbounds before Mihomo parses proxies. */
+  embeddedFinalMask?: boolean
+  xraySidecarProcessPath?: string
   subscriptionYaml: string
   selectedProxy?: string
   vpnMode: VPNMode
@@ -84,6 +90,7 @@ export interface ConfigGenerationContext {
   // default — leaving provider-set explicit fingerprints alone). When set
   // explicitly, the value is forced onto every proxy.
   utlsFingerprint?: string
+  nodeFingerprints?: Record<string, string>
   realityCompatibilityNode?: string | null
   // Called when one or more REALITY nodes carried a damaged ML-DSA-65 verify
   // key (pqv) that the generator had to strip to keep the config loadable.
@@ -93,14 +100,6 @@ export interface ConfigGenerationContext {
 
 const SLAVE_SELECT_GROUP = 'SLAVE-SELECT'
 const SLAVE_AUTO_GROUP = 'SLAVE-AUTO'
-// Load-balance group used ONLY for Telegram (see rebalanceTelegramRules). Telegram
-// media downloads open many parallel connections to the DCs; pinned to the single
-// user-selected node (SLAVE-SELECT) they all share one uplink → «то быстро, то
-// медленно» as that node congests. A round-robin load-balance spreads each new
-// connection across all nodes, so the parallel media streams use aggregate
-// bandwidth. round-robin is per-CONNECTION, so a single voice call (one connection)
-// still stays on one node for its duration — no mid-call jitter.
-const SLAVE_BALANCE_GROUP = 'SLAVE-BALANCE'
 // HTTPS (not http) — mihomo warns that HTTP health-check URLs can be hijacked by
 // proxies and that some don't handle the repeated HEAD requests, causing false
 // «context deadline exceeded» health-check failures. HTTPS is the recommended,
@@ -118,44 +117,66 @@ const URL_TEST_INTERVAL = 60
 // lazy=true skips health checks while the group isn't actively carrying traffic.
 const URL_TEST_TOLERANCE = 50
 const URL_TEST_LAZY = true
-// SLAVE-BALANCE health-check is tighter than the url-test groups: a load-balance
-// round-robins to EVERY member, so a dead node (a down cabinet server, or a flaky
-// third-party node merged in from a second subscription) keeps eating Telegram
-// connections until health-check marks it down. A 30s interval + a short 3s
-// timeout drops dead members quickly so balancing stays among live nodes.
-const BALANCE_HEALTH_INTERVAL = 30
-const BALANCE_HEALTH_TIMEOUT = 3000
-
 const dnsCompiler = new MihomoDnsCompiler()
 const ruleCompiler = new MihomoRuleCompiler()
 
 export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   const parser = new SubscriptionParser()
   const profile = parser.parse(ctx.subscriptionYaml)
+  const unavailable = new Set<string>()
+  profile.proxies = profile.proxies.flatMap(proxy => {
+    if (!(XRAY_FINALMASK_OUTBOUND in proxy)) return [proxy]
+    if (ctx.embeddedFinalMask) return [proxy]
+    const loopback = ctx.finalMaskProxies?.get(proxy.name)
+    if (loopback) return [loopback]
+    unavailable.add(proxy.name)
+    return []
+  })
+  if (unavailable.size > 0) {
+    if (profile.proxies.length === 0) throw new Error('Подписка требует Xray FinalMask')
+    if (ctx.selectedProxy && unavailable.has(ctx.selectedProxy)) {
+      throw new Error('Выбранный сервер требует Xray FinalMask')
+    }
+    let removed: boolean
+    do {
+      removed = false
+      profile.proxyGroups = profile.proxyGroups.filter(group => {
+        group.proxies = group.proxies.filter(name => !unavailable.has(name))
+        if (group.proxies.length > 0) return true
+        unavailable.add(group.name)
+        removed = true
+        return false
+      })
+    } while (removed)
+  }
 
   // A single damaged pqv must not abort the whole engine load (see
   // sanitizeInvalidMldsa65Verify) — strip it before anything else looks at the
   // proxies, so rotation/compatibility and the emitted YAML see a clean set.
   const { proxies: sanitizedProxies, sanitized: mldsa65Sanitized } =
     sanitizeInvalidMldsa65Verify(profile.proxies)
-  profile.proxies = sanitizedProxies
   if (mldsa65Sanitized.length > 0) ctx.onMldsa65Sanitized?.(mldsa65Sanitized)
+
+  // Modern Xray REALITY requires a hybrid key share even without an ML-DSA
+  // verification key. Respect a provider's explicit choice for legacy nodes.
+  const mihomoProxies = sanitizedProxies.map(proxy => {
+    const opts = proxy['reality-opts']
+    if (proxy.type !== 'vless' || !opts || typeof opts !== 'object' || Array.isArray(opts)
+      || 'support-x25519mlkem768' in opts) return proxy
+    return { ...proxy, 'reality-opts': { ...opts, 'support-x25519mlkem768': true } }
+  })
 
   // uTLS rotation — same logic as the sing-box compiler. Mihomo passes the
   // proxies through to its YAML output untouched, so we rewrite the
   // client-fingerprint field on each parsed proxy before emit.
-  const rotatedProxies = applyUtlsRotation(profile.proxies, {
+  const rotatedProxies = applyUtlsRotation(mihomoProxies, {
     fingerprint: (ctx.utlsFingerprint as UtlsFingerprint | undefined) ?? 'randomized',
     override: ctx.utlsFingerprint ? 'always' : 'when-missing-or-chrome',
+    ...(ctx.nodeFingerprints ? { nodeFingerprints: ctx.nodeFingerprints } : {}),
   })
   profile.proxies = applyRealityCompatibility(rotatedProxies, ctx.realityCompatibilityNode)
 
   const proxyNames = profile.proxies.map((p) => p.name)
-
-  // Balancing Telegram only makes sense with ≥2 nodes; with one node there's
-  // nothing to spread across, so keep Telegram on SLAVE-SELECT (respects the
-  // manual pick) and don't emit an empty/pointless balance group.
-  const useTelegramBalance = proxyNames.length >= 2
 
   const managedGroups: ParsedProxyGroup[] = [
     {
@@ -172,21 +193,6 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       tolerance: URL_TEST_TOLERANCE,
       lazy: URL_TEST_LAZY,
     },
-    ...(useTelegramBalance ? [{
-      name: SLAVE_BALANCE_GROUP,
-      type: 'load-balance',
-      proxies: proxyNames,
-      // round-robin spreads each new connection across nodes (throughput for
-      // Telegram's parallel media streams). A tight health-check (30s + 3s
-      // timeout) drops dead members fast so balancing stays among LIVE nodes —
-      // without it a down cabinet node or a flaky third-party node (merged from a
-      // second subscription) keeps timing out Telegram connections.
-      strategy: 'round-robin',
-      url: URL_TEST_URL,
-      interval: BALANCE_HEALTH_INTERVAL,
-      timeout: BALANCE_HEALTH_TIMEOUT,
-      lazy: URL_TEST_LAZY,
-    } as ParsedProxyGroup] : []),
   ]
 
   // vpnMode/routingPolicy is the only routing authority. Platform extras may
@@ -202,13 +208,12 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
   // `ru-blocked`/`antifilter-community` that live in a separate .dat, or
   // `torrent`/`twitch-ads` absent from the MetaCubeX build). Only filter when we
   // actually know the available set; otherwise leave rules untouched.
-  const filteredRules = filterUnknownGeoSiteRules(rawRules, ctx.availableGeoSites)
-  // Redirect Telegram (GEOSITE/GEOIP,telegram) from the single-node SLAVE-SELECT
-  // to the round-robin SLAVE-BALANCE group so parallel media connections spread
-  // across nodes. No-op when there are <2 nodes (group not emitted).
-  const rules = useTelegramBalance
-    ? rebalanceTelegramRules(filteredRules, SLAVE_SELECT_GROUP, SLAVE_BALANCE_GROUP)
-    : filteredRules
+  const rules = filterUnknownGeoSiteRules(rawRules, ctx.availableGeoSites)
+  if (ctx.xraySidecarProcessPath && ctx.finalMaskProxies?.size) {
+    const executable = ctx.xraySidecarProcessPath
+    if (/[,\r\n]/.test(executable)) throw new Error('Invalid Xray executable path for routing')
+    rules.unshift(`PROCESS-PATH,${executable},DIRECT`)
+  }
 
   const config: Record<string, unknown> = {
     'mixed-port': ctx.settings.mixedPort,
@@ -299,23 +304,6 @@ function buildTunSection(settings: GeneratorSettings): Record<string, unknown> {
     'strict-route': true,
     'auto-detect-interface': true,
   }
-}
-
-// Redirect the Telegram routing rules (GEOSITE,telegram / GEOIP,telegram) from
-// `fromGroup` (SLAVE-SELECT, single node) to `toGroup` (SLAVE-BALANCE, round-robin).
-// Only these two rules are touched — every other rule keeps its original target, so
-// the user's manual node pick still governs general surfing. Comma-split (not regex)
-// so a trailing `,no-resolve` on the GEOIP rule is preserved.
-function rebalanceTelegramRules(rules: string[], fromGroup: string, toGroup: string): string[] {
-  return rules.map((rule) => {
-    const parts = rule.split(',')
-    const isTelegram = (parts[0] === 'GEOSITE' || parts[0] === 'GEOIP') && parts[1] === 'telegram'
-    if (isTelegram && parts[2] === fromGroup) {
-      parts[2] = toGroup
-      return parts.join(',')
-    }
-    return rule
-  })
 }
 
 // Telegram data-center ranges (official https://core.telegram.org/resources/cidr.txt).

@@ -11,6 +11,7 @@ export type EngineType = 'mihomo' | 'singbox' | 'xray'
 
 export interface EngineInitConfig {
   binaryPath: string
+  xraySidecarBinaryPath?: string
   workingDir: string
   apiPort: number
   apiSecret: string
@@ -45,6 +46,7 @@ export interface ConnectionProfile {
    * ConfigGenerator/Compiler.
    */
   utlsFingerprint?: string
+  nodeFingerprints?: Record<string, string>
   realityCompatibilityNode?: string | null
 }
 

@@ -1,5 +1,6 @@
 import type { ConfigGenerationContext } from '../../generator/ConfigGenerator'
 import { SubscriptionParser } from '../../parser/SubscriptionParser'
+import { XRAY_FINALMASK_OUTBOUND } from '../../subscription/xrayArrayParser'
 import { applyUtlsRotation, type UtlsFingerprint } from '../../utls/applyUtlsRotation'
 import { compileOutbound } from './protocols'
 import { compileRoutingRules, PRIVATE_DIRECT_RULES } from './routing'
@@ -84,7 +85,7 @@ export function generateSingboxConfig(ctx: ConfigGenerationContext): string {
   // uTLS rotation — overwrite static "chrome" defaults with the requested
   // fingerprint (randomized by default) so behavioural-DPI can't fingerprint
   // a stable Client Hello pattern.
-  const rotatedProxies = applyUtlsRotation(profile.proxies, {
+  const rotatedProxies = applyUtlsRotation(profile.proxies.filter(proxy => !(XRAY_FINALMASK_OUTBOUND in proxy)), {
     fingerprint: (ctx.utlsFingerprint as UtlsFingerprint | undefined) ?? 'randomized',
     override: ctx.utlsFingerprint ? 'always' : 'when-missing-or-chrome',
   })

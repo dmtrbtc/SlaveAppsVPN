@@ -1,4 +1,5 @@
 import { VPN } from '@slave-vpn/shared'
+import yaml from 'js-yaml'
 import type { ProxyEntry } from './types'
 
 // ─── YAML scalar serializer ───────────────────────────────────────────────────
@@ -18,46 +19,6 @@ function quoteYamlStr(s: string): string {
   return s
 }
 
-function serializeScalar(v: unknown): string {
-  if (v === null || v === undefined) return 'null'
-  if (typeof v === 'boolean') return v ? 'true' : 'false'
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'string') return quoteYamlStr(v)
-  return String(v)
-}
-
-// ─── Single proxy → YAML block ────────────────────────────────────────────────
-
-function proxyEntryToYaml(proxy: ProxyEntry): string {
-  const lines: string[] = [`  - name: ${quoteYamlStr(proxy.name)}`]
-  lines.push(`    type: ${proxy.type}`)
-  lines.push(`    server: ${proxy.server}`)
-  lines.push(`    port: ${proxy.port}`)
-
-  for (const [key, val] of Object.entries(proxy.extra)) {
-    if (val === undefined || val === null) continue
-
-    if (typeof val === 'object' && !Array.isArray(val)) {
-      lines.push(`    ${key}:`)
-      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
-        if (v !== undefined && v !== null) {
-          lines.push(`      ${k}: ${serializeScalar(v)}`)
-        }
-      }
-    } else if (Array.isArray(val)) {
-      if (val.length === 0) continue
-      lines.push(`    ${key}:`)
-      for (const item of val) {
-        lines.push(`      - ${serializeScalar(item)}`)
-      }
-    } else {
-      lines.push(`    ${key}: ${serializeScalar(val)}`)
-    }
-  }
-
-  return lines.join('\n')
-}
-
 // ─── Full minimal Clash YAML from proxy list ──────────────────────────────────
 // Used to normalize raw URI lists and sing-box configs into Clash format
 // so ConfigGenerator can process them uniformly.
@@ -67,7 +28,13 @@ export function buildClashYaml(proxies: ProxyEntry[]): string {
     throw new Error('Cannot build Clash YAML with zero proxies')
   }
 
-  const proxyYaml = proxies.map(proxyEntryToYaml).join('\n')
+  const proxyYaml = yaml.dump({
+    proxies: proxies.map(({ name, type, server, port, extra }) => ({
+      name, type, server, port,
+      ...Object.fromEntries(Object.entries(extra).filter(([, value]) =>
+        value != null && (!Array.isArray(value) || value.length > 0))),
+    })),
+  }, { noRefs: true, lineWidth: -1 }).trimEnd()
 
   return [
     `mixed-port: ${VPN.MIHOMO_MIXED_PORT}`,
@@ -93,7 +60,6 @@ export function buildClashYaml(proxies: ProxyEntry[]): string {
     `    - 1.1.1.1`,
     `    - 8.8.4.4`,
     ``,
-    `proxies:`,
     proxyYaml,
     ``,
     `proxy-groups:`,

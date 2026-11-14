@@ -150,6 +150,7 @@ export interface AppSettings {
   // above scenario rules. See CustomRoutingRule.
   customRoutingRules: CustomRoutingRule[]
   utlsFingerprint: UtlsFingerprintName
+  nodeFingerprints?: Record<string, string>
   realityCompatibilityNode?: string | null
 }
 
