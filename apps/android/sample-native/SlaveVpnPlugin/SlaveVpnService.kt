@@ -31,6 +31,7 @@ import android.net.DnsResolver
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.CancellationSignal
@@ -53,6 +54,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.InetAddress
 import java.util.Locale
@@ -67,11 +69,14 @@ class SlaveVpnService : VpnService() {
     private var trafficJob: Job? = null
     // Watches the active (non-VPN) network so the tunnel follows Wi-Fi↔mobile switches.
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
-    private var networkInitialized = false
+    private val networkHandler = Handler(Looper.getMainLooper())
+    private val networkHandover = NetworkHandoverState<Network>()
+    private var networkRecoveryJob: Job? = null
+    private var reconnectJob: Job? = null
     @Volatile private var physicalNetwork: Network? = null
+    private var physicalNetworkUsable = false
     private var nat64Lookup: Job? = null
     private var nat64LookupNetwork: Network? = null
-    private var lastNetworkReconnectAt = 0L
     // Battery: the ↓/↑ speed loop only refreshes the notification while the
     // screen is interactive — nobody sees the speed with the display off, and a
     // 2s JNI query + NotificationManager.notify() cadence keeps the CPU and
@@ -84,6 +89,8 @@ class SlaveVpnService : VpnService() {
     private var cachedLargeIcon: Bitmap? = null
 
     companion object {
+        // Go's LastTunConf survives service recreation in this same process.
+        @Volatile private var lastAppliedTunFd: Int? = null
         const val ACTION_START = "com.slavevpn.START"
         const val ACTION_STOP  = "com.slavevpn.STOP"
         // Notification «Переподключить» — full core restart with the cached config
@@ -102,13 +109,19 @@ class SlaveVpnService : VpnService() {
         val BRAND_COLOR = 0xFF5B8DEF.toInt()
         const val TUN_MTU      = 9000
 
-        @JvmStatic var currentState: String = "disconnected"
+        @JvmStatic @Volatile var currentState: String = "disconnected"
             private set
 
         // Last specific failure reason — surfaced to the renderer via getStatus
         // so the UI can show WHY a connection failed instead of a generic
         // "Connection failed". Cleared when a fresh connect attempt begins.
         @JvmStatic @Volatile var currentError: String? = null
+            private set
+
+        @JvmStatic @Volatile var currentNetworkTransport: String = "none"
+            private set
+
+        @JvmStatic @Volatile var currentNat64Enabled: Boolean = false
             private set
 
         private var currentMode: String = "bypass"
@@ -215,7 +228,13 @@ class SlaveVpnService : VpnService() {
         }
 
         @JvmStatic
-        fun cacheConfig(ctx: Context, config: String, selected: String?, splitMode: String, splitApps: List<String>) {
+        fun cacheConfig(
+            ctx: Context,
+            config: String,
+            selected: String?,
+            splitMode: String,
+            splitApps: List<String>,
+        ) {
             if (config.isBlank()) return
             try {
                 ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -225,6 +244,13 @@ class SlaveVpnService : VpnService() {
                     .putString(K_SPLIT_APPS, splitApps.joinToString("\n"))
                     .commit()
             } catch (_: Exception) { }
+        }
+
+        @JvmStatic
+        fun cacheSelectedProxy(ctx: Context, name: String) {
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(K_SELECTED, name)
+                .apply()
         }
 
         @JvmStatic
@@ -417,7 +443,12 @@ class SlaveVpnService : VpnService() {
                         capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
                 }
             }
-            refreshNat64Prefix(connectivity, physicalNetwork)
+            physicalNetworkUsable = isNetworkUsable(physicalNetwork?.let(connectivity::getNetworkCapabilities))
+            if (physicalNetworkUsable) refreshNat64Prefix(connectivity, physicalNetwork)
+            currentNetworkTransport = describePhysicalNetwork(connectivity, physicalNetwork)
+            networkHandover.update(physicalNetwork, physicalNetworkUsable)
+            val startNetworkRevision = networkHandover.snapshot()
+            registerNetworkMonitor()
             val builder = Builder()
                 .setSession("SLAVE VPN")
                 .addAddress("172.19.0.1", 30)
@@ -428,6 +459,7 @@ class SlaveVpnService : VpnService() {
                 .addDnsServer("1.1.1.1")
                 .setMtu(TUN_MTU)
                 .setBlocking(true)
+            physicalNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
 
             // Per-app split tunnel. include → ONLY these apps go through the VPN;
             // exclude → all apps EXCEPT these. Empty list / "off" ⇒ all apps tunnel.
@@ -448,7 +480,12 @@ class SlaveVpnService : VpnService() {
             // closes it on Shutdown. Give it a DUP'd fd it owns exclusively, and
             // keep the original ParcelFileDescriptor for ourselves — avoids a
             // double-close of the same descriptor on stop.
-            val coreFd = ParcelFileDescriptor.dup(pfd.fileDescriptor).detachFd()
+            val coreFd = duplicateDistinctTunDescriptor(
+                previous = lastAppliedTunFd,
+                duplicate = { ParcelFileDescriptor.dup(pfd.fileDescriptor) },
+                descriptor = { it.fd },
+                close = { runCatching { it.close() } },
+            ).detachFd()
             android.util.Log.i("SlaveVpnService", "TUN established, coreFd=$coreFd")
             appendLog("[service] TUN established, fd=$coreFd")
 
@@ -468,9 +505,14 @@ class SlaveVpnService : VpnService() {
                         },
                         onLog = { level, message -> appendLog("[$level] $message") },
                     )
+                    lastAppliedTunFd = coreFd
                     // Parse/apply succeeded: ownership of the detached duplicate
                     // now belongs to mihomo and Shutdown will close it.
                     coreOwnsTunFd = true
+                    if (!isActive || !shouldRun(applicationContext)) {
+                        ClashBridge.stop()
+                        return@launch
+                    }
                     // Apply the user's persisted server choice now that the
                     // SLAVE-SELECT group exists — otherwise mihomo defaults to
                     // SLAVE-AUTO (url-test) and ignores the selection.
@@ -482,20 +524,20 @@ class SlaveVpnService : VpnService() {
                             appendLog("[service] select proxy failed: ${e.message}")
                         }
                     }
-                    currentState = "connected"
-                    currentError = null
-                    // Persist this known-good config so the QS tile can re-connect
-                    // with one tap even when the app process is gone.
-                    cacheConfig(applicationContext, configYaml, selectedProxy, splitMode, splitApps)
-                    requestTileUpdate(applicationContext)
-                    appendLog("[service] connected · mihomo ${ClashBridge.version()}")
-                    notify("Подключено · mihomo ${ClashBridge.version()}")
-                    // Begin live ↓/↑ speed updates in the notification.
-                    startTrafficUpdates()
-                    // Follow Wi-Fi↔mobile switches so the tunnel reconnects fast.
-                    registerNetworkMonitor()
-                    // Pause the speed updates while the screen is off (battery).
-                    registerScreenMonitor()
+                    withContext(Dispatchers.Main) {
+                        if (!shouldRun(applicationContext)) return@withContext
+                        currentState = "connected"
+                        currentError = null
+                        cacheConfig(applicationContext, configYaml, selectedProxy, splitMode, splitApps)
+                        networkHandover.connected(startNetworkRevision)
+                        scheduleNetworkRecovery()
+                        requestTileUpdate(applicationContext)
+                        appendLog("[service] connected · mihomo ${ClashBridge.version()}")
+                        notify("Подключено · mihomo ${ClashBridge.version()}")
+                        startTrafficUpdates()
+                        registerNetworkMonitor()
+                        registerScreenMonitor()
+                    }
                 } catch (e: Exception) {
                     if (!coreOwnsTunFd) {
                         // Parse failures happen before mihomo opens the injected
@@ -504,24 +546,26 @@ class SlaveVpnService : VpnService() {
                         // device remains permanently blackholed until process death.
                         closeDetachedTunFd(coreFd)
                     }
+                    // Disconnect cancels the startup coroutine. Its late result
+                    // must not overwrite the disconnected state or notification.
+                    if (!isActive || !shouldRun(applicationContext)) return@launch
                     val msg = e.message ?: e.javaClass.simpleName
                     android.util.Log.e("SlaveVpnService", "mihomo start failed", e)
-                    currentState = "error"
-                    currentError = "mihomo: $msg"
-                    requestTileUpdate(applicationContext)
-                    appendLog("[service] mihomo start failed: $msg")
-                    if (killSwitchEnabled) {
-                        // Kill switch ON: DON'T tear down the TUN. The blocking
-                        // interface stays up so every packet is blackholed — no leak
-                        // to the raw network. The service keeps running (foreground);
-                        // the user releases it from the «Отключить» notification action.
-                        appendLog("[service] kill-switch: ядро не поднялось → трафик заблокирован (TUN держим)")
-                        notify("Трафик заблокирован (kill switch) · нажмите «Отключить»")
-                    } else {
-                        setShouldRun(applicationContext, false)
-                        notify("Ошибка: $msg")
-                        cleanupTun()
-                        stopSelf()
+                    withContext(Dispatchers.Main) {
+                        if (!shouldRun(applicationContext)) return@withContext
+                        currentState = "error"
+                        currentError = "mihomo: $msg"
+                        requestTileUpdate(applicationContext)
+                        appendLog("[service] mihomo start failed: $msg")
+                        if (killSwitchEnabled) {
+                            appendLog("[service] kill-switch: ядро не поднялось → трафик заблокирован (TUN держим)")
+                            notify("Трафик заблокирован (kill switch) · нажмите «Отключить»")
+                        } else {
+                            setShouldRun(applicationContext, false)
+                            notify("Ошибка: $msg")
+                            cleanupTun()
+                            stopSelf()
+                        }
                     }
                 }
             }
@@ -614,6 +658,8 @@ class SlaveVpnService : VpnService() {
 
     private fun stopVpn() {
         setShouldRun(applicationContext, false)
+        reconnectJob?.cancel()
+        reconnectJob = null
         unregisterNetworkMonitor()
         unregisterScreenMonitor()
         trafficJob?.cancel()
@@ -640,6 +686,7 @@ class SlaveVpnService : VpnService() {
      * (never connected this install) we open the app instead of failing silently.
      */
     private fun reconnect() {
+        if (reconnectJob?.isActive == true || currentState == "connecting") return
         val bundle = readCachedConfig(applicationContext)
         if (bundle == null) {
             appendLog("[service] reconnect: no cached config — opening app")
@@ -655,7 +702,7 @@ class SlaveVpnService : VpnService() {
         notify("Переподключение…")
         val prevJob = coreJob
         coreJob = null
-        scope.launch {
+        reconnectJob = scope.launch {
             try { ClashBridge.stop() } catch (_: Exception) { }
             prevJob?.cancel()
             // Kill switch: keep the TUN up across the restart so there's NO leak
@@ -664,8 +711,12 @@ class SlaveVpnService : VpnService() {
             if (!killSwitchEnabled) cleanupTun()
             // Let the native core fully release before re-establishing.
             delay(400)
-            currentState = "disconnected" // clear the startVpn re-entry guard
-            startVpn(bundle.config, bundle.selected, bundle.splitMode, bundle.splitApps)
+            if (!isActive || !shouldRun(applicationContext)) return@launch
+            withContext(Dispatchers.Main) {
+                if (!shouldRun(applicationContext)) return@withContext
+                currentState = "disconnected" // clear the startVpn re-entry guard
+                startVpn(bundle.config, bundle.selected, bundle.splitMode, bundle.splitApps)
+            }
         }
     }
 
@@ -680,63 +731,159 @@ class SlaveVpnService : VpnService() {
     }
 
     // ─── Network monitor (Wi-Fi ↔ mobile hand-off) ──────────────────────────────
-    // When the DEFAULT network changes (e.g. leaving Wi-Fi for mobile), the tunnel's
-    // protected sockets stay bound to the dead network and every app hangs — mihomo
-    // can't self-recover (its health checks dial over the dead network and all fail),
-    // so the user had to reconnect by hand. We watch the default network via
-    // registerDefaultNetworkCallback and, on a real hand-off, rebind the underlying
-    // network and do a full reconnect automatically (debounced).
+    // The application's default network may be our own VPN. Observe physical
+    // INTERNET networks instead, including LTE that was already up before Wi-Fi
+    // disappeared. All callbacks and recovery decisions run on the main thread.
     private fun registerNetworkMonitor() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            networkHandler.post { if (shouldRun(applicationContext)) registerNetworkMonitor() }
+            return
+        }
         if (networkCallback != null) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
-        networkInitialized = false
+        val available = linkedMapOf<Network, NetworkCapabilities>()
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        // Android 12+ selects the best physical network itself. Older versions
+        // report all matching networks, so prefer the physical default, then a
+        // validated Ethernet/Wi-Fi connection over the cellular standby.
+        fun selectLegacyNetwork(): Network? {
+            val active = cm.activeNetwork
+            if (available.containsKey(active) && isNetworkUsable(available[active])) return active
+            return available.maxByOrNull { (_, capabilities) ->
+                val usable = if (isNetworkUsable(capabilities)) 1000 else 0
+                val validated = if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) 100 else 0
+                val transport = when {
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 30
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 20
+                    capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 10
+                    else -> 0
+                }
+                usable + validated + transport
+            }?.key
+        }
         val cb = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                if (!isPhysicalNetwork(cm, network)) return
-                physicalNetwork = network
-                refreshNat64Prefix(cm, network)
-                try { setUnderlyingNetworks(arrayOf(network)) } catch (_: Exception) { }
-                // First callback = the network we're already on (registration echo) →
-                // just bind the underlying network. A LATER default-network change
-                // (Wi-Fi↔mobile) is a real hand-off: the proxy sockets are stuck on the
-                // dead network and mihomo can't self-recover (health checks all fail), so
-                // do a FULL reconnect — exactly what the user had to do by hand — debounced
-                // to avoid thrashing on flapping networks.
-                if (!networkInitialized) { networkInitialized = true; return }
-                if (currentState != "connected") return
-                val now = System.currentTimeMillis()
-                if (now - lastNetworkReconnectAt < 5000) return
-                lastNetworkReconnectAt = now
-                appendLog("[net] default network changed → auto-reconnect")
-                Handler(Looper.getMainLooper()).post { reconnect() }
-            }
-            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
-                if (network == physicalNetwork) refreshNat64Prefix(cm, network, properties)
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                networkHandler.post {
+                    if (networkCallback !== this) return@post
+                    available[network] = capabilities
+                    val selected = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) network else selectLegacyNetwork()
+                    updatePhysicalNetwork(cm, selected, available[selected])
+                }
             }
 
-            override fun onLost(network: android.net.Network) {
-                if (network == physicalNetwork) {
-                    physicalNetwork = null
-                    refreshNat64Prefix(cm, null)
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+                networkHandler.post {
+                    if (networkCallback === this && network == physicalNetwork && physicalNetworkUsable) {
+                        refreshNat64Prefix(cm, network, properties)
+                    }
                 }
-                appendLog("[net] network lost")
+            }
+
+            override fun onLost(network: Network) {
+                networkHandler.post {
+                    if (networkCallback !== this) return@post
+                    available.remove(network)
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                        val selected = selectLegacyNetwork()
+                        updatePhysicalNetwork(cm, selected, available[selected])
+                    } else if (network == physicalNetwork) {
+                        updatePhysicalNetwork(cm, null)
+                    }
+                }
             }
         }
+        networkCallback = cb
         try {
-            // registerDefaultNetworkCallback fires onAvailable whenever the app's
-            // DEFAULT network changes (Wi-Fi→mobile and back) — the actual hand-off.
-            // A plain registerNetworkCallback(request) only fires when a *new* network
-            // appears, so leaving Wi-Fi for already-active mobile never triggered it
-            // (the v0.2.26-dev.1 bug). minSdk is 24, where the default-network
-            // callback API is available.
-            cm.registerDefaultNetworkCallback(cb)
-            networkCallback = cb
-        } catch (_: Exception) { }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                cm.registerBestMatchingNetworkCallback(request, cb, networkHandler)
+            } else {
+                cm.registerNetworkCallback(request, cb)
+            }
+        } catch (e: Exception) {
+            networkCallback = null
+            appendLog("[net] network monitor registration failed: ${e.message}")
+        }
+    }
+
+    private fun updatePhysicalNetwork(
+        connectivity: ConnectivityManager,
+        network: Network?,
+        capabilities: NetworkCapabilities? = network?.let(connectivity::getNetworkCapabilities),
+    ) {
+        val sameNetwork = physicalNetwork == network
+        physicalNetwork = network
+        physicalNetworkUsable = isNetworkUsable(capabilities)
+        currentNetworkTransport = describePhysicalNetwork(connectivity, network)
+        val changed = networkHandover.update(network, physicalNetworkUsable)
+        // Capabilities may become usable after the first DNS64 lookup failed.
+        // Retry discovery on those events even when the Network is unchanged.
+        if (physicalNetworkUsable) {
+            refreshNat64Prefix(connectivity, network)
+        } else {
+            nat64Lookup?.cancel()
+            nat64LookupNetwork = null
+            publishNat64Prefix(null)
+        }
+        if (!changed) return
+        try { setUnderlyingNetworks(network?.let { arrayOf(it) } ?: emptyArray()) } catch (_: Exception) { }
+        appendLog(when {
+            network == null -> "[net] waiting for physical network"
+            !physicalNetworkUsable -> "[net] physical network suspended"
+            sameNetwork -> "[net] physical network resumed"
+            else -> "[net] physical network changed"
+        })
+        scheduleNetworkRecovery()
+    }
+
+    private fun isNetworkUsable(capabilities: NetworkCapabilities?): Boolean =
+        capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
+
+    private fun scheduleNetworkRecovery() {
+        if (!shouldRun(applicationContext) || !networkHandover.needsRecovery() || networkRecoveryJob?.isActive == true) return
+        networkRecoveryJob = scope.launch(Dispatchers.Main) {
+            // Coalesce a burst of changes without discarding the last network.
+            delay(350)
+            var attemptedRevision: Long? = null
+            while (isActive && shouldRun(applicationContext) && networkHandover.needsRecovery()) {
+                val revision = networkHandover.snapshot()
+                // A configuration/startup error needs a new event or user action,
+                // rather than an unbounded restart loop on the same network.
+                if (currentState == "error" && attemptedRevision == revision) break
+                if (currentState == "connected" || currentState == "error") {
+                    appendLog("[net] recovering VPN on physical network")
+                    attemptedRevision = revision
+                    reconnect()
+                }
+                delay(500)
+            }
+        }
     }
 
     private fun isPhysicalNetwork(connectivity: ConnectivityManager, network: Network): Boolean =
         connectivity.getNetworkCapabilities(network)
             ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) == true
+
+    private fun describePhysicalNetwork(connectivity: ConnectivityManager, network: Network?): String {
+        val capabilities = network?.let(connectivity::getNetworkCapabilities) ?: return "none"
+        return when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "other"
+        }
+    }
+
+    private fun publishNat64Prefix(prefix: String?) {
+        // Keep diagnostics aligned with the /96 prefixes accepted by the core.
+        val supportedPrefix = prefix?.takeIf { it.endsWith("/96") }
+        ClashBridge.setNat64Prefix(supportedPrefix)
+        currentNat64Enabled = supportedPrefix != null
+    }
 
     private fun refreshNat64Prefix(
         connectivity: ConnectivityManager,
@@ -748,13 +895,13 @@ class SlaveVpnService : VpnService() {
             connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) != true) {
             nat64Lookup?.cancel()
             nat64LookupNetwork = null
-            ClashBridge.setNat64Prefix(announced?.toString())
+            publishNat64Prefix(announced?.toString())
             return
         }
         if (nat64LookupNetwork == network) return
         nat64Lookup?.cancel()
         nat64LookupNetwork = network
-        ClashBridge.setNat64Prefix(null)
+        publishNat64Prefix(null)
         // A cellular network can expose both IPv4 and DNS64 without publishing
         // its prefix in LinkProperties. RFC 7050 discovers it on this network.
         nat64Lookup = scope.launch {
@@ -774,9 +921,15 @@ class SlaveVpnService : VpnService() {
                     }
                 }
             }.getOrNull()
-            if (isActive && physicalNetwork == network) {
-                ClashBridge.setNat64Prefix(prefix)
-                if (prefix != null) appendLog("[net] DNS64 prefix detected")
+            // Apply on the same thread as handovers. A background result must
+            // not publish an LTE prefix after the main thread has cleared it
+            // for Wi-Fi between the identity check and the native setter.
+            withContext(Dispatchers.Main) {
+                if (isActive && physicalNetwork == network && nat64LookupNetwork == network) {
+                    publishNat64Prefix(prefix)
+                    if (prefix == null) nat64LookupNetwork = null
+                    if (prefix != null) appendLog("[net] DNS64 prefix detected")
+                }
             }
         }
     }
@@ -795,10 +948,15 @@ class SlaveVpnService : VpnService() {
         }
 
     private fun unregisterNetworkMonitor() {
+        networkRecoveryJob?.cancel()
+        networkRecoveryJob = null
         physicalNetwork = null
+        physicalNetworkUsable = false
+        currentNetworkTransport = "none"
+        networkHandover.update(null)
         nat64Lookup?.cancel()
         nat64LookupNetwork = null
-        ClashBridge.setNat64Prefix(null)
+        publishNat64Prefix(null)
         val cb = networkCallback ?: return
         networkCallback = null
         try {

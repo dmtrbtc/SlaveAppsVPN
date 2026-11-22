@@ -65,6 +65,11 @@ cache/
 temp/
 tmp/
 
+# Local VPN diagnostics: never include in repository or release publications.
+/docs/MIHOMO_RELIABILITY_RESEARCH_2026-11-17.md
+/docs/ANDROID_DEV3_ACCEPTANCE_2026-11-22.md
+/docs/XRAY_26_10_31_AUDIT.md
+
 # Engine binaries (downloaded by scripts/download-binaries.mjs, not committed)
 apps/windows/resources/bin/mihomo.exe
 apps/windows/resources/bin/sing-box.exe

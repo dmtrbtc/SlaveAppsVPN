@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import './validate-android-core.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const expected = process.argv[2] ?? JSON.parse(read('apps/windows/package.json')).version

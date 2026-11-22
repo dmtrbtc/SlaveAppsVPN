@@ -1,4 +1,5 @@
 import { CapacitorHttp, Capacitor } from '@capacitor/core'
+import { normalizeSubscriptionContent, parseProxiesFromYaml } from '@slave-vpn/config'
 import { getDeviceHeaders } from './device-id'
 
 /**
@@ -88,6 +89,21 @@ async function fetchOnceWeb(url: string, ua: string): Promise<{ status: number; 
   }
 }
 
+async function fetchPrimaryWithRetry(url: string, ua: string, native: boolean) {
+  const request = () => native ? fetchOnceNative(url, ua) : fetchOnceWeb(url, ua)
+  // A transport error must not immediately demote the preferred Clash format:
+  // alternative provider formats may contain fewer nodes or different fields.
+  // Retry once, only for the preferred format and transient failures.
+  try {
+    const result = await request()
+    if (ua !== FALLBACK_USER_AGENTS[0] ||
+        !(result.status === 0 || result.status === 408 || result.status >= 500)) return result
+  } catch (error) {
+    if (ua !== FALLBACK_USER_AGENTS[0]) throw error
+  }
+  return request()
+}
+
 /**
  * Decide whether a response body is worth handing to the parser. Rejects the
  * Remnawave HWID/UA placeholders and formats our normalizer cannot read, so
@@ -101,22 +117,17 @@ function looksUsable(text: string): boolean {
   // Remnawave placeholder served when the device/UA is not accepted.
   if (t.includes('App not supported')) return false
 
-  // v2rayNG / Xray JSON config array (e.g. `[{"dns":...,"outbounds":[...]}]`).
-  // Our normalizer does not understand this shape — skip so we try another UA
-  // that yields base64 links or sing-box JSON instead.
+  // Xray arrays are recovered separately for additional protocols and FinalMask.
+  // The primary parser only supports a subset of their outbounds.
   if (/^\[\s*\{/.test(t) && t.includes('"outbounds"')) return false
 
-  // Clash YAML with an empty proxy list (`proxies: []`, or a `proxies:` block
-  // with no `- name:` entries) — this is what clash.meta returns for a panel
-  // whose hosts aren't exposed in clash format.
-  if (/^proxies\s*:/m.test(t)) {
-    if (/^proxies\s*:\s*\[\s*\]\s*$/m.test(t)) return false
-    const after = t.split(/^proxies\s*:/m)[1] ?? ''
-    const block = after.split(/^\S/m)[0] ?? after
-    if (!/^[ \t]*-[ \t]/m.test(block)) return false
+  try {
+    // Accept the same YAML shapes and URI/JSON formats as the importer,
+    // including valid lists whose dashes start at column zero.
+    return parseProxiesFromYaml(normalizeSubscriptionContent(t).yaml).length > 0
+  } catch {
+    return false
   }
-
-  return true
 }
 
 /**
@@ -157,9 +168,7 @@ export async function fetchSubscriptionText(url: string): Promise<string> {
 
   for (const ua of FALLBACK_USER_AGENTS) {
     try {
-      const { status, text } = native
-        ? await fetchOnceNative(url, ua)
-        : await fetchOnceWeb(url, ua)
+      const { status, text } = await fetchPrimaryWithRetry(url, ua, native)
 
       if (status === 404 || status === 403) {
         // Remnawave returns 404/403 for an unknown/over-limit HWID, NOT "no

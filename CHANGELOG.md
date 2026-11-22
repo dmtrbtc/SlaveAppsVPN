@@ -4,6 +4,15 @@ All notable changes to SLAVE VPN are documented here.
 
 ## [Unreleased]
 
+## [0.3.1-dev.3] — 2026-11-22
+
+### Fixed
+
+- Android: improve connection recovery when switching between Wi-Fi and mobile data.
+- Android: improve VPN startup and user-initiated disconnection.
+- Improve subscription loading and processing reliability.
+
+
 ## [0.3.1-dev.2] — 2026-11-14
 
 - Android and Windows: support current Xray VLESS REALITY configurations and per-node TLS fingerprints.

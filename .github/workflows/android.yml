@@ -66,7 +66,11 @@ jobs:
           npm --prefix apps/android pkg set version="$VER"
 
       - name: Build shared packages
-        run: pnpm --filter "./packages/**" build
+        # Fail before packaging if a rebuild replaced the field-tested AAR.
+        # The ordinary APK build consumes this file without rebuilding Go.
+        run: |
+          node scripts/validate-android-core.mjs
+          pnpm --filter "./packages/**" build
 
       - name: Build Android web bundle
         run: pnpm --filter @slave-vpn/windows build
@@ -79,7 +83,7 @@ jobs:
         working-directory: apps/android/android
         run: |
           chmod +x gradlew
-          ./gradlew lintDebug --no-daemon
+          ./gradlew lintDebug testDebugUnitTest --no-daemon
 
       - name: Configure release signing
         id: signing

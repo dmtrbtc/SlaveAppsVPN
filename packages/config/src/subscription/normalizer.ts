@@ -1,6 +1,7 @@
 import { isProxyUri, parseProxyUri, parseProxyUriList } from './uriParser'
 import { isSingBoxJson, parseSingBoxJson } from './singboxParser'
 import { buildClashYaml } from './clashYamlBuilder'
+import { parseProxiesFromYaml } from './yamlProxyExtractor'
 import { isXrayConfigArray, parseXrayConfigArray, parseXrayFinalMaskEntries } from './xrayArrayParser'
 import type { NormalizedSubscription, SubscriptionFormat } from './types'
 
@@ -67,20 +68,9 @@ function normalizeProxyLinks(links: string[], format: SubscriptionFormat): Norma
 // ─── Count proxies strictly within the proxies: block ────────────────────────
 
 function countProxiesInYaml(yaml: string): number {
-  // Line scan rather than one big regex: a proxy can carry a very long single
-  // line (e.g. a ~1.6k-char VLESS `encryption:` ML-KEM key) that broke the
-  // previous lookahead-based section match and under-counted nodes.
-  const lines = yaml.split('\n')
-  let inProxies = false
-  let count = 0
-  for (const line of lines) {
-    if (/^proxies\s*:/.test(line)) { inProxies = true; continue }
-    if (!inProxies) continue
-    // A non-indented, non-list, non-comment line starts the next top-level key.
-    if (/^[^\s#-]/.test(line)) break
-    if (/^\s*-\s+name\s*:/.test(line) || /^\s*-\s*\{/.test(line)) count++
-  }
-  return count
+  // Use the same parser as aggregation so list indentation, flow-style YAML
+  // and field order cannot change which proxies the importer recognizes.
+  return parseProxiesFromYaml(yaml).length
 }
 
 // ─── Core normalization logic ─────────────────────────────────────────────────
