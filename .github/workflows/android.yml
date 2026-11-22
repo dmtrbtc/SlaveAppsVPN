@@ -7,6 +7,19 @@ on:
         description: 'Release tag to attach APK to (e.g. v0.3.0)'
         required: false
         default: ''
+      attach_existing:
+        description: 'Attach verified existing CI artifacts without rebuilding'
+        required: false
+        default: 'false'
+      android_run_id:
+        required: false
+        default: ''
+      windows_run_id:
+        required: false
+        default: ''
+      android_sha256:
+        required: false
+        default: ''
   pull_request:
     paths:
       - '.github/workflows/android.yml'
@@ -18,6 +31,7 @@ on:
       - 'pnpm-workspace.yaml'
 jobs:
   build-android:
+    if: github.event.inputs.attach_existing != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -190,3 +204,82 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.inputs.release_tag }}
         run: gh release upload "$RELEASE_TAG" artifacts/SlaveAppsVPN-Android.apk --clobber
+
+  attach-existing:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.attach_existing == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+      ANDROID_RUN: ${{ github.event.inputs.android_run_id }}
+      WINDOWS_RUN: ${{ github.event.inputs.windows_run_id }}
+      ANDROID_SHA256: ${{ github.event.inputs.android_sha256 }}
+    steps:
+      - name: Verify immutable source and draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$ ]]
+          [[ "$ANDROID_RUN" =~ ^[0-9]+$ && "$WINDOWS_RUN" =~ ^[0-9]+$ ]]
+          [[ "$ANDROID_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          read -r target kind < <(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '[.object.sha,.object.type]|@tsv')
+          if [ "$kind" = tag ]; then
+            target=$(gh api "repos/$GH_REPO/git/tags/$target" --jq .object.sha)
+          fi
+          for id in "$ANDROID_RUN" "$WINDOWS_RUN"; do
+            read -r result sha < <(gh run view "$id" --json conclusion,headSha --jq '[.conclusion,.headSha]|@tsv')
+            test "$result" = success
+            test "$sha" = "$target"
+          done
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+
+      - name: Download verified build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh run download "$ANDROID_RUN" -n SlaveAppsVPN-Android -D staging/android
+          gh run download "$WINDOWS_RUN" -n SlaveAppsVPN-Windows -D staging/windows
+
+      - name: Verify files and collect public assets
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, os, pathlib, re, shutil
+          version = os.environ['RELEASE_TAG'][1:]
+          android = pathlib.Path('staging/android/SlaveAppsVPN-Android.apk')
+          windows = pathlib.Path('staging/windows')
+          public = pathlib.Path('public')
+          public.mkdir()
+          def digest(path, algorithm='sha256'):
+              with path.open('rb') as source:
+                  return hashlib.file_digest(source, algorithm).digest()
+          assert digest(android).hex() == os.environ['ANDROID_SHA256']
+          setup = f'SlaveAppsVPN-Setup-v{version}.exe'
+          allowed = {setup, setup+'.blockmap', f'SlaveAppsVPN-Portable-v{version}.exe', 'latest.yml', 'SHA256SUMS.txt'}
+          assert {p.name for p in windows.iterdir()} == allowed
+          declared = set()
+          for line in (windows/'SHA256SUMS.txt').read_text(encoding='utf-8-sig').splitlines():
+              value, name = line.split('  ', 1)
+              assert name in allowed and name != 'SHA256SUMS.txt'
+              assert digest(windows/name).hex() == value
+              declared.add(name)
+          assert declared == allowed - {'SHA256SUMS.txt'}
+          metadata = (windows/'latest.yml').read_text(encoding='utf-8-sig')
+          assert re.search(r'^version:\s*'+re.escape(version)+r'\s*$', metadata, re.M)
+          values = re.findall(r'^\s*sha512:\s*(.+)$', metadata, re.M)
+          expected = base64.b64encode(digest(windows/setup, 'sha512')).decode()
+          assert values and all(value.strip() == expected for value in values)
+          shutil.copyfile(android, public/android.name)
+          for name in allowed - {'SHA256SUMS.txt'}:
+              shutil.copyfile(windows/name, public/name)
+          lines = [digest(p).hex()+'  '+p.name for p in sorted(public.iterdir())]
+          (public/'SHA256SUMS.txt').write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+
+      - name: Attach public files to draft
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" public/* --clobber
