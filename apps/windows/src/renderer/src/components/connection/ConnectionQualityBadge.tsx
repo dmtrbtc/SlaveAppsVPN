@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
+import { IS_MOBILE } from '../../lib/platform'
 import { cn } from '../../lib/utils'
 import { useConnectionHealth, useConnectionQualityTier } from '../../hooks/useConnectionHealth'
 import { HEALTH_STATE_LABELS } from '../../lib/health'
@@ -27,7 +28,7 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
   const config = TIER_CONFIG[tier]
   const connectedAt = useVpnStore(selectVpnStatus).connectedAt
   const [now, setNow] = useState(() => Date.now())
-  const verifying = !!health && health.state === 'offline' && !!connectedAt && now - connectedAt < 60_000
+  const verifying = !IS_MOBILE && !!health && health.state === 'offline' && !!connectedAt && now - connectedAt < 60_000
 
   useEffect(() => {
     if (!verifying) return
@@ -75,11 +76,11 @@ export function ConnectionQualityBadge({ className }: ConnectionQualityBadgeProp
       {/* Label */}
       <div className="flex flex-col leading-none">
         <span className={cn('text-[11px] font-medium', visibleConfig.color)}>
-          {verifying ? 'Проверяем соединение' : `${label} качество`}
+          {IS_MOBILE ? (health.connectivityOk ? 'Сервер отвечает' : 'Сервер не отвечает') : verifying ? 'Проверяем соединение' : `${label} качество`}
         </span>
         {health && (
           <span className="text-[10px] text-text-muted font-mono mt-0.5">
-            {verifying ? `${elapsedSeconds} с · повторяем проверку` : `${health.score}/100`}
+            {IS_MOBILE ? `Проверено в ${new Date(health.checkedAt).toLocaleTimeString('ru-RU')}` : verifying ? `${elapsedSeconds} с · повторяем проверку` : `${health.score}/100`}
           </span>
         )}
       </div>

@@ -141,6 +141,7 @@ export async function compileAndroidEngineConfig(
     // modem from ever idling — 30s halves the wakeups at a minor reconnect-latency
     // cost (network hand-offs still trigger an instant full reconnect natively).
     keepAliveIntervalSeconds: 30,
+    mobileAutoRecovery: true,
     // Battery: 'info' logs every connection open/close across the JNI boundary;
     // 'warning' keeps the diagnostics ring buffer for real problems only.
     logLevel: 'warning',

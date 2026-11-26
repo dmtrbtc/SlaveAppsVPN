@@ -26,6 +26,7 @@ object ClashBridge {
     private const val TAG = "ClashBridge"
 
     @Volatile private var running = false
+    private val selectionState = ProxySelectionState("SLAVE-AUTO")
 
     /** Initialise the core working directory. Safe to call once on app start. */
     fun setup(homeDir: String) {
@@ -61,6 +62,7 @@ object ClashBridge {
                 installXrayResolver(resolveXrayHost)
             }
             Clashbox.start(configYaml) // throws on parse/apply failure
+            selectionState.reset()
             running = true
         } catch (e: Exception) {
             // StartLogForward launches a native goroutine before parsing. Stop it
@@ -89,6 +91,7 @@ object ClashBridge {
     fun stop() {
         if (!running) return
         running = false
+        selectionState.reset()
         try {
             Clashbox.stop()
             Clashbox.stopLogForward()
@@ -109,15 +112,17 @@ object ClashBridge {
      * specific node. New connections egress through it. Throws if the core is
      * not running or the name is unknown.
      */
+    @Synchronized
     fun selectProxy(name: String, group: String = SELECT_GROUP) {
         // Runtime diagnostics → Диагностика→Логи: prove whether the choice
         // reaches the core and what the active leaf is before/after.
         val before = currentProxy(group)
+        val beforeTarget = selectionState.previousTarget(group, before)
         SlaveVpnService.appendLog("[selector] selectProxy($group, $name) — current before=$before")
         try {
             Clashbox.selectProxy(group, name)
             val after = currentProxy(group)
-            if (after != name) {
+            if (!selectionState.confirms(name, after)) {
                 throw IllegalStateException("selector did not activate requested proxy: requested=$name active=$after")
             }
 
@@ -127,16 +132,18 @@ object ClashBridge {
             // Drop the tracked sessions after the selector has changed so clients
             // reconnect through the requested node immediately.
             closeAllConnections()
+            selectionState.applied(group, name)
             SlaveVpnService.appendLog("[selector] selectProxy done — current after=$after; old connections closed")
         } catch (error: Throwable) {
             // Keep native state aligned with the UI when the second half of the
             // switch fails. Best-effort rollback is safe even when the first PUT
             // was rejected before changing anything.
-            if (before.isNotBlank() && before != name) {
+            if (beforeTarget.isNotBlank() && beforeTarget != name) {
                 try {
-                    Clashbox.selectProxy(group, before)
+                    Clashbox.selectProxy(group, beforeTarget)
                     closeAllConnections()
-                    SlaveVpnService.appendLog("[selector] rollback restored $before")
+                    selectionState.applied(group, beforeTarget)
+                    SlaveVpnService.appendLog("[selector] rollback restored $beforeTarget")
                 } catch (rollback: Throwable) {
                     SlaveVpnService.appendLog("[selector] rollback failed: ${rollback.message}")
                 }

@@ -1080,10 +1080,14 @@ class SlaveVpnService : VpnService() {
         scope.cancel()
         try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()
+        // The status is process-wide and can outlive this service instance.
+        if (currentState != "error") currentState = "disconnected"
+        requestTileUpdate(applicationContext)
     }
 
     override fun onRevoke() {
-        // System or user revoked VPN — core must stop cleanly
+        currentState = "disconnected"
+        currentError = null
         setShouldRun(applicationContext, false)
         try { ClashBridge.stop() } catch (_: Exception) { }
         cleanupTun()

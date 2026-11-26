@@ -49,6 +49,7 @@ export function useAndroidConnectionHealth(): void {
       return
     }
 
+    setHealth(null)
     let cancelled = false
     let fails = 0
     // Prefer the real leaf node; fall back to the selected target / the Auto group.

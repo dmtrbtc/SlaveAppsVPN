@@ -24,6 +24,7 @@ export interface GeneratorSettings {
    * keeps desktop reconnects snappy; mobile platforms raise it (e.g. 30) — a 15s
    * probe on every socket prevents the cellular modem from ever idling.
    */
+  mobileAutoRecovery?: boolean
   keepAliveIntervalSeconds?: number
   /**
    * Core log verbosity. Default 'info' logs every connection open/close; mobile
@@ -190,6 +191,11 @@ export function generateMihomoConfig(ctx: ConfigGenerationContext): string {
       proxies: proxyNames.length > 0 ? proxyNames : ['DIRECT'],
       url: URL_TEST_URL,
       interval: URL_TEST_INTERVAL,
+      ...(ctx.settings.mobileAutoRecovery ? {
+        'max-failed-times': 2,
+        'expected-status': '204',
+        timeout: 5000,
+      } : {}),
       tolerance: URL_TEST_TOLERANCE,
       lazy: URL_TEST_LAZY,
     },
